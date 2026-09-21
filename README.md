@@ -94,6 +94,26 @@ There is no light attack or heavy attack. The only way to raise the number is to
 swing faster, with the edge leading, and connect on the right part of the blade
 — which is to say, to actually cut properly.
 
+### A sword does not bounce off a person
+
+Blades do not collide with anything soft. They collide with the world and with
+each other — stone stops a sword, and a parry is still two swords meeting — but
+against a body a blade passes through, and the hit is found by casting the
+blade's own line from where it was last step to where it is now.
+
+This is not a shortcut. It is the difference between the mechanic working and
+not working. Modelling flesh as a rigid collider means a 1.4kg blade meeting a
+20kg torso stops dead, and a stopped blade cannot cut: the swing that should
+have arrived at 12 m/s instead registered two dozen grazing contacts at 3 m/s
+while the sword wiped across the target like a windscreen wiper, braked from
+first touch onward. Every cut in the game was worth about a tenth of a point of
+damage.
+
+Sweeping the blade's line reports the speed it was *actually* travelling when it
+arrived, which is the number the whole damage model is built on. It also means
+you can swing from inside your own reach, where the arc crosses a target's
+centre rather than skidding off its near surface.
+
 ### The dummy
 
 A canvas figure hangs from a gallows, pinned at the chest so it swings and spins
@@ -112,7 +132,7 @@ gives way, and the panel on the right tracks every joint still holding.
 Joints are tuned against the damage curve, so a wrist goes in one or two good
 strikes and cutting a body in half at the waist takes real commitment.
 
-## Six things the physics taught us
+## Seven things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -129,6 +149,13 @@ elbow and no forearm twist, rotating the cutting edge *is* swinging the elbow
 around the shoulder→hand line. Treating them as two controls had them fighting
 over one joint, worth 45° of standing orientation error. A right-drag rotates
 the arm's plane, and the edge comes with it.
+
+**An invisible collider still blocks a raycast.** Once blades stopped colliding
+with flesh and started finding hits by sweeping, every cut landed on the
+locomotion hull — it encloses the whole figure, so it is the first thing any ray
+meets. The hull is not a body part, so the hit was discarded and nobody could
+wound anybody. Hulls have their own collision groups now, and a blade's sweep
+does not look for them.
 
 **A kinematic body is born at the origin.** The legs reach their real position
 through `setNextKinematicTranslation`, which interpolates — so on the first step
@@ -194,8 +221,13 @@ Some things look like bugs and are not:
 - **The blade hangs angled up out of the hand.** The elbow sits below the
   shoulder-to-hand line, so the forearm — and the sword welded to it — points
   upward. From a 1.51m shoulder the tip rests around 2.1m. Rolling the edge over
-  with a right-drag swings the arm's plane and brings it down; this is the
-  single biggest thing to learn, and see the note below on what it costs.
+  with a right-drag swings the arm's plane and brings it down; it is the single
+  biggest thing to learn.
+- **Swinging pushes you around.** A 420N drive against an 82kg body moves it, so
+  a hard swing walks you half a metre off your mark. That is the physics being
+  honest, not a bug, but it is worth knowing before you plant your feet.
+- **Standing still against the opponent kills you in under forty seconds**, from
+  full health, with first blood at about three and a half.
 
 ## Structure
 
@@ -216,6 +248,7 @@ src/
     arena.ts         a room built to be hit
     combatant.ts     a fighter, their arm, and what a cut does to them
     ai.ts            the opponent's brain — mouse deltas, nothing more
+    cutting.ts       swept-segment hit detection: how a blade finds flesh
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
     impacts.ts       contact events -> impact quality
@@ -241,31 +274,6 @@ TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
 Physics is a fixed 60Hz accumulator with render interpolation — stiff PD drives
 explode under a variable timestep. CCD is on for the blade and forearm; without
 it a fast tip tunnels straight through the thin post.
-
-## Known regression: cuts land less cleanly since the rebuild
-
-Giving the fighters human proportions moved the shoulder from 0.90m to 1.51m and
-replaced a 0.24m-radius capsule spanning knee to head with a 0.17m torso between
-waist and neck. Both make a fighter a much harder target than the barrel they
-replaced, and the numbers moved a long way:
-
-| | before | after |
-|---|---|---|
-| passive player vs. the opponent, 40s | 6/100 health | ~70/100 |
-| best damage from a scripted sweep at the dummy | 5.1 | 0.11 |
-
-Some of that is the change working as intended. Some of it is not. The mechanism
-is visible in the traces: at a 1.51m shoulder the blade angles up out of the
-hand, so at any range where its arc crosses a chest-height target it is in
-*continuous contact* and never builds speed — 24 contacts at 3.7 m/s instead of
-one at 12. Standing closer makes it worse, not better (214 contacts, 4.3 m/s
-peak).
-
-The honest position is that scripted sweeps are now a bad way to test this and a
-worse way to tune it. The levers, in the order worth trying: the pole vector in
-`arm.ts` (which decides how far the elbow hangs below the arm and so how steeply
-the blade angles up), `MAX_REACH`, and the default rest pitch. All three want a
-human on the mouse to judge.
 
 ## What's next
 

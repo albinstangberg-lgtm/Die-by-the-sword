@@ -19,6 +19,13 @@ import type { Keys } from "../input/input";
 
 const MAX_HEALTH = 100;
 
+/** What the non-sword-arm joints cost to cut through. */
+const SEVERABLE: Record<string, number> = {
+  head: JOINT_INTEGRITY.neck,
+  offShoulder: JOINT_INTEGRITY.shoulder,
+  offElbow: JOINT_INTEGRITY.elbow,
+};
+
 /** Cutting either of these disarms the fighter — the sword is welded to the hand. */
 type ArmJoint = "shoulder" | "elbow";
 
@@ -46,9 +53,18 @@ export class Combatant {
 
   onHurt?: (amount: number, part: string) => void;
   onDisarm?: (where: ArmJoint) => void;
+  onLoseLimb?: (part: string) => void;
   onDeath?: () => void;
 
-  private handles = new Map<number, ArmJoint | "torso">();
+  /**
+   * Collider -> what a hit on it does.
+   *
+   * `shoulder` and `elbow` are the sword arm, and cutting them disarms. The
+   * rest of the body — head, off arm, pelvis, legs — takes damage and can be
+   * cut apart where it has a joint to cut, but losing it does not stop you
+   * fighting.
+   */
+  private handles = new Map<number, { joint: ArmJoint | null; part: string }>();
 
   constructor(
     readonly name: string,
@@ -68,13 +84,19 @@ export class Combatant {
     // A hit on the upper arm works the shoulder, a hit on the forearm works the
     // elbow — the same proximal-joint rule the dummy uses, so what the player
     // learns cutting practice transfers directly to cutting a person.
-    this.register(targets, this.fighter.collider.handle, "torso", `${possessive} body`);
     this.register(targets, this.arm.upper.collider(0)!.handle, "shoulder", `${possessive} sword arm`);
     this.register(targets, this.arm.fore.collider(0)!.handle, "elbow", `${possessive} forearm`);
+
+    // And every part of the body proper. Without this the head, off arm and
+    // legs were scenery: a blade went through them and nothing happened.
+    for (const part of this.fighter.parts) {
+      this.handles.set(part.collider.handle, { joint: null, part: part.name });
+      targets.register(part.collider.handle, `${possessive} ${part.label}`);
+    }
   }
 
-  private register(targets: Targets, handle: number, part: ArmJoint | "torso", label: string): void {
-    this.handles.set(handle, part);
+  private register(targets: Targets, handle: number, joint: ArmJoint, label: string): void {
+    this.handles.set(handle, { joint, part: joint });
     targets.register(handle, label);
   }
 
@@ -98,26 +120,44 @@ export class Combatant {
 
   /** Route an impact. Returns true if it landed on this fighter. */
   receive(impact: Impact): boolean {
-    const part = this.handles.get(impact.colliderHandle);
-    if (part === undefined) return false;
+    const target = this.handles.get(impact.colliderHandle);
+    if (target === undefined) return false;
     if (this.dead) return true;
 
     const amount = cutDamage(impact);
     if (amount <= 0) return true;              // a slap or a shove
 
     this.health = Math.max(0, this.health - amount);
-    this.onHurt?.(amount, part);
+    this.onHurt?.(amount, target.part);
 
-    if (part !== "torso" && !this.arm.disarmed) {
-      this.joints[part] -= amount;
-      if (this.joints[part] <= 0) {
-        this.arm.sever(part);
-        this.onDisarm?.(part);
+    if (target.joint !== null && !this.arm.disarmed) {
+      this.joints[target.joint] -= amount;
+      if (this.joints[target.joint] <= 0) {
+        this.arm.sever(target.joint);
+        this.onDisarm?.(target.joint);
       }
+    } else if (target.joint === null) {
+      // Heads and off arms come off the same way the dummy's do.
+      this.severBodyPart(target.part, amount);
     }
 
     if (this.health <= 0) this.collapse();
     return true;
+  }
+
+  /** Body parts other than the sword arm, cut free once they have taken enough. */
+  private bodyDamage = new Map<string, number>();
+
+  private severBodyPart(name: string, amount: number): void {
+    const cost = SEVERABLE[name];
+    if (cost === undefined) return;
+    const done = (this.bodyDamage.get(name) ?? 0) + amount;
+    this.bodyDamage.set(name, done);
+    if (done >= cost && this.fighter.sever(name)) {
+      this.onLoseLimb?.(name);
+      // Losing your head is losing the fight.
+      if (name === "head") { this.health = 0; this.collapse(); }
+    }
   }
 
   /**
@@ -153,6 +193,7 @@ export class Combatant {
     this.dead = false;
     this.joints.shoulder = JOINT_INTEGRITY.shoulder;
     this.joints.elbow = JOINT_INTEGRITY.elbow;
+    this.bodyDamage.clear();
     this.fighter.body.setEnabledRotations(false, true, false, true);
     this.fighter.body.setAngularDamping(6);
     this.fighter.reset(at);

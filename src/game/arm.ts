@@ -36,6 +36,23 @@ import { SHOULDER_LOCAL, type Fighter } from "./fighter";
 const UP = new THREE.Vector3(0, 1, 0);
 
 /**
+ * Where the elbow hangs relative to the shoulder-to-hand line.
+ *
+ * This decides how steeply the sword sits in the hand, and it matters far more
+ * than it looks. The blade is welded pointing along the forearm, so wherever
+ * the elbow sits, the blade points away from it: an elbow directly BELOW the
+ * line throws the blade upward, an elbow BEHIND the hand lays it forward.
+ *
+ * It used to be straight down, which was fine when the shoulder sat at 0.90m
+ * and an upward blade pointed into the target. At a human 1.51m shoulder the
+ * same geometry parks the tip at 2.1m, over everything's head, and leaves only
+ * the slow part of the blade near the hilt low enough to reach a chest — which
+ * is why swings turned into 24 grazing contacts at 3.7 m/s instead of one at
+ * twelve.
+ */
+export const POLE = { back: 1.0, down: 0.45, right: 0.25 };
+
+/**
  * The shoulder drive runs softer than the wrist. It is steering a lighter
  * segment and mostly only needs to keep the elbow from wandering, and a
  * shoulder as stiff as the wrist makes the whole limb feel welded rather than
@@ -181,7 +198,7 @@ export class Arm {
     scene: THREE.Scene,
     private fighter: Fighter,
     tuning: Tuning,
-    private side: Side = fighter.side,
+    readonly side: Side = fighter.side,
   ) {
     const { rapier, world } = phys;
 
@@ -340,8 +357,7 @@ export class Arm {
     const cosA = (UPPER_LEN * UPPER_LEN + d * d - FORE_LEN * FORE_LEN) / (2 * UPPER_LEN * d);
     const shoulderAngle = Math.acos(clamp(cosA, -1, 1));
 
-    // Pole vector: which way the elbow points off the shoulder->hand line.
-    // Mostly down and a little outboard, the way a real sword arm carries --
+    // Pole vector: which way the elbow points off the shoulder->hand line,
     // then rotated by the roll command.
     //
     // This is the crux of the control scheme. With a hinge elbow and no forearm
@@ -351,8 +367,13 @@ export class Arm {
     // them as two separate controls (a fixed pole plus a roll torque) had them
     // fighting each other for the same joint, which is what left 45 degrees of
     // standing orientation error. Q/E turns the whole arm, and the edge follows.
-    const right = this._refA.set(Math.cos(this.fighter.yaw), 0, -Math.sin(this.fighter.yaw));
-    const pole = this._refB.set(0, -1, 0).addScaledVector(right, 0.35).normalize()
+    const torsoYaw = this.fighter.yaw;
+    const right = this._refA.set(Math.cos(torsoYaw), 0, -Math.sin(torsoYaw));
+    const back = this._refC.set(Math.sin(torsoYaw), 0, Math.cos(torsoYaw));
+    const pole = this._refB.set(0, -POLE.down, 0)
+      .addScaledVector(right, POLE.right)
+      .addScaledVector(back, POLE.back)
+      .normalize()
       .applyQuaternion(this._q2.setFromAxisAngle(this._armDir, this.roll));
 
     // Swing the arm direction toward the pole by the shoulder angle.
@@ -575,6 +596,15 @@ export class Arm {
    */
   edgeDirection(out: THREE.Vector3): THREE.Vector3 {
     return out.set(0, 0, 1).applyQuaternion(this._preQuat);
+  }
+
+  /** A point on the blade, 0 at the guard and 1 at the tip, in world space. */
+  pointAlongBlade(t: number, out: THREE.Vector3): THREE.Vector3 {
+    const bq = this.blade.rotation();
+    const bp = this.blade.translation();
+    out.set(0, GRIP_LEN + BLADE_LEN * t, 0)
+      .applyQuaternion(this._q2.set(bq.x, bq.y, bq.z, bq.w));
+    return out.set(bp.x + out.x, bp.y + out.y, bp.z + out.z);
   }
 
   /** Blade velocity at a world point, from the pre-step snapshot. */

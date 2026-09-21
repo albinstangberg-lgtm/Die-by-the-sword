@@ -3,6 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld } from "../core/physics";
 import type { Arm } from "./arm";
 import type { Targets } from "./targets";
+import { Cutter, type SweptHit } from "./cutting";
 
 /**
  * Impact quality.
@@ -59,6 +60,7 @@ export interface Impact {
 interface BladeEntry {
   arm: Arm;
   onImpact: (i: Impact) => void;
+  cutter: Cutter;
 }
 
 export class Impacts {
@@ -94,11 +96,75 @@ export class Impacts {
   }
 
   addBlade(arm: Arm, onImpact: (i: Impact) => void): void {
-    this.blades.set(arm.bladeCollider.handle, { arm, onImpact });
+    const existing = this.blades.get(arm.bladeCollider.handle);
+    this.blades.set(arm.bladeCollider.handle, {
+      arm, onImpact,
+      cutter: existing?.cutter ?? new Cutter(this.phys, arm, arm.side.cuttableFilter),
+    });
+  }
+
+  /** After teleporting a blade, so its next sweep does not cut the whole room. */
+  resetSweeps(): void {
+    for (const b of this.blades.values()) b.cutter.reset();
+  }
+
+  /**
+   * Trace each blade through whatever it passed through this step.
+   *
+   * Solver contacts still report stone and parries; everything soft is found
+   * here instead, at the speed the blade was actually travelling.
+   */
+  private sweepBlades(now: number): void {
+    for (const entry of this.blades.values()) {
+      entry.cutter.sweep(this._swept);
+      for (const hit of this._swept) {
+        const last = this.lastAt.get(hit.collider.handle);
+        if (last !== undefined && now - last < COOLDOWN_MS) continue;
+
+        const impact = this.describeSwept(entry.arm, hit);
+        if (!impact || impact.closingSpeed < RESTING_SPEED) continue;
+
+        this.lastAt.set(hit.collider.handle, now);
+        this.latest = impact;
+        entry.onImpact(impact);
+        this.sparks.burst(impact);
+      }
+    }
+  }
+
+  private readonly _swept: SweptHit[] = [];
+
+  /** Same measurements as a solver contact, taken from a swept intersection. */
+  private describeSwept(arm: Arm, hit: SweptHit): Impact | null {
+    this._n.copy(hit.normal).normalize();
+    this._p.copy(hit.point);
+
+    arm.velocityAt(this._p, this._v);
+    const normalComponent = this._v.dot(this._n);
+    const closingSpeed = Math.abs(normalComponent);
+    const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
+
+    arm.edgeDirection(this._edge);
+    const edgeAlign = Math.abs(this._edge.dot(this._n));
+
+    return {
+      quality: classify(closingSpeed, edgeAlign, hit.alongBlade),
+      what: this.targets.labelFor(hit.collider.handle),
+      closingSpeed,
+      tangentSpeed,
+      edgeAlign,
+      alongBlade: hit.alongBlade,
+      force: 0,
+      at: this._p.clone(),
+      colliderHandle: hit.collider.handle,
+      bladeVelocity: this._v.clone(),
+    };
   }
 
   /** Drain this step's contact events. Call right after `world.step()`. */
   update(now: number): void {
+    this.sweepBlades(now);
+
     this.phys.events.drainContactForceEvents((e) => {
       const h1 = e.collider1();
       const h2 = e.collider2();

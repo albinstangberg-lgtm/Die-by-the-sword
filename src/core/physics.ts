@@ -11,6 +11,12 @@ export const GROUP = {
   BLADE_A: 0x0008,
   BODY_B: 0x0010,
   BLADE_B: 0x0020,
+  // The locomotion hulls get their own groups. Sharing a group with the
+  // hittable parts meant a blade's swept cut struck the hull first — it
+  // encloses the whole figure — and the hit was thrown away for not belonging
+  // to any named body part, so nobody could wound anybody.
+  HULL_A: 0x0040,
+  HULL_B: 0x0080,
 } as const;
 
 export function groups(membership: number, filter: number): number {
@@ -33,8 +39,18 @@ export interface Side {
   readonly name: "a" | "b";
   /** For every hittable body part. */
   readonly bodyFilter: number;
-  /** For the blade. */
+  /**
+   * For the blade.
+   *
+   * Deliberately excludes everything soft. A sword that physically collides
+   * with a body is stopped by it, and a stopped blade cannot cut: the swing
+   * arrives at 3 m/s having been braked from first contact. Blades meet stone
+   * and they meet each other; flesh they pass through, and the hit is found by
+   * sweeping the blade's line (see cutting.ts).
+   */
   readonly bladeFilter: number;
+  /** What a blade's swept cut may find: soft targets only. */
+  readonly cuttableFilter: number;
   /**
    * For the invisible locomotion hull.
    *
@@ -56,25 +72,29 @@ export interface Side {
   readonly blade: number;
 }
 
-function makeSide(name: "a" | "b", body: number, blade: number,
-                  foeBody: number, foeBlade: number): Side {
+function makeSide(name: "a" | "b", body: number, blade: number, hull: number,
+                  foeBody: number, foeBlade: number, foeHull: number): Side {
   return {
     name, body, blade,
     // A fighter is hit by the other blade and bumps into the other fighter,
     // but is transparent to the sword in its own hand.
     bodyFilter: groups(body, GROUP.WORLD | GROUP.PROP | foeBody | foeBlade),
-    bladeFilter: groups(blade, GROUP.WORLD | GROUP.PROP | foeBody | foeBlade),
-    hullFilter: groups(body, GROUP.WORLD | GROUP.PROP | foeBody),
+    bladeFilter: groups(blade, GROUP.WORLD | foeBlade),
+    cuttableFilter: groups(blade, GROUP.PROP | foeBody),
+    hullFilter: groups(hull, GROUP.WORLD | GROUP.PROP | foeHull),
     hitOnlyFilter: groups(body, foeBlade),
   };
 }
 
-export const SIDE_A = makeSide("a", GROUP.BODY_A, GROUP.BLADE_A, GROUP.BODY_B, GROUP.BLADE_B);
-export const SIDE_B = makeSide("b", GROUP.BODY_B, GROUP.BLADE_B, GROUP.BODY_A, GROUP.BLADE_A);
+export const SIDE_A = makeSide("a", GROUP.BODY_A, GROUP.BLADE_A, GROUP.HULL_A,
+  GROUP.BODY_B, GROUP.BLADE_B, GROUP.HULL_B);
+export const SIDE_B = makeSide("b", GROUP.BODY_B, GROUP.BLADE_B, GROUP.HULL_B,
+  GROUP.BODY_A, GROUP.BLADE_A, GROUP.HULL_A);
 
 /** Everything a blade or body can touch, for static scenery and loose props. */
 export const ALL_COMBATANTS =
-  GROUP.BODY_A | GROUP.BLADE_A | GROUP.BODY_B | GROUP.BLADE_B;
+  GROUP.BODY_A | GROUP.BLADE_A | GROUP.HULL_A |
+  GROUP.BODY_B | GROUP.BLADE_B | GROUP.HULL_B;
 
 export interface PhysicsWorld {
   rapier: Rapier;
