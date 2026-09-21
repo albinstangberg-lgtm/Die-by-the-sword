@@ -17,8 +17,6 @@ export interface Keys {
   right: boolean;
   turnLeft: boolean;
   turnRight: boolean;
-  rollLeft: boolean;
-  rollRight: boolean;
 }
 
 const KEY_MAP: Record<string, keyof Keys> = {
@@ -26,22 +24,32 @@ const KEY_MAP: Record<string, keyof Keys> = {
   KeyS: "back",
   KeyA: "left",
   KeyD: "right",
+  KeyQ: "turnLeft",
+  KeyE: "turnRight",
+  // The arrow keys stay live as an alias; some people reach for them first.
   ArrowLeft: "turnLeft",
   ArrowRight: "turnRight",
-  KeyQ: "rollLeft",
-  KeyE: "rollRight",
 };
 
 export class Input {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, rollLeft: false, rollRight: false,
+    turnLeft: false, turnRight: false,
   };
 
   /** Mouse travel since the last `consumeMouse()`, in pixels. */
   private dx = 0;
   private dy = 0;
   private wheel = 0;
+  /** Horizontal travel accumulated while the right button is held. */
+  private rollDx = 0;
+
+  /**
+   * Right button held: horizontal mouse travel rolls the cutting edge instead
+   * of sweeping the arm sideways. Vertical travel still aims, so you never
+   * lose the ability to adjust height while setting your edge.
+   */
+  private rolling = false;
 
   locked = false;
   onLockChange?: (locked: boolean) => void;
@@ -51,15 +59,29 @@ export class Input {
   constructor(private target: HTMLElement) {
     document.addEventListener("pointerlockchange", () => {
       this.locked = document.pointerLockElement === this.target;
-      if (!this.locked) this.clearKeys();
+      if (!this.locked) {
+        this.clearKeys();
+        this.rolling = false;
+      }
       this.onLockChange?.(this.locked);
     });
 
     addEventListener("mousemove", (e) => {
       if (!this.locked) return;
-      this.dx += e.movementX;
+      if (this.rolling) this.rollDx += e.movementX;
+      else this.dx += e.movementX;
       this.dy += e.movementY;
     });
+
+    addEventListener("mousedown", (e) => {
+      if (this.locked && e.button === 2) this.rolling = true;
+    });
+    addEventListener("mouseup", (e) => {
+      if (e.button === 2) this.rolling = false;
+    });
+    // Pointer lock normally suppresses this, but not on every browser, and a
+    // context menu mid-swing steals the pointer.
+    addEventListener("contextmenu", (e) => e.preventDefault());
 
     addEventListener("wheel", (e) => {
       if (!this.locked) return;
@@ -80,7 +102,10 @@ export class Input {
     });
 
     // Losing focus mid-swing otherwise leaves keys stuck down.
-    addEventListener("blur", () => this.clearKeys());
+    addEventListener("blur", () => {
+      this.clearKeys();
+      this.rolling = false;
+    });
   }
 
   requestLock(): void {
@@ -88,12 +113,18 @@ export class Input {
   }
 
   /** Returns accumulated mouse travel and resets it. Call once per fixed step. */
-  consumeMouse(): { dx: number; dy: number; wheel: number } {
-    const out = { dx: this.dx, dy: this.dy, wheel: this.wheel };
+  consumeMouse(): { dx: number; dy: number; wheel: number; rollDx: number } {
+    const out = { dx: this.dx, dy: this.dy, wheel: this.wheel, rollDx: this.rollDx };
     this.dx = 0;
     this.dy = 0;
     this.wheel = 0;
+    this.rollDx = 0;
     return out;
+  }
+
+  /** True while the right button is held — the HUD dims the sweep hint. */
+  get rollMode(): boolean {
+    return this.rolling;
   }
 
   private clearKeys(): void {

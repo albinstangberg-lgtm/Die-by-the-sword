@@ -31,6 +31,7 @@ export class Hud {
   private elbow!: HTMLElement;
   private roll!: HTMLElement;
   private fps!: HTMLElement;
+  private rollHint!: HTMLElement;
 
   constructor(root: HTMLElement, impactEl: HTMLElement) {
     this.root = root;
@@ -52,10 +53,10 @@ export class Hud {
         <h2>Controls</h2>
         <dl>
           <dt>mouse</dt><dd>sword arm</dd>
+          <dt>right-drag</dt><dd data-f="rollhint">roll edge</dd>
           <dt>wheel</dt><dd>reach</dd>
-          <dt>Q / E</dt><dd>roll blade</dd>
           <dt>W A S D</dt><dd>move</dd>
-          <dt>← →</dt><dd>turn</dd>
+          <dt>Q / E</dt><dd>turn</dd>
           <dt>Tab</dt><dd>tuning panel</dd>
           <dt>R</dt><dd>reset</dd>
           <dt>Esc</dt><dd>release mouse</dd>
@@ -73,17 +74,23 @@ export class Hud {
     this.elbow = f("elbow");
     this.roll = f("roll");
     this.fps = f("fps");
+    this.rollHint = f("rollhint");
     this.errBar = b("err");
     this.satBar = b("sat");
   }
 
-  update(s: ArmState, frameMs: number): void {
+  update(s: ArmState, frameMs: number, rolling = false): void {
     this.err.textContent = `${s.trackingError.toFixed(3)} m`;
     this.sat.textContent = `${Math.round(s.saturation * 100)}%`;
     this.tip.textContent = `${s.tipSpeed.toFixed(1)} m/s`;
     this.elbow.textContent = `${Math.round((s.elbow * 180) / Math.PI)}°`;
     this.roll.textContent = `${Math.round((s.roll * 180) / Math.PI)}°`;
     this.fps.textContent = `${frameMs.toFixed(1)} ms`;
+
+    // Right-drag is modal, so say so while it is live — otherwise the mouse
+    // quietly stops sweeping the arm and it reads as a stuck control.
+    this.rollHint.textContent = rolling ? "ROLLING" : "roll edge";
+    this.rollHint.style.color = rolling ? "var(--ink)" : "";
 
     // 0.25m of lag is a lot: at that point the blade is visibly not where you
     // asked for it, which is exactly when the mechanic is doing its job.

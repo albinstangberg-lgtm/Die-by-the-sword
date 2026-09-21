@@ -21,16 +21,21 @@ npm run build    # production bundle
 | | |
 |---|---|
 | **mouse** | the sword arm |
+| **right-drag** | hold the right button, move left/right to roll the cutting edge |
 | **wheel** | reach — extend and retract |
-| **Q / E** | roll the cutting edge |
 | **W A S D** | move |
-| **← →** | turn |
+| **Q / E** | turn (arrow keys also work) |
 | **Tab** | tuning panel |
 | **R** | reset |
 | **Esc** | release the mouse |
 
-Turning is on the arrow keys because the mouse is the *arm*, not the camera.
-That was true of the original and it is the first thing to relearn.
+Turning is on the keyboard because the mouse is the *arm*, not the camera. That
+was true of the original and it is the first thing to relearn.
+
+Right-drag is modal: while the button is down, horizontal mouse travel rolls the
+edge instead of sweeping the arm sideways. Vertical travel still aims, so you
+never lose height control while setting your edge. The HUD says `ROLLING` while
+it's live.
 
 ## How the mechanic works
 
@@ -98,8 +103,8 @@ elbow→hand, so both drives describe the same pose.
 **Elbow swivel and edge roll are the same degree of freedom.** With a hinge
 elbow and no forearm twist, rotating the cutting edge *is* swinging the elbow
 around the shoulder→hand line. Treating them as two controls had them fighting
-over one joint, worth 45° of standing orientation error. Q/E rotates the arm's
-plane, and the edge comes with it.
+over one joint, worth 45° of standing orientation error. A right-drag rotates
+the arm's plane, and the edge comes with it.
 
 **A proportional controller cannot hold a weight without error.** Holding the
 sword up costs a standing ~45N, and a P term only makes force from error, so the

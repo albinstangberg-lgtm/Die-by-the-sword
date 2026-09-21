@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     fixed: (dt) => {
       // Mouse deltas are consumed here, not in render: reading them per frame
       // double-counts input whenever one frame spans two physics steps.
-      arm.readInput(input, tuning, dt);
+      arm.readInput(input, tuning);
       fighter.update(input.keys, tuning, dt);
       arm.drive(tuning);
 
@@ -137,7 +137,7 @@ async function main(): Promise<void> {
       fighter.syncMesh();
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
-      hud.update(arm.state, loop.frameMs);
+      hud.update(arm.state, loop.frameMs, input.rollMode);
       renderer.draw();
     },
   });

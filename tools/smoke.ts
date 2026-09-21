@@ -25,16 +25,15 @@ const STEP = 1 / 60;
 
 const NO_KEYS: Keys = {
   forward: false, back: false, left: false, right: false,
-  turnLeft: false, turnRight: false, rollLeft: false, rollRight: false,
+  turnLeft: false, turnRight: false,
 };
 
 /** A scriptable stand-in for pointer-lock input. */
 class FakeInput implements ArmInput {
-  dx = 0; dy = 0; wheel = 0;
-  keys = { rollLeft: false, rollRight: false };
+  dx = 0; dy = 0; wheel = 0; rollDx = 0;
   consumeMouse() {
-    const out = { dx: this.dx, dy: this.dy, wheel: this.wheel };
-    this.dx = 0; this.dy = 0; this.wheel = 0;
+    const out = { dx: this.dx, dy: this.dy, wheel: this.wheel, rollDx: this.rollDx };
+    this.dx = 0; this.dy = 0; this.wheel = 0; this.rollDx = 0;
     return out;
   }
 }
@@ -64,7 +63,7 @@ async function buildRig(overrides: Partial<Tuning> = {}): Promise<Rig> {
     arm, fighter, input, impacts, tuning,
     step(n = 1, keys: Keys = NO_KEYS) {
       for (let i = 0; i < n; i++) {
-        arm.readInput(input, tuning, STEP);
+        arm.readInput(input, tuning);
         fighter.update(keys, tuning, STEP);
         arm.drive(tuning);
         phys.step();
@@ -186,7 +185,7 @@ async function blockedBladeDefeatsTheArm(): Promise<void> {
 }
 
 async function edgeRollTracks(): Promise<void> {
-  console.log("\nedge roll follows Q/E");
+  console.log("\nedge roll follows a right-drag");
   const rig = await buildRig();
   rig.input.dy = -120;                 // lift clear of the floor
   rig.step(1);
@@ -199,12 +198,11 @@ async function edgeRollTracks(): Promise<void> {
   // Roll for less than a quarter turn. A blade is symmetric, so the controller
   // treats 180deg as a no-op and takes the nearer equivalent -- commanding more
   // than 90deg here would fold the measurement back on itself and prove nothing.
-  const steps = 20;
-  const commanded = rig.tuning.rollRate * steps * STEP * 180 / Math.PI;
-  rig.input.keys.rollRight = true;
-  rig.step(steps);
-  rig.input.keys.rollRight = false;
-  rig.step(90);
+  const pixels = 140;                  // as if right-dragging 140px across
+  const commanded = pixels * rig.tuning.rollSensitivity * 180 / Math.PI;
+  rig.input.rollDx = pixels;
+  rig.step(1);
+  rig.step(110);
 
   rig.arm.edgeDirection(edge);
   const turned = Math.acos(Math.min(1, Math.abs(before.dot(edge)))) * 180 / Math.PI;
@@ -240,8 +238,7 @@ async function survivesAbuse(): Promise<void> {
     rig.input.dx = (next() - 0.5) * 600;
     rig.input.dy = (next() - 0.5) * 600;
     rig.input.wheel = next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0;
-    rig.input.keys.rollLeft = next() > 0.7;
-    rig.input.keys.rollRight = next() > 0.7;
+    rig.input.rollDx = (next() - 0.5) * 220;
     rig.step(1);
 
     const shoulder = rig.fighter.shoulderWorld(new THREE.Vector3());

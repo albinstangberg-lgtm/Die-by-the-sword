@@ -80,6 +80,9 @@ const MIN_REACH = 0.30;
  */
 const MAX_REACH = 0.50;
 
+// --- how far the edge may be rolled, radians ---
+const ROLL_MIN = -1.8, ROLL_MAX = 1.8;
+
 // --- how far the arm may sweep, radians, relative to torso forward ---
 const YAW_MIN = -2.5, YAW_MAX = 1.9;
 const PITCH_MIN = -1.35, PITCH_MAX = 1.5;
@@ -89,8 +92,7 @@ const PITCH_MIN = -1.35, PITCH_MAX = 1.5;
  * headless harness can drive the real controller without a browser.
  */
 export interface ArmInput {
-  consumeMouse(): { dx: number; dy: number; wheel: number };
-  keys: { rollLeft: boolean; rollRight: boolean };
+  consumeMouse(): { dx: number; dy: number; wheel: number; rollDx: number };
 }
 
 export interface ArmState {
@@ -266,18 +268,19 @@ export class Arm {
   // -------------------------------------------------------------------------
 
   /** Fold this step's mouse travel into the arm's intent. */
-  readInput(input: ArmInput, t: Tuning, dt: number): void {
-    const { dx, dy, wheel } = input.consumeMouse();
+  readInput(input: ArmInput, t: Tuning): void {
+    const { dx, dy, wheel, rollDx } = input.consumeMouse();
 
     this.armYaw = clamp(this.armYaw - dx * t.sensitivity, YAW_MIN, YAW_MAX);
     const pitchDelta = dy * t.sensitivity * (t.invertY ? 1 : -1);
     this.armPitch = clamp(this.armPitch + pitchDelta, PITCH_MIN, PITCH_MAX);
     this.reach = clamp(this.reach + wheel * t.reachRate, MIN_REACH, MAX_REACH);
 
-    let r = 0;
-    if (input.keys.rollLeft) r -= 1;
-    if (input.keys.rollRight) r += 1;
-    this.roll += r * t.rollRate * dt;
+    // Roll is the elbow swivel, so it needs a human range: past about a
+    // hundred degrees either way the arm would be winding itself up in a way
+    // no shoulder does. The blade is symmetric anyway, so every distinct edge
+    // orientation is already reachable well inside this.
+    this.roll = clamp(this.roll + rollDx * t.rollSensitivity, ROLL_MIN, ROLL_MAX);
   }
 
   /**

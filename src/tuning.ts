@@ -30,7 +30,7 @@ export interface Tuning {
   // --- input mapping ---
   sensitivity: number; // radians of arm sweep per pixel of mouse travel
   invertY: boolean;
-  rollRate: number;    // rad/s, Q/E
+  rollSensitivity: number; // radians of edge roll per pixel, held right button
   reachRate: number;   // metres per wheel notch
 
   // --- masses (kg) ---
@@ -62,7 +62,7 @@ export const DEFAULTS: Tuning = {
 
   sensitivity: 0.0052,
   invertY: false,
-  rollRate: 3.2,
+  rollSensitivity: 0.0075,
   reachRate: 0.035,
 
   bladeMass: 1.4,
@@ -103,7 +103,8 @@ export const CONTROLS: Control[] = [
     hint: "Keep this modest — a torque budget the swing can exhaust is what makes the blade trail behind the hand instead of snapping to it." },
 
   { group: "Input", key: "sensitivity", label: "sensitivity", min: 0.0005, max: 0.02, step: 0.0001 },
-  { group: "Input", key: "rollRate", label: "roll rate  (rad/s)", min: 0, max: 10, step: 0.1 },
+  { group: "Input", key: "rollSensitivity", label: "roll sensitivity", min: 0.0005, max: 0.03, step: 0.0001,
+    hint: "Radians of edge roll per pixel while the right button is held." },
   { group: "Input", key: "reachRate", label: "reach / notch  (m)", min: 0.005, max: 0.12, step: 0.005 },
   { group: "Input", key: "invertY", label: "invert Y" },
 
