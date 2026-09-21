@@ -115,6 +115,17 @@ export interface SeverEvent {
   at: THREE.Vector3;
 }
 
+/** Free every geometry and material in a subtree. */
+function disposeTree(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    m.geometry?.dispose();
+    const mat = m.material;
+    if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+    else mat?.dispose();
+  });
+}
+
 export class Dummy {
   readonly limbs = new Map<string, Limb>();
   readonly group = new THREE.Group();
@@ -412,10 +423,14 @@ export class Dummy {
       this.targets.forget(limb.collider.handle);
       world.removeRigidBody(limb.body);   // removes its colliders and joints too
       limb.mesh.removeFromParent();
-      limb.mesh.geometry.dispose();
-      (limb.mesh.material as THREE.Material).dispose();
+      // Stump caps and sockets are children of the limb meshes, so disposing
+      // only the limb itself would leak one geometry per cut, every reset.
+      disposeTree(limb.mesh);
     }
-    this.ropeMesh?.removeFromParent();
+    if (this.ropeMesh) {
+      this.ropeMesh.removeFromParent();
+      disposeTree(this.ropeMesh);
+    }
     world.removeRigidBody(this.anchor);
 
     this.limbs.clear();
