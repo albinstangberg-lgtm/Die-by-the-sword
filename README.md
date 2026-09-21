@@ -5,10 +5,9 @@ Sword*: the sword arm is a simulated limb, not a set of attack animations. You
 drag the mouse, the arm follows, and the blade's damage — and its bounce, its
 lag, its refusal to go where you asked — comes out of the physics.
 
-**This is stage 3 of 5.** Stage 2 answered one question — *does swinging a sword
-at a wall feel good?* — and stage 3 gives that swing consequences: a practice
-dummy that comes apart when you cut it properly, and refuses to when you don't.
-There is still no opponent; nothing here hits back.
+**This is stage 4 of 5.** Stage 2 asked whether swinging a sword at a wall feels
+good. Stage 3 gave the swing consequences. Stage 4 puts someone in the room who
+swings back — and who is bound by exactly the same physics you are.
 
 ```
 npm install
@@ -29,6 +28,7 @@ npm run build    # production bundle
 | **Tab** | tuning panel |
 | **R** | reset |
 | **Esc** | release the mouse |
+| **R** | reset the fight |
 
 Turning is on the keyboard because the mouse is the *arm*, not the camera. That
 was true of the original and it is the first thing to relearn.
@@ -112,7 +112,7 @@ gives way, and the panel on the right tracks every joint still holding.
 Joints are tuned against the damage curve, so a wrist goes in one or two good
 strikes and cutting a body in half at the waist takes real commitment.
 
-## Four things the physics taught us
+## Five things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -129,6 +129,11 @@ elbow and no forearm twist, rotating the cutting edge *is* swinging the elbow
 around the shoulder→hand line. Treating them as two controls had them fighting
 over one joint, worth 45° of standing orientation error. A right-drag rotates
 the arm's plane, and the edge comes with it.
+
+**Nothing must drive a corpse.** `Fighter.update` pins the torso upright and
+overwrites its horizontal velocity every step. Kept running on a fighter at zero
+health, it held the body standing to attention, perfectly dead. Collapsing is
+not a force you apply; it is the driving you stop.
 
 **Contact events arrive too late to measure a hit.** Rapier reports contacts
 after `world.step()`, by which point the solver has already stopped the blade
@@ -175,6 +180,9 @@ Some things look like bugs and are not:
   no leverage and the limb locks. An 8cm margin keeps it always able to bend.
 - **The torso cannot be severed.** It is what the dummy hangs from, so there is
   no joint to cut it off at. Damage still registers; it just has nowhere to go.
+- **You can walk straight through the practice dummy.** A fighter is driven by
+  setting its velocity each step, so it shoves lighter things aside rather than
+  being stopped by them. Two fighters do collide with each other.
 
 ## Structure
 
@@ -192,6 +200,8 @@ src/
     arm.ts           THE MECHANIC — read this one first
     fighter.ts       torso and locomotion
     arena.ts         a room built to be hit
+    combatant.ts     a fighter, their arm, and what a cut does to them
+    ai.ts            the opponent's brain — mouse deltas, nothing more
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
     impacts.ts       contact events -> impact quality
@@ -201,12 +211,14 @@ src/
 tools/smoke.ts       headless harness driving the real modules
 ```
 
-`npm run smoke` runs the real `Arm`, `Fighter`, `Arena` and `Dummy` against
-Rapier in Node — no WebGL, no browser, 25 checks in about two seconds. It
+`npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
+and `Ai` against Rapier in Node — no WebGL, no browser, 44 checks in a few
+seconds. It
 asserts the claim the design rests on: that the arm tracks the mouse closely
 when free and *fails to* when blocked. If the second ever stops failing, the
 mechanic is gone. It also drives a real scripted swing all the way through to a
-severed limb, which is the only test that exercises the whole chain at once.
+severed limb, and runs forty seconds of live fight to check the opponent
+closes, swings, lands cuts, and never exceeds the reach of a human arm.
 
 ## Stack
 
@@ -218,5 +230,4 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-4. An opponent that swings back.
 5. Arena, rounds, UI.

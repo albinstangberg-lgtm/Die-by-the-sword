@@ -1,6 +1,8 @@
 import type { ArmState } from "../game/arm";
 import type { Impact, Quality } from "../game/impacts";
 import type { Dummy, SeverEvent } from "../game/dummy";
+import type { Combatant } from "../game/combatant";
+import type { Ai } from "../game/ai";
 import { cutDamage } from "../game/damage";
 
 /**
@@ -25,6 +27,7 @@ export class Hud {
   private impactEl: HTMLElement;
   private fadeTimer = 0;
   private lastDummySig = "";
+  private lastFightSig = "";
 
   private err!: HTMLElement;
   private errBar!: HTMLElement;
@@ -35,6 +38,11 @@ export class Hud {
   private roll!: HTMLElement;
   private fps!: HTMLElement;
   private dummyEl!: HTMLElement;
+  private fightEl!: HTMLElement;
+  private player: Combatant | null = null;
+  private foe: Combatant | null = null;
+  private ai: Ai | null = null;
+  private hurtTimer = 0;
   private dummy: Dummy | null = null;
   private rollHint!: HTMLElement;
 
@@ -70,6 +78,11 @@ export class Hud {
       <section>
         <dl><dt>frame</dt><dd data-f="fps">0.0 ms</dd></dl>
       </section>`;
+
+    this.fightEl = document.createElement("div");
+    this.fightEl.id = "fight";
+    this.fightEl.className = "overlay";
+    document.body.appendChild(this.fightEl);
 
     this.dummyEl = document.createElement("div");
     this.dummyEl.id = "dummy";
@@ -116,6 +129,16 @@ export class Hud {
       this.lastDummySig = sig;
       this.refreshDummy();
     }
+
+    const fsig = this.player && this.foe
+      ? `${Math.round(this.player.health)},${Math.round(this.foe.health)},` +
+        `${this.player.state.disarmed},${this.foe.state.disarmed},` +
+        `${this.player.dead},${this.foe.dead},${this.ai?.intent}`
+      : "";
+    if (fsig !== this.lastFightSig) {
+      this.lastFightSig = fsig;
+      this.refreshFight();
+    }
   }
 
   /** `onDummy` is true when the hit landed on something that can be cut. */
@@ -152,6 +175,46 @@ export class Hud {
 
   trackDummy(dummy: Dummy): void {
     this.dummy = dummy;
+  }
+
+  trackFight(player: Combatant, foe: Combatant, ai: Ai): void {
+    this.player = player;
+    this.foe = foe;
+    this.ai = ai;
+  }
+
+  /** Flash the screen edge when the player is cut. */
+  showHurt(i: Impact): void {
+    const amount = cutDamage(i);
+    if (amount <= 0) return;
+    document.body.classList.add("hurt");
+    clearTimeout(this.hurtTimer);
+    this.hurtTimer = window.setTimeout(() => document.body.classList.remove("hurt"), 260);
+
+    this.impactEl.innerHTML =
+      `<div class="quality sever">you are cut &mdash; ${amount.toFixed(1)}</div>`;
+    this.impactEl.classList.remove("fade");
+    clearTimeout(this.fadeTimer);
+    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1600);
+  }
+
+  private refreshFight(): void {
+    if (!this.player || !this.foe) return;
+    const row = (c: Combatant) => {
+      const s = c.state;
+      const pct = (s.health / s.maxHealth) * 100;
+      const cls = s.dead ? "gone" : pct < 30 ? "bad" : pct < 60 ? "warn" : "";
+      const tags = [
+        s.disarmed ? "disarmed" : "",
+        s.dead ? "down" : "",
+      ].filter(Boolean).join(" · ");
+      return `<div class="limb ${cls}">
+          <span>${c.name}${tags ? ` — ${tags}` : ""}</span>
+          <i style="width:${pct.toFixed(0)}%"></i>
+        </div>`;
+    };
+    this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}${row(this.foe)}`
+      + `<div class="intent">${this.foe.name}: ${this.ai?.intent ?? "-"}</div>`;
   }
 
   /** Integrity bars for every joint still holding. */

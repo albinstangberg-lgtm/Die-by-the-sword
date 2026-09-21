@@ -1,14 +1,17 @@
 import * as THREE from "three";
 import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
-import { createPhysics } from "./core/physics";
+import { createPhysics, SIDE_A, SIDE_B } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input } from "./input/input";
 import { buildArena, SPAWN } from "./game/arena";
 import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
-import { Fighter } from "./game/fighter";
-import { Arm } from "./game/arm";
+import { FOE_PALETTE, PLAYER_PALETTE } from "./game/fighter";
+import { Combatant } from "./game/combatant";
+import type { Arm } from "./game/arm";
+import type { Fighter } from "./game/fighter";
+import { Ai } from "./game/ai";
 import { Impacts } from "./game/impacts";
 import { Trail } from "./game/trail";
 import { Hud } from "./ui/hud";
@@ -25,6 +28,8 @@ import { Panel, loadTuning } from "./ui/panel";
 
 /** Where the practice dummy hangs — clear of the pillars and the low beam. */
 const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
+/** The opponent starts across the room, out of reach. */
+const FOE_SPAWN = new THREE.Vector3(-1.2, 0.95, -3.6);
 
 const mount = document.getElementById("app")!;
 const veil = document.getElementById("veil")!;
@@ -41,24 +46,50 @@ async function main(): Promise<void> {
 
   const targets = new Targets();
   buildArena(phys, renderer.scene, targets);
-  const fighter = new Fighter(phys, renderer.scene, SPAWN);
-  const arm = new Arm(phys, renderer.scene, fighter, tuning);
+
+  const player = new Combatant("you", "your", phys, renderer.scene, SPAWN,
+    SIDE_A, PLAYER_PALETTE, tuning, targets);
+  const foe = new Combatant("the swordsman", "his", phys, renderer.scene, FOE_SPAWN,
+    SIDE_B, FOE_PALETTE, tuning, targets);
+  const ai = new Ai();
+
+  const fighter = player.fighter;
+  const arm = player.arm;
+
   const trail = new Trail(renderer.scene);
-  const impacts = new Impacts(phys, renderer.scene, arm, targets);
+  const impacts = new Impacts(phys, renderer.scene, targets);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
 
-  interp.add(fighter.body, fighter.mesh);
-  interp.add(arm.upper, arm.upperMesh);
-  interp.add(arm.fore, arm.foreMesh);
-  interp.add(arm.blade, arm.bladeMesh);
-  for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
+  const registerBodies = () => {
+    interp.clear();
+    for (const c of [player, foe]) {
+      interp.add(c.fighter.body, c.fighter.mesh);
+      interp.add(c.arm.upper, c.arm.upperMesh);
+      interp.add(c.arm.fore, c.arm.foreMesh);
+      interp.add(c.arm.blade, c.arm.bladeMesh);
+    }
+    for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
+  };
+  registerBodies();
 
   const hud = new Hud(hudEl, impactEl);
   hud.trackDummy(dummy);
+  hud.trackFight(player, foe, ai);
   dummy.onSever = (e) => hud.showSever(e);
-  impacts.onImpact = (i) => {
-    hud.showImpact(i, dummy.receive(i));
-  };
+
+  // The player's blade can cut the dummy or the opponent; the opponent's can
+  // only cut the player. Each blade reports through the same reporter.
+  impacts.addBlade(arm, (i) => {
+    const landed = dummy.receive(i) || foe.receive(i);
+    hud.showImpact(i, landed);
+  });
+  impacts.addBlade(foe.arm, (i) => {
+    if (player.receive(i)) hud.showHurt(i);
+  });
+
+  foe.onDisarm = () => hud.showSever({ label: "the swordsman's sword arm", at: new THREE.Vector3() });
+  foe.onDeath = () => hud.showSever({ label: "the swordsman is down", at: new THREE.Vector3() });
+  player.onDisarm = () => hud.showSever({ label: "your sword arm", at: new THREE.Vector3() });
 
   const input = new Input(renderer.webgl.domElement);
 
@@ -77,17 +108,13 @@ async function main(): Promise<void> {
 
   input.onTogglePanel = () => panel.toggle();
   input.onReset = () => {
-    fighter.reset(SPAWN);
-    arm.reset(tuning);
+    player.reset(tuning, SPAWN);
+    foe.reset(tuning, FOE_SPAWN);
+    ai.reset();
     dummy.reset();
     // The dummy's bodies are all new, so the interpolator's entries point at
     // freed handles; rebuild the whole set rather than leaving stale ones.
-    interp.clear();
-    interp.add(fighter.body, fighter.mesh);
-    interp.add(arm.upper, arm.upperMesh);
-    interp.add(arm.fore, arm.foreMesh);
-    interp.add(arm.blade, arm.bladeMesh);
-    for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
+    registerBodies();
     interp.snap();
     trail.clear();
     hud.trackDummy(dummy);
@@ -141,22 +168,24 @@ async function main(): Promise<void> {
     fixed: (dt) => {
       // Mouse deltas are consumed here, not in render: reading them per frame
       // double-counts input whenever one frame spans two physics steps.
-      arm.readInput(input, tuning);
-      fighter.update(input.keys, tuning, dt);
-      arm.drive(tuning);
+      player.act(input, input.keys, tuning, dt);
+
+      ai.think(foe, player, tuning, dt);
+      foe.act(ai, ai.keys, tuning, dt);
 
       interp.capture();
       phys.step();
       interp.commit();
 
       arm.updateDerived();
+      foe.arm.updateDerived();
       impacts.update(performance.now());
       if (tuning.showTrail) trail.sample(arm);
     },
     render: (alpha, dt) => {
       interp.apply(alpha);
-      arm.syncMeshes(tuning);
-      fighter.syncMesh();
+      player.syncMeshes(tuning);
+      foe.syncMeshes(tuning);
       dummy.syncMeshes();
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);

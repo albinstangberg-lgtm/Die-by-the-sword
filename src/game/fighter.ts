@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { GROUP, groups, type PhysicsWorld } from "../core/physics";
+import type { PhysicsWorld, Side } from "../core/physics";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
 
@@ -18,6 +18,15 @@ const TORSO_HALF_HEIGHT = 0.36;
 const TORSO_RADIUS = 0.24;
 const TORSO_MASS = 68;
 
+export interface Palette {
+  cloth: number;
+  skin: number;
+  mark: number;
+}
+
+export const PLAYER_PALETTE: Palette = { cloth: 0x6b4a3a, skin: 0xa8826a, mark: 0xd8cbb4 };
+export const FOE_PALETTE: Palette = { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f };
+
 /** Right shoulder, in torso-local space. The arm hangs from here. */
 export const SHOULDER_LOCAL = new THREE.Vector3(0.28, 0.3, 0);
 
@@ -31,7 +40,13 @@ export class Fighter {
 
   private readonly tmpVec = new THREE.Vector3();
 
-  constructor(phys: PhysicsWorld, scene: THREE.Scene, spawn: THREE.Vector3) {
+  constructor(
+    phys: PhysicsWorld,
+    scene: THREE.Scene,
+    spawn: THREE.Vector3,
+    readonly side: Side,
+    palette: Palette = PLAYER_PALETTE,
+  ) {
     const { rapier, world } = phys;
 
     this.body = world.createRigidBody(
@@ -49,11 +64,11 @@ export class Fighter {
       rapier.ColliderDesc.capsule(TORSO_HALF_HEIGHT, TORSO_RADIUS)
         .setMass(TORSO_MASS)
         .setFriction(0.4)
-        .setCollisionGroups(groups(GROUP.FIGHTER, GROUP.WORLD | GROUP.PROP)),
+        .setCollisionGroups(side.bodyFilter),
       this.body,
     );
 
-    this.mesh = buildTorsoMesh();
+    this.mesh = buildTorsoMesh(palette);
     scene.add(this.mesh);
   }
 
@@ -125,10 +140,10 @@ export class Fighter {
   }
 }
 
-function buildTorsoMesh(): THREE.Group {
+function buildTorsoMesh(p: Palette): THREE.Group {
   const g = new THREE.Group();
-  const cloth = new THREE.MeshStandardMaterial({ color: 0x6b4a3a, roughness: 0.8 });
-  const skin = new THREE.MeshStandardMaterial({ color: 0xa8826a, roughness: 0.7 });
+  const cloth = new THREE.MeshStandardMaterial({ color: p.cloth, roughness: 0.8 });
+  const skin = new THREE.MeshStandardMaterial({ color: p.skin, roughness: 0.7 });
 
   const torso = new THREE.Mesh(
     new THREE.CapsuleGeometry(TORSO_RADIUS, TORSO_HALF_HEIGHT * 2, 8, 16),
@@ -161,7 +176,7 @@ function buildTorsoMesh(): THREE.Group {
   // Marks the facing direction — without it you can't tell which way you point.
   const nose = new THREE.Mesh(
     new THREE.ConeGeometry(0.05, 0.14, 8),
-    new THREE.MeshStandardMaterial({ color: 0xd8cbb4, roughness: 0.6 }),
+    new THREE.MeshStandardMaterial({ color: p.mark, roughness: 0.6 }),
   );
   nose.position.set(0, TORSO_HALF_HEIGHT + TORSO_RADIUS + 0.08, -0.15);
   nose.rotation.x = -Math.PI / 2;

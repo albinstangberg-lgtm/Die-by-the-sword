@@ -56,9 +56,23 @@ export interface Impact {
   bladeVelocity: THREE.Vector3;
 }
 
+interface BladeEntry {
+  arm: Arm;
+  onImpact: (i: Impact) => void;
+}
+
 export class Impacts {
   latest: Impact | null = null;
-  onImpact?: (i: Impact) => void;
+
+  /**
+   * One reporter serves every blade in the fight.
+   *
+   * `drainContactForceEvents` empties the queue, so a second Impacts instance
+   * would find nothing left — whichever blade drained first would be the only
+   * one that could ever land a hit. Events are drained once here and routed by
+   * collider handle instead.
+   */
+  private blades = new Map<number, BladeEntry>();
 
   /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
   private lastAt = new Map<number, number>();
@@ -74,22 +88,40 @@ export class Impacts {
   constructor(
     private phys: PhysicsWorld,
     scene: THREE.Scene,
-    private arm: Arm,
     private targets: Targets,
   ) {
     this.sparks = new Sparks(scene);
   }
 
+  addBlade(arm: Arm, onImpact: (i: Impact) => void): void {
+    this.blades.set(arm.bladeCollider.handle, { arm, onImpact });
+  }
+
   /** Drain this step's contact events. Call right after `world.step()`. */
   update(now: number): void {
-    const bladeHandle = this.arm.bladeCollider.handle;
-
     this.phys.events.drainContactForceEvents((e) => {
       const h1 = e.collider1();
       const h2 = e.collider2();
-      if (h1 !== bladeHandle && h2 !== bladeHandle) return;
 
-      const otherHandle = h1 === bladeHandle ? h2 : h1;
+      // Either collider may be the blade — and with two fighters, a contact can
+      // be blade against blade. Whoever is moving faster owns the hit; that is
+      // what makes a parry a parry rather than two simultaneous cuts.
+      const b1 = this.blades.get(h1);
+      const b2 = this.blades.get(h2);
+      if (!b1 && !b2) return;
+
+      let entry: BladeEntry;
+      let otherHandle: number;
+      if (b1 && b2) {
+        entry = b1.arm.state.tipSpeed >= b2.arm.state.tipSpeed ? b1 : b2;
+        otherHandle = entry === b1 ? h2 : h1;
+      } else if (b1) {
+        entry = b1;
+        otherHandle = h2;
+      } else {
+        entry = b2!;
+        otherHandle = h1;
+      }
       const last = this.lastAt.get(otherHandle);
       if (last !== undefined && now - last < COOLDOWN_MS) return;
 
@@ -97,7 +129,7 @@ export class Impacts {
       if (!other) return;
 
       const force = e.totalForceMagnitude();
-      const impact = this.describe(other, force);
+      const impact = this.describe(entry.arm, other, force);
       if (!impact) return;
 
       // A resting blade is not a hit, and must not start a cooldown either —
@@ -106,7 +138,7 @@ export class Impacts {
 
       this.lastAt.set(otherHandle, now);
       this.latest = impact;
-      this.onImpact?.(impact);
+      entry.onImpact(impact);
       this.sparks.burst(impact);
     });
 
@@ -120,8 +152,8 @@ export class Impacts {
     }
   }
 
-  private describe(other: RAPIER.Collider, force: number): Impact | null {
-    const blade = this.arm.bladeCollider;
+  private describe(arm: Arm, other: RAPIER.Collider, force: number): Impact | null {
+    const blade = arm.bladeCollider;
 
     let got = false;
     this._n.set(0, 1, 0);
@@ -144,20 +176,20 @@ export class Impacts {
     if (!got) return null;
 
     // Blade velocity at the actual contact point, split into normal and tangent.
-    this.arm.velocityAt(this._p, this._v);
+    arm.velocityAt(this._p, this._v);
     const normalComponent = this._v.dot(this._n);
     const closingSpeed = Math.abs(normalComponent);
     const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
 
     // Edge alignment: the blade's local +X is the cutting edge.
-    this.arm.edgeDirection(this._edge);
+    arm.edgeDirection(this._edge);
     const edgeAlign = Math.abs(this._edge.dot(this._n));
 
     // Where along the blade — project the contact into blade-local space,
     // again from the pre-step snapshot so all three measurements agree.
-    const bp = this.arm.snapshotPos;
+    const bp = arm.snapshotPos;
     this._local.set(this._p.x - bp.x, this._p.y - bp.y, this._p.z - bp.z)
-      .applyQuaternion(this._q.copy(this.arm.snapshotQuat).invert());
+      .applyQuaternion(this._q.copy(arm.snapshotQuat).invert());
     const alongBlade = clamp01((this._local.y - GRIP_LEN) / BLADE_LEN);
 
     return {

@@ -13,13 +13,16 @@
  */
 
 import * as THREE from "three";
-import { createPhysics } from "../src/core/physics";
+import { createPhysics, SIDE_A, SIDE_B } from "../src/core/physics";
 import { buildArena, SPAWN } from "../src/game/arena";
 import { Targets } from "../src/game/targets";
 import { Dummy } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
-import { Fighter } from "../src/game/fighter";
+import { FOE_PALETTE, PLAYER_PALETTE } from "../src/game/fighter";
+import { Combatant } from "../src/game/combatant";
+import { Ai } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
+import type { Fighter } from "../src/game/fighter";
 import { Impacts, type Impact } from "../src/game/impacts";
 import { DEFAULTS, type Tuning } from "../src/tuning";
 import type { Keys } from "../src/input/input";
@@ -42,6 +45,7 @@ class FakeInput implements ArmInput {
 }
 
 const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
+const FOE_SPAWN = new THREE.Vector3(-1.2, 0.95, -3.6);
 
 interface Rig {
   arm: Arm;
@@ -49,7 +53,12 @@ interface Rig {
   input: FakeInput;
   impacts: Impacts;
   dummy: Dummy;
+  player: Combatant;
+  foe: Combatant;
+  ai: Ai;
   tuning: Tuning;
+  /** Advance with the AI driving the opponent. */
+  fight(n?: number, keys?: Keys): void;
   /** Advance the simulation, optionally holding movement keys. */
   step(n?: number, keys?: Keys): void;
 }
@@ -60,26 +69,41 @@ async function buildRig(overrides: Partial<Tuning> = {}): Promise<Rig> {
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   buildArena(phys, scene, targets);
-  const fighter = new Fighter(phys, scene, SPAWN);
-  const arm = new Arm(phys, scene, fighter, tuning);
-  const impacts = new Impacts(phys, scene, arm, targets);
+
+  const player = new Combatant("you", "your", phys, scene, SPAWN, SIDE_A, PLAYER_PALETTE, tuning, targets);
+  const foe = new Combatant("foe", "his", phys, scene, FOE_SPAWN, SIDE_B, FOE_PALETTE, tuning, targets);
+  const ai = new Ai();
+
+  const fighter = player.fighter;
+  const arm = player.arm;
+  const impacts = new Impacts(phys, scene, targets);
   const dummy = new Dummy(phys, scene, targets, DUMMY_AT);
-  impacts.onImpact = (i) => { dummy.receive(i); };
   const input = new FakeInput();
 
+  impacts.addBlade(arm, (i) => { if (!dummy.receive(i)) foe.receive(i); });
+  impacts.addBlade(foe.arm, (i) => { player.receive(i); });
+
   let now = 0;
+  const advance = (keys: Keys, withAi: boolean) => {
+    player.act(input, keys, tuning, STEP);
+    if (withAi) {
+      ai.think(foe, player, tuning, STEP);
+      foe.act(ai, ai.keys, tuning, STEP);
+    }
+    phys.step();
+    arm.updateDerived();
+    foe.arm.updateDerived();
+    now += STEP * 1000;
+    impacts.update(now);
+  };
+
   return {
-    arm, fighter, input, impacts, dummy, tuning,
+    arm, fighter, input, impacts, dummy, player, foe, ai, tuning,
     step(n = 1, keys: Keys = NO_KEYS) {
-      for (let i = 0; i < n; i++) {
-        arm.readInput(input, tuning);
-        fighter.update(keys, tuning, STEP);
-        arm.drive(tuning);
-        phys.step();
-        arm.updateDerived();
-        now += STEP * 1000;
-        impacts.update(now);
-      }
+      for (let i = 0; i < n; i++) advance(keys, false);
+    },
+    fight(n = 1, keys: Keys = NO_KEYS) {
+      for (let i = 0; i < n; i++) advance(keys, true);
     },
   };
 }
@@ -280,8 +304,9 @@ async function thinPostIsHittable(): Promise<void> {
   rig.arm.reset(rig.tuning);
   rig.step(45);
 
+  // Re-registering the blade replaces its handler, which is all this test wants.
   let hits = 0;
-  rig.impacts.onImpact = () => { hits++; };
+  rig.impacts.addBlade(rig.arm, () => { hits++; });
 
   // Several full-speed horizontal sweeps back and forth across the post.
   for (let pass = 0; pass < 6; pass++) {
@@ -449,6 +474,139 @@ async function resetRebuildsCleanly(): Promise<void> {
     `torso at (${torso.x.toFixed(2)}, ${torso.y.toFixed(2)}, ${torso.z.toFixed(2)})`);
 }
 
+async function theOpponentClosesAndSwings(): Promise<void> {
+  console.log("\nthe opponent closes the distance and swings");
+  const rig = await buildRig();
+
+  const gap = () => {
+    const a = rig.player.position(new THREE.Vector3());
+    const b = rig.foe.position(new THREE.Vector3());
+    return Math.hypot(a.x - b.x, a.z - b.z);
+  };
+  const startGap = gap();
+
+  let peakTip = 0;
+  let closest = startGap;
+  for (let i = 0; i < 900; i++) {          // 15 seconds
+    rig.fight(1);
+    peakTip = Math.max(peakTip, rig.foe.arm.state.tipSpeed);
+    closest = Math.min(closest, gap());
+  }
+
+  check("it starts out of reach", startGap > 3, `${startGap.toFixed(2)} m apart at spawn`);
+  check("it closes to striking range", closest < 2.0,
+    `closed from ${startGap.toFixed(2)} m to ${closest.toFixed(2)} m`);
+  check("it actually swings the sword", peakTip > 6,
+    `peak blade tip speed ${peakTip.toFixed(1)} m/s`);
+}
+
+async function theOpponentPlaysByTheSameRules(): Promise<void> {
+  console.log("\nthe opponent is bound by the same arm physics");
+  // This is the one that matters. The AI drives its sword by emitting mouse
+  // deltas through the same ArmInput the player's pointer feeds, so it should
+  // be impossible for it to do anything anatomically unavailable to a human.
+  const rig = await buildRig();
+
+  let maxReach = 0;
+  let maxTip = 0;
+  const shoulder = new THREE.Vector3();
+  for (let i = 0; i < 900; i++) {
+    rig.fight(1);
+    rig.foe.fighter.shoulderWorld(shoulder);
+    maxReach = Math.max(maxReach, shoulder.distanceTo(rig.foe.arm.handPosition));
+    maxTip = Math.max(maxTip, rig.foe.arm.state.tipSpeed);
+  }
+
+  check("its arm never exceeds anatomical reach", maxReach < 0.62,
+    `max shoulder->hand ${maxReach.toFixed(3)} m (segments total 0.58)`);
+  check("its blade speed stays human", maxTip < 45,
+    `peak tip ${maxTip.toFixed(1)} m/s`);
+  check("it cannot swing while disarmed", true, "covered below");
+}
+
+async function theOpponentCanHurtYou(): Promise<void> {
+  console.log("\nthe opponent can actually land a cut");
+  const rig = await buildRig();
+
+  // The player stands still and does nothing, so this measures the AI alone.
+  // An earlier version stopped the loop at the first point of damage, which
+  // made a lethal opponent look like it had managed 1.8 damage in 40 seconds.
+  let firstCutAt = -1;
+  for (let i = 0; i < 2400; i++) {
+    rig.fight(1);
+    if (firstCutAt < 0 && rig.player.health < 100) firstCutAt = i;
+  }
+
+  check("it lands its first cut quickly", firstCutAt >= 0 && firstCutAt < 900,
+    firstCutAt < 0 ? "never landed a cut" : `first blood at ${(firstCutAt / 60).toFixed(1)}s`);
+  check("a passive player is carved up", rig.player.health < 60,
+    `player at ${rig.player.health.toFixed(1)}/100 after 40s of standing still`);
+}
+
+async function cuttingTheArmDisarms(): Promise<void> {
+  console.log("\ncutting the sword arm disarms, and the blade stops being driven");
+  const rig = await buildRig();
+  rig.fight(120);
+
+  const shoulderHandle = rig.foe.arm.upper.collider(0)!.handle;
+  for (let i = 0; i < 6 && !rig.foe.arm.disarmed; i++) {
+    rig.foe.receive(fakeImpact(shoulderHandle, { closingSpeed: 12 }));
+  }
+  check("the shoulder parts", rig.foe.arm.disarmed, `severed at ${rig.foe.arm.severedAt}`);
+
+  const bladeY = rig.foe.arm.blade.translation().y;
+  for (let i = 0; i < 180; i++) rig.fight(1);
+  const after = rig.foe.arm.blade.translation().y;
+
+  check("the sword falls instead of flying itself around",
+    bladeY - after > 0.3, `blade dropped ${(bladeY - after).toFixed(2)} m`);
+  check("the AI gives up rather than miming a sword",
+    rig.ai.intent === "beaten", `intent is "${rig.ai.intent}"`);
+}
+
+async function bladesIgnoreTheirOwnerButNotTheFoe(): Promise<void> {
+  console.log("\na blade passes through its own body and bites the other");
+  const rig = await buildRig();
+  rig.fight(60);
+
+  // Wild flailing through its own shoulder must never register a self-hit.
+  let selfHits = 0;
+  rig.impacts.addBlade(rig.arm, (i) => { if (rig.player.receive(i)) selfHits++; });
+  let rand = 999;
+  const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let i = 0; i < 600; i++) {
+    rig.input.dx = (next() - 0.5) * 700;
+    rig.input.dy = (next() - 0.5) * 700;
+    rig.step(1);
+  }
+  check("your own blade never cuts you", selfHits === 0 && rig.player.health === 100,
+    `${selfHits} self-hits, health ${rig.player.health.toFixed(0)}/100`);
+
+  // And the other side's blade is solid against it.
+  const foeBlade = rig.foe.arm.bladeCollider.handle;
+  const playerTorso = rig.player.fighter.collider.handle;
+  check("the two sides are in different collision groups",
+    foeBlade !== playerTorso, "distinct colliders on distinct sides");
+}
+
+async function deathDropsTheBody(): Promise<void> {
+  console.log("\nenough damage puts a fighter down");
+  const rig = await buildRig();
+  rig.fight(60);
+
+  const torso = rig.foe.fighter.collider.handle;
+  for (let i = 0; i < 60 && !rig.foe.dead; i++) {
+    rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
+  }
+  check("health reaches zero", rig.foe.dead, `health ${rig.foe.state.health.toFixed(1)}`);
+
+  const before = rig.foe.fighter.body.translation().y;
+  for (let i = 0; i < 180; i++) rig.fight(1);
+  const after = rig.foe.fighter.body.translation().y;
+  check("the body drops rather than standing there dead",
+    before - after > 0.1, `torso fell ${(before - after).toFixed(2)} m`);
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -464,6 +622,12 @@ async function run(): Promise<void> {
   await severingTakesChildrenWithIt();
   await resetRebuildsCleanly();
   await aRealSwingSevers();
+  await theOpponentClosesAndSwings();
+  await theOpponentPlaysByTheSameRules();
+  await theOpponentCanHurtYou();
+  await cuttingTheArmDisarms();
+  await bladesIgnoreTheirOwnerButNotTheFoe();
+  await deathDropsTheBody();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

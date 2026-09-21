@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { GROUP, groups, type PhysicsWorld } from "../core/physics";
+import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physics";
 import type { Targets } from "./targets";
 
 /**
@@ -18,7 +18,7 @@ const WALL_T = 0.4;
 export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targets): void {
   const { rapier, world } = phys;
 
-  const filter = groups(GROUP.WORLD, GROUP.FIGHTER | GROUP.BLADE | GROUP.PROP | GROUP.WORLD);
+  const filter = groups(GROUP.WORLD, GROUP.WORLD | GROUP.PROP | ALL_COMBATANTS);
 
   const stone = new THREE.MeshStandardMaterial({ color: 0x565249, roughness: 0.92, metalness: 0.0 });
   const darker = new THREE.MeshStandardMaterial({ color: 0x3c3934, roughness: 0.95, metalness: 0.0 });

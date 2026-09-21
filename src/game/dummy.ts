@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { GROUP, groups, type PhysicsWorld } from "../core/physics";
+import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physics";
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
 import type { Impact } from "./impacts";
 import type { Targets } from "./targets";
@@ -171,7 +171,7 @@ export class Dummy {
       );
       world.createCollider(
         rapier.ColliderDesc.cuboid(hx, hy, hz)
-          .setCollisionGroups(groups(GROUP.WORLD, GROUP.FIGHTER | GROUP.BLADE | GROUP.PROP)),
+          .setCollisionGroups(groups(GROUP.WORLD, GROUP.PROP | ALL_COMBATANTS)),
         body,
       );
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mat);
@@ -221,7 +221,7 @@ export class Dummy {
           .setMass(spec.mass)
           .setFriction(0.7)
           .setRestitution(0.02)
-          .setCollisionGroups(groups(GROUP.PROP, GROUP.WORLD | GROUP.BLADE | GROUP.FIGHTER))
+          .setCollisionGroups(groups(GROUP.PROP, GROUP.WORLD | ALL_COMBATANTS))
           .setActiveEvents(rapier.ActiveEvents.CONTACT_FORCE_EVENTS)
           .setContactForceEventThreshold(1.0),
         body,

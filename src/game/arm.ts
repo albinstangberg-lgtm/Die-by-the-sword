@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
-import { GROUP, groups, type PhysicsWorld } from "../core/physics";
+import type { PhysicsWorld, Side } from "../core/physics";
 
 import type { Tuning } from "../tuning";
 import type { Fighter } from "./fighter";
@@ -116,6 +116,15 @@ export class Arm {
   readonly blade: RAPIER.RigidBody;
   readonly bladeCollider: RAPIER.Collider;
 
+  private shoulderJoint: RAPIER.ImpulseJoint | null = null;
+  private elbowJoint: RAPIER.ImpulseJoint | null = null;
+
+  /** Once the arm is cut, nothing drives it and the sword is gone for good. */
+  severedAt: "shoulder" | "elbow" | null = null;
+
+  /** Set when the owner is down: the limb hangs, but still reports its motion. */
+  limp = false;
+
   readonly group = new THREE.Group();
   /** Public so the Interpolator can drive them; physics never touches meshes. */
   upperMesh!: THREE.Mesh;
@@ -164,6 +173,7 @@ export class Arm {
     scene: THREE.Scene,
     private fighter: Fighter,
     tuning: Tuning,
+    private side: Side = fighter.side,
   ) {
     const { rapier, world } = phys;
 
@@ -197,8 +207,8 @@ export class Arm {
     this.blade.enableCcd(true);
     this.fore.enableCcd(true);
 
-    // The limb doesn't self-collide or hit its owner — only world and props.
-    const limbGroups = groups(GROUP.FIGHTER, GROUP.WORLD | GROUP.PROP);
+    // The limb is transparent to its own blade but solid to the other one.
+    const limbGroups = this.side.bodyFilter;
     const armMassEach = tuning.armMass / 2;
 
     world.createCollider(
@@ -221,7 +231,7 @@ export class Arm {
         .setMass(tuning.bladeMass)
         .setFriction(0.25)      // low: steel skids off stone rather than gripping
         .setRestitution(0.12)   // a little — a hard parry should kick back
-        .setCollisionGroups(groups(GROUP.BLADE, GROUP.WORLD | GROUP.PROP))
+        .setCollisionGroups(this.side.bladeFilter)
         .setActiveEvents(rapier.ActiveEvents.CONTACT_FORCE_EVENTS)
         .setContactForceEventThreshold(2.0),
       this.blade,
@@ -229,7 +239,7 @@ export class Arm {
 
     // --- joints ---
     // Shoulder: spherical, 3 DOF, anchored at the torso's shoulder point.
-    world.createImpulseJoint(
+    this.shoulderJoint = world.createImpulseJoint(
       rapier.JointData.spherical(
         { x: 0.28, y: 0.30, z: 0 },          // torso-local shoulder (see SHOULDER_LOCAL)
         { x: 0, y: -UPPER_HALF, z: 0 },      // top of the upper arm
@@ -239,7 +249,7 @@ export class Arm {
 
     // Elbow: revolute, 1 DOF, hinging about the arm's local X. Limited so it
     // bends one way only — an elbow that inverts instantly looks like a bug.
-    const elbow = world.createImpulseJoint(
+    const elbow = this.elbowJoint = world.createImpulseJoint(
       rapier.JointData.revolute(
         { x: 0, y: UPPER_HALF, z: 0 },
         { x: 0, y: -FORE_HALF, z: 0 },
@@ -369,6 +379,15 @@ export class Arm {
 
   /** Call once per fixed step, immediately before `world.step()`. */
   drive(t: Tuning): void {
+    // A detached arm is meat. Continuing to run the PD on it would have the
+    // controller flying a severed limb around the room by itself.
+    if (this.severedAt !== null || this.limp) {
+      this.updateDerived();
+      this.snapshotBlade();
+      this.sampleTip();
+      return;
+    }
+
     this.computeGhost(t);
 
     // Rapier keeps user forces until they're cleared, so a missed reset would
@@ -606,8 +625,28 @@ export class Arm {
   get ghostPosition(): THREE.Vector3 { return this._ghostPos; }
   get handPosition(): THREE.Vector3 { return this._handPos; }
 
+  /**
+   * The current aim, so a driver can work out how far it still has to move.
+   *
+   * Read-only on purpose. An AI steers this exactly the way a hand does, by
+   * emitting mouse deltas through `readInput`, which keeps it bound by the same
+   * arm physics and the same reach limits as the player.
+   */
+  get aim(): { yaw: number; pitch: number; reach: number; roll: number } {
+    return { yaw: this.armYaw, pitch: this.armPitch, reach: this.reach, roll: this.roll };
+  }
+
+  static readonly LIMITS = {
+    yaw: [YAW_MIN, YAW_MAX] as const,
+    pitch: [PITCH_MIN, PITCH_MAX] as const,
+    reach: [MIN_REACH, MAX_REACH] as const,
+    roll: [ROLL_MIN, ROLL_MAX] as const,
+  };
+
   /** Re-seat the arm after a reset, so it doesn't whip back across the room. */
   reset(t: Tuning): void {
+    this.severedAt = null;
+    this.limp = false;
     this.armYaw = 0.30;
     this.armPitch = -0.15;
     this.reach = 0.46;
@@ -629,6 +668,32 @@ export class Arm {
     place(this.upper, UPPER_HALF);
     place(this.fore, UPPER_LEN + FORE_HALF);
     place(this.blade, UPPER_LEN + FORE_LEN);
+  }
+
+  /**
+   * Cut the arm off. `shoulder` takes the whole limb, `elbow` takes the
+   * forearm and the sword with it; either way the fighter is disarmed, because
+   * the blade is welded to the hand and the hand is no longer attached to
+   * anything that can be driven.
+   */
+  sever(where: "shoulder" | "elbow"): void {
+    if (this.severedAt !== null) return;
+    const joint = where === "shoulder" ? this.shoulderJoint : this.elbowJoint;
+    if (!joint) return;
+
+    this.phys.world.removeImpulseJoint(joint, true);
+    if (where === "shoulder") this.shoulderJoint = null; else this.elbowJoint = null;
+    this.severedAt = where;
+
+    // Clear the accumulated drive forces, or they keep pushing after the cut.
+    for (const b of [this.upper, this.fore, this.blade]) {
+      b.resetForces(true);
+      b.resetTorques(true);
+    }
+  }
+
+  get disarmed(): boolean {
+    return this.severedAt !== null;
   }
 
   /** Masses are tunable at runtime, so they need re-applying on change. */
