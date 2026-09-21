@@ -1,4 +1,8 @@
 node_modules/
-dist/
+
+# Build output. `dist` is what `npm run build` writes; the glob also covers
+# throwaway bundles (dist-probe and friends) used to check something in a
+# browser without touching the committed source.
+dist*/
 *.local
 .DS_Store
