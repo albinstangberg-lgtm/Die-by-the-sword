@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld } from "../core/physics";
 import type { Arm } from "./arm";
-import type { Arena } from "./arena";
+import type { Targets } from "./targets";
 
 /**
  * Impact quality.
@@ -26,8 +26,18 @@ import type { Arena } from "./arena";
 const GRIP_LEN = 0.11;
 const BLADE_LEN = 0.86;
 
-/** Ignore repeat events from a sustained contact for this long. */
+/** Ignore repeat events from a sustained contact with the SAME collider. */
 const COOLDOWN_MS = 180;
+
+/**
+ * Below this the blade is resting on something, not striking it.
+ *
+ * A blade lying against a target keeps generating contact-force events every
+ * step at a fraction of a metre per second. Those are not hits, and worse, a
+ * single global cooldown let that noise swallow the real strike that arrived
+ * a few frames later.
+ */
+const RESTING_SPEED = 0.35;
 
 export type Quality = "touch" | "flat" | "glance" | "bite" | "clean";
 
@@ -40,13 +50,18 @@ export interface Impact {
   alongBlade: number;     // 0 at the guard, 1 at the tip
   force: number;          // N, from the solver
   at: THREE.Vector3;
+  /** Which collider was struck — how the dummy knows the hit was its own. */
+  colliderHandle: number;
+  /** Blade velocity at the contact, so a severed limb flies the way you swung. */
+  bladeVelocity: THREE.Vector3;
 }
 
 export class Impacts {
   latest: Impact | null = null;
   onImpact?: (i: Impact) => void;
 
-  private lastAt = 0;
+  /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
+  private lastAt = new Map<number, number>();
   private sparks: Sparks;
 
   private readonly _n = new THREE.Vector3();
@@ -60,7 +75,7 @@ export class Impacts {
     private phys: PhysicsWorld,
     scene: THREE.Scene,
     private arm: Arm,
-    private arena: Arena,
+    private targets: Targets,
   ) {
     this.sparks = new Sparks(scene);
   }
@@ -73,9 +88,11 @@ export class Impacts {
       const h1 = e.collider1();
       const h2 = e.collider2();
       if (h1 !== bladeHandle && h2 !== bladeHandle) return;
-      if (now - this.lastAt < COOLDOWN_MS) return;
 
       const otherHandle = h1 === bladeHandle ? h2 : h1;
+      const last = this.lastAt.get(otherHandle);
+      if (last !== undefined && now - last < COOLDOWN_MS) return;
+
       const other = this.phys.world.getCollider(otherHandle);
       if (!other) return;
 
@@ -83,13 +100,24 @@ export class Impacts {
       const impact = this.describe(other, force);
       if (!impact) return;
 
-      this.lastAt = now;
+      // A resting blade is not a hit, and must not start a cooldown either —
+      // otherwise leaning on a target makes you briefly unable to cut it.
+      if (impact.closingSpeed < RESTING_SPEED) return;
+
+      this.lastAt.set(otherHandle, now);
       this.latest = impact;
       this.onImpact?.(impact);
       this.sparks.burst(impact);
     });
 
     this.sparks.update();
+
+    // Colliders come and go as limbs are severed; don't grow the map forever.
+    if (this.lastAt.size > 64) {
+      for (const [h, t] of this.lastAt) {
+        if (now - t > COOLDOWN_MS * 4) this.lastAt.delete(h);
+      }
+    }
   }
 
   private describe(other: RAPIER.Collider, force: number): Impact | null {
@@ -125,22 +153,24 @@ export class Impacts {
     this.arm.edgeDirection(this._edge);
     const edgeAlign = Math.abs(this._edge.dot(this._n));
 
-    // Where along the blade — project the contact into blade-local space.
-    const bq = this.arm.blade.rotation();
-    const bp = this.arm.blade.translation();
+    // Where along the blade — project the contact into blade-local space,
+    // again from the pre-step snapshot so all three measurements agree.
+    const bp = this.arm.snapshotPos;
     this._local.set(this._p.x - bp.x, this._p.y - bp.y, this._p.z - bp.z)
-      .applyQuaternion(this._q.set(bq.x, bq.y, bq.z, bq.w).invert());
+      .applyQuaternion(this._q.copy(this.arm.snapshotQuat).invert());
     const alongBlade = clamp01((this._local.y - GRIP_LEN) / BLADE_LEN);
 
     return {
       quality: classify(closingSpeed, edgeAlign, alongBlade),
-      what: this.arena.labelFor(other.handle),
+      what: this.targets.labelFor(other.handle),
       closingSpeed,
       tangentSpeed,
       edgeAlign,
       alongBlade,
       force,
       at: this._p.clone(),
+      colliderHandle: other.handle,
+      bladeVelocity: this._v.clone(),
     };
   }
 }

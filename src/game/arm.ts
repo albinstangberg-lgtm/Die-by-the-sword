@@ -152,6 +152,10 @@ export class Arm {
   private readonly _refB = new THREE.Vector3();
   private readonly _refC = new THREE.Vector3();
   private readonly _refD = new THREE.Vector3();
+  private readonly _prePos = new THREE.Vector3();
+  private readonly _preLin = new THREE.Vector3();
+  private readonly _preAng = new THREE.Vector3();
+  private readonly _preQuat = new THREE.Quaternion();
   private readonly _tipPos = new THREE.Vector3();
   private readonly _tipVel = new THREE.Vector3();
 
@@ -453,6 +457,7 @@ export class Arm {
     // fighting the hand instead of aiming the blade.
     this.applyUpperArmTorque(t);
 
+    this.snapshotBlade();
     this.sampleTip();
   }
 
@@ -492,6 +497,27 @@ export class Arm {
     this.upper.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
   }
 
+  /**
+   * Freeze the blade's motion as of THIS step, before the solver runs.
+   *
+   * Contact events are drained after `world.step()`, by which point the solver
+   * has already stopped the blade dead against whatever it hit. Reading the
+   * blade's live velocity there reports the speed it ended at -- near zero --
+   * so a 24 m/s cut scored as a 0.1 m/s nudge and did no damage at all. Damage
+   * has to be computed from how fast the blade was travelling as it ARRIVED,
+   * which is the state captured here.
+   */
+  private snapshotBlade(): void {
+    const p = this.blade.translation();
+    const r = this.blade.rotation();
+    const lv = this.blade.linvel();
+    const av = this.blade.angvel();
+    this._prePos.set(p.x, p.y, p.z);
+    this._preQuat.set(r.x, r.y, r.z, r.w);
+    this._preLin.set(lv.x, lv.y, lv.z);
+    this._preAng.set(av.x, av.y, av.z);
+  }
+
   /** Blade tip position and velocity — used for impact quality. */
   private sampleTip(): void {
     const bq = this.blade.rotation();
@@ -513,24 +539,32 @@ export class Arm {
   get tipPosition(): THREE.Vector3 { return this._tipPos; }
   get tipVelocity(): THREE.Vector3 { return this._tipVel; }
 
-  /** The blade's cutting-edge direction in world space (its local +Z). */
+  /**
+   * The blade's cutting-edge direction (local +Z) as of the pre-step snapshot.
+   * Taken from the same instant as `velocityAt`, so edge alignment and closing
+   * speed describe one moment rather than two.
+   */
   edgeDirection(out: THREE.Vector3): THREE.Vector3 {
-    const bq = this.blade.rotation();
-    return out.set(0, 0, 1).applyQuaternion(this._q2.set(bq.x, bq.y, bq.z, bq.w));
+    return out.set(0, 0, 1).applyQuaternion(this._preQuat);
   }
 
-  /** Blade velocity at an arbitrary world point (for contact-point speed). */
+  /** Blade velocity at a world point, from the pre-step snapshot. */
   velocityAt(point: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-    const bp = this.blade.translation();
-    const rx = point.x - bp.x, ry = point.y - bp.y, rz = point.z - bp.z;
-    const lv = this.blade.linvel();
-    const av = this.blade.angvel();
+    const rx = point.x - this._prePos.x;
+    const ry = point.y - this._prePos.y;
+    const rz = point.z - this._prePos.z;
+    const lv = this._preLin;
+    const av = this._preAng;
     return out.set(
       lv.x + (av.y * rz - av.z * ry),
       lv.y + (av.z * rx - av.x * rz),
       lv.z + (av.x * ry - av.y * rx),
     );
   }
+
+  /** Blade orientation as of the pre-step snapshot, for blade-local maths. */
+  get snapshotQuat(): THREE.Quaternion { return this._preQuat; }
+  get snapshotPos(): THREE.Vector3 { return this._prePos; }
 
   // -------------------------------------------------------------------------
   // Presentation

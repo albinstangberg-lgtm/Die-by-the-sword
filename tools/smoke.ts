@@ -15,9 +15,12 @@
 import * as THREE from "three";
 import { createPhysics } from "../src/core/physics";
 import { buildArena, SPAWN } from "../src/game/arena";
+import { Targets } from "../src/game/targets";
+import { Dummy } from "../src/game/dummy";
+import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Fighter } from "../src/game/fighter";
 import { Arm, type ArmInput } from "../src/game/arm";
-import { Impacts } from "../src/game/impacts";
+import { Impacts, type Impact } from "../src/game/impacts";
 import { DEFAULTS, type Tuning } from "../src/tuning";
 import type { Keys } from "../src/input/input";
 
@@ -38,11 +41,14 @@ class FakeInput implements ArmInput {
   }
 }
 
+const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
+
 interface Rig {
   arm: Arm;
   fighter: Fighter;
   input: FakeInput;
   impacts: Impacts;
+  dummy: Dummy;
   tuning: Tuning;
   /** Advance the simulation, optionally holding movement keys. */
   step(n?: number, keys?: Keys): void;
@@ -52,15 +58,18 @@ async function buildRig(overrides: Partial<Tuning> = {}): Promise<Rig> {
   const tuning: Tuning = { ...DEFAULTS, ...overrides };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
-  const arena = buildArena(phys, scene);
+  const targets = new Targets();
+  buildArena(phys, scene, targets);
   const fighter = new Fighter(phys, scene, SPAWN);
   const arm = new Arm(phys, scene, fighter, tuning);
-  const impacts = new Impacts(phys, scene, arm, arena);
+  const impacts = new Impacts(phys, scene, arm, targets);
+  const dummy = new Dummy(phys, scene, targets, DUMMY_AT);
+  impacts.onImpact = (i) => { dummy.receive(i); };
   const input = new FakeInput();
 
   let now = 0;
   return {
-    arm, fighter, input, impacts, tuning,
+    arm, fighter, input, impacts, dummy, tuning,
     step(n = 1, keys: Keys = NO_KEYS) {
       for (let i = 0; i < n; i++) {
         arm.readInput(input, tuning);
@@ -284,6 +293,162 @@ async function thinPostIsHittable(): Promise<void> {
   check("registered a contact with the post", hits > 0, `${hits} impact(s) reported`);
 }
 
+async function damageCurveIsHonest(): Promise<void> {
+  console.log("\ndamage rewards a real cut and nothing else");
+
+  const at = (closingSpeed: number, edgeAlign: number, alongBlade: number) =>
+    cutDamage({ closingSpeed, edgeAlign, alongBlade });
+
+  const clean = at(9, 0.95, 0.72);
+  const flat = at(9, 0.05, 0.72);
+  const slow = at(MIN_CUT_SPEED - 0.1, 1, 0.72);
+  const hilt = at(9, 0.95, 0.05);
+  const angled = at(9, 0.5, 0.72);
+
+  check("a slow blade does not cut", slow === 0, `${slow.toFixed(2)} damage below the ${MIN_CUT_SPEED} m/s threshold`);
+  check("the guard does not cut", hilt === 0, `${hilt.toFixed(2)} damage on the ricasso`);
+  check("the flat of the blade barely registers", flat < clean * 0.01,
+    `flat ${flat.toFixed(3)} vs clean ${clean.toFixed(2)}`);
+  check("edge alignment is punishing, not linear", angled < clean * 0.3,
+    `45deg off keeps ${(angled / clean * 100).toFixed(0)}% (linear would keep ~53%)`);
+  check("the percussion point beats the tip and the strong",
+    sweetSpot(0.72) > sweetSpot(0.3) && sweetSpot(0.72) > sweetSpot(1.0),
+    `strong ${sweetSpot(0.3).toFixed(2)} | sweet ${sweetSpot(0.72).toFixed(2)} | tip ${sweetSpot(1.0).toFixed(2)}`);
+}
+
+/** Build an Impact by hand, to test the damage -> sever plumbing in isolation. */
+function fakeImpact(handle: number, over: Partial<Impact> = {}): Impact {
+  return {
+    quality: "clean", what: "test", closingSpeed: 9, tangentSpeed: 2,
+    edgeAlign: 0.95, alongBlade: 0.72, force: 400,
+    at: new THREE.Vector3(), colliderHandle: handle,
+    bladeVelocity: new THREE.Vector3(3, 0, 0), ...over,
+  };
+}
+
+async function limbsComeOff(): Promise<void> {
+  console.log("\nclean cuts sever, slaps do not");
+  const rig = await buildRig();
+  rig.step(60);
+
+  const foreR = rig.dummy.limbs.get("foreArmR")!;
+  const foreL = rig.dummy.limbs.get("foreArmL")!;
+
+  // Flat of the blade, over and over: should never take an arm off.
+  for (let i = 0; i < 40; i++) {
+    rig.dummy.receive(fakeImpact(foreL.collider.handle, { edgeAlign: 0.05 }));
+  }
+  check("forty flat slaps leave the arm on", !foreL.severed,
+    `integrity ${foreL.integrity.toFixed(1)}/${foreL.maxIntegrity} after 40 slaps`);
+
+  // Edge-on cuts on the other arm.
+  let cuts = 0;
+  while (!foreR.severed && cuts < 10) {
+    rig.dummy.receive(fakeImpact(foreR.collider.handle));
+    cuts++;
+  }
+  check("a good cut takes the hand in a couple of strikes",
+    foreR.severed && cuts <= 3, `severed after ${cuts} clean cuts`);
+
+  // And it must physically come away, not just lose a joint.
+  const before = foreR.body.translation();
+  rig.step(90);
+  const after = foreR.body.translation();
+  const fell = before.y - after.y;
+  check("the severed piece falls away", fell > 0.25,
+    `dropped ${fell.toFixed(2)} m in 1.5s`);
+}
+
+async function severingTakesChildrenWithIt(): Promise<void> {
+  console.log("\ncutting high takes everything below it");
+  const rig = await buildRig();
+  rig.step(60);
+
+  const upper = rig.dummy.limbs.get("upperArmR")!;
+  const fore = rig.dummy.limbs.get("foreArmR")!;
+  const startY = fore.body.translation().y;
+
+  for (let i = 0; i < 6 && !upper.severed; i++) {
+    rig.dummy.receive(fakeImpact(upper.collider.handle, { closingSpeed: 12 }));
+  }
+  check("the upper arm parts at the shoulder", upper.severed, "shoulder joint removed");
+
+  rig.step(120);
+  const drop = startY - fore.body.translation().y;
+  check("the forearm goes with it, still attached",
+    drop > 0.4 && fore.joint !== null,
+    `forearm fell ${drop.toFixed(2)} m with its elbow intact`);
+}
+
+async function aRealSwingSevers(): Promise<void> {
+  console.log("\nend to end: an actual swing takes a limb off");
+  const rig = await buildRig();
+
+  // Stand off the dummy's right side, facing it, blade raised.
+  rig.fighter.body.setTranslation({ x: DUMMY_AT.x + 1.15, y: SPAWN.y, z: DUMMY_AT.z }, true);
+  // Torso-forward is -Z, so forward = (-sin yaw, 0, -cos yaw): +PI/2 faces -X,
+  // which is where the dummy is.
+  rig.fighter.yaw = Math.PI / 2;
+  rig.arm.reset(rig.tuning);
+  rig.step(90);
+
+  const severed: string[] = [];
+  rig.dummy.onSever = (e) => severed.push(e.label);
+
+  // Raise to the dummy's upper body once, then sweep flat back and forth.
+  //
+  // The passes must be balanced. An earlier version wound up by -110 and cut
+  // by +170, which drifted the aim 60px lower every cycle; within five swings
+  // the arm was pinned at its pitch limit with the blade planted in the floor,
+  // and nothing connected again.
+  rig.input.dy = -100;
+  rig.step(1); rig.step(60);
+
+  let swings = 0;
+  for (; swings < 20 && severed.length === 0; swings++) {
+    rig.input.dx = -280; rig.step(1); rig.step(34);
+    rig.input.dx = 280; rig.step(1); rig.step(34);
+  }
+
+  check("a swung blade severs something", severed.length > 0,
+    severed.length
+      ? `took off ${severed.join(", ")} in ${swings} swings`
+      : "nothing came off in 20 swings");
+}
+
+async function resetRebuildsCleanly(): Promise<void> {
+  console.log("\nreset rebuilds the dummy without touching freed handles");
+  const rig = await buildRig();
+  rig.step(45);
+
+  // Cut several limbs off, then rebuild — twice, because the first reset is
+  // the one that leaves stale collider handles lying around for the second.
+  for (const name of ["foreArmR", "upperArmL", "thighR"]) {
+    const limb = rig.dummy.limbs.get(name)!;
+    for (let i = 0; i < 8 && !limb.severed; i++) {
+      rig.dummy.receive(fakeImpact(limb.collider.handle, { closingSpeed: 12 }));
+    }
+  }
+  const before = rig.dummy.severedCount;
+
+  rig.dummy.reset();
+  rig.step(60);
+  rig.dummy.reset();
+  rig.step(60);
+
+  check("limbs were severed before the reset", before >= 3, `${before} severed`);
+  check("the rebuilt dummy is whole", rig.dummy.severedCount === 0,
+    `${rig.dummy.limbs.size} limbs, none severed`);
+  check("the rebuilt dummy is hit-detectable again",
+    rig.dummy.receive(fakeImpact(rig.dummy.limbs.get("foreArmR")!.collider.handle)),
+    "a fresh collider handle routes to the new limb");
+
+  const torso = rig.dummy.limbs.get("torso")!.body.translation();
+  check("the rebuilt dummy still hangs where it should",
+    Math.abs(torso.x - DUMMY_AT.x) < 0.3 && torso.y > 1.0,
+    `torso at (${torso.x.toFixed(2)}, ${torso.y.toFixed(2)}, ${torso.z.toFixed(2)})`);
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -294,6 +459,11 @@ async function run(): Promise<void> {
   await edgeRollTracks();
   await survivesAbuse();
   await thinPostIsHittable();
+  await damageCurveIsHonest();
+  await limbsComeOff();
+  await severingTakesChildrenWithIt();
+  await resetRebuildsCleanly();
+  await aRealSwingSevers();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

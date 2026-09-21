@@ -5,6 +5,8 @@ import { createPhysics } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input } from "./input/input";
 import { buildArena, SPAWN } from "./game/arena";
+import { Targets } from "./game/targets";
+import { Dummy } from "./game/dummy";
 import { Fighter } from "./game/fighter";
 import { Arm } from "./game/arm";
 import { Impacts } from "./game/impacts";
@@ -21,6 +23,9 @@ import { Panel, loadTuning } from "./ui/panel";
  * nothing built on top of it will.
  */
 
+/** Where the practice dummy hangs — clear of the pillars and the low beam. */
+const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
+
 const mount = document.getElementById("app")!;
 const veil = document.getElementById("veil")!;
 const hudEl = document.getElementById("hud")!;
@@ -34,19 +39,26 @@ async function main(): Promise<void> {
   const phys = await createPhysics(tuning.gravity);
   const interp = new Interpolator();
 
-  const arena = buildArena(phys, renderer.scene);
+  const targets = new Targets();
+  buildArena(phys, renderer.scene, targets);
   const fighter = new Fighter(phys, renderer.scene, SPAWN);
   const arm = new Arm(phys, renderer.scene, fighter, tuning);
   const trail = new Trail(renderer.scene);
-  const impacts = new Impacts(phys, renderer.scene, arm, arena);
+  const impacts = new Impacts(phys, renderer.scene, arm, targets);
+  const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
 
   interp.add(fighter.body, fighter.mesh);
   interp.add(arm.upper, arm.upperMesh);
   interp.add(arm.fore, arm.foreMesh);
   interp.add(arm.blade, arm.bladeMesh);
+  for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
 
   const hud = new Hud(hudEl, impactEl);
-  impacts.onImpact = (i) => hud.showImpact(i);
+  hud.trackDummy(dummy);
+  dummy.onSever = (e) => hud.showSever(e);
+  impacts.onImpact = (i) => {
+    hud.showImpact(i, dummy.receive(i));
+  };
 
   const input = new Input(renderer.webgl.domElement);
 
@@ -67,8 +79,18 @@ async function main(): Promise<void> {
   input.onReset = () => {
     fighter.reset(SPAWN);
     arm.reset(tuning);
+    dummy.reset();
+    // The dummy's bodies are all new, so the interpolator's entries point at
+    // freed handles; rebuild the whole set rather than leaving stale ones.
+    interp.clear();
+    interp.add(fighter.body, fighter.mesh);
+    interp.add(arm.upper, arm.upperMesh);
+    interp.add(arm.fore, arm.foreMesh);
+    interp.add(arm.blade, arm.bladeMesh);
+    for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
     interp.snap();
     trail.clear();
+    hud.trackDummy(dummy);
   };
   input.onLockChange = (locked) => {
     veil.classList.toggle("hidden", locked);
@@ -135,6 +157,7 @@ async function main(): Promise<void> {
       interp.apply(alpha);
       arm.syncMeshes(tuning);
       fighter.syncMesh();
+      dummy.syncMeshes();
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
       hud.update(arm.state, loop.frameMs, input.rollMode);

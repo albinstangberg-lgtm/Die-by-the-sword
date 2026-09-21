@@ -1,5 +1,7 @@
 import type { ArmState } from "../game/arm";
 import type { Impact, Quality } from "../game/impacts";
+import type { Dummy, SeverEvent } from "../game/dummy";
+import { cutDamage } from "../game/damage";
 
 /**
  * Live readouts.
@@ -22,6 +24,7 @@ export class Hud {
   private root: HTMLElement;
   private impactEl: HTMLElement;
   private fadeTimer = 0;
+  private lastDummySig = "";
 
   private err!: HTMLElement;
   private errBar!: HTMLElement;
@@ -31,6 +34,8 @@ export class Hud {
   private elbow!: HTMLElement;
   private roll!: HTMLElement;
   private fps!: HTMLElement;
+  private dummyEl!: HTMLElement;
+  private dummy: Dummy | null = null;
   private rollHint!: HTMLElement;
 
   constructor(root: HTMLElement, impactEl: HTMLElement) {
@@ -66,6 +71,11 @@ export class Hud {
         <dl><dt>frame</dt><dd data-f="fps">0.0 ms</dd></dl>
       </section>`;
 
+    this.dummyEl = document.createElement("div");
+    this.dummyEl.id = "dummy";
+    this.dummyEl.className = "overlay";
+    document.body.appendChild(this.dummyEl);
+
     const f = (n: string) => this.root.querySelector<HTMLElement>(`[data-f="${n}"]`)!;
     const b = (n: string) => this.root.querySelector<HTMLElement>(`[data-b="${n}"]`)!;
     this.err = f("err");
@@ -98,12 +108,30 @@ export class Hud {
     setBar(this.errBar, errPct, errPct > 80 ? "bad" : errPct > 45 ? "warn" : "");
     const satPct = s.saturation * 100;
     setBar(this.satBar, satPct, satPct > 95 ? "bad" : satPct > 70 ? "warn" : "");
+
+    // Cheap, but it runs every frame — only redraw when something changed.
+    const sig = this.dummy ? [...this.dummy.limbs.values()]
+      .map((l) => (l.severed ? -1 : Math.round(l.integrity * 4))).join(",") : "";
+    if (sig !== this.lastDummySig) {
+      this.lastDummySig = sig;
+      this.refreshDummy();
+    }
   }
 
-  showImpact(i: Impact): void {
+  /** `onDummy` is true when the hit landed on something that can be cut. */
+  showImpact(i: Impact, onDummy: boolean): void {
     const sweet = i.alongBlade > 0.55 && i.alongBlade < 0.95;
+    const dmg = cutDamage(i);
+
+    // Damage is only meaningful against something cuttable; stone just reports
+    // how the swing went.
+    const tally = onDummy
+      ? `<span class="dmg${dmg <= 0 ? " none" : ""}">${
+          dmg <= 0 ? "no cut" : `${dmg.toFixed(1)} damage`}</span>`
+      : "";
+
     this.impactEl.innerHTML = `
-      <div class="quality">${QUALITY_TEXT[i.quality]} &mdash; ${i.what}</div>
+      <div class="quality">${QUALITY_TEXT[i.quality]} &mdash; ${i.what} ${tally}</div>
       <div class="detail">
         ${i.closingSpeed.toFixed(1)} m/s into it
         &middot; ${i.tangentSpeed.toFixed(1)} m/s along
@@ -112,7 +140,34 @@ export class Hud {
       </div>`;
     this.impactEl.classList.remove("fade");
     clearTimeout(this.fadeTimer);
-    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1400);
+    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1600);
+  }
+
+  showSever(e: SeverEvent): void {
+    this.impactEl.innerHTML = `<div class="quality sever">${e.label} severed</div>`;
+    this.impactEl.classList.remove("fade");
+    clearTimeout(this.fadeTimer);
+    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 2200);
+  }
+
+  trackDummy(dummy: Dummy): void {
+    this.dummy = dummy;
+  }
+
+  /** Integrity bars for every joint still holding. */
+  private refreshDummy(): void {
+    if (!this.dummy) return;
+    const rows = [...this.dummy.limbs.values()]
+      .filter((l) => l.spec.jointKind !== null)
+      .map((l) => {
+        const frac = l.severed ? 0 : Math.max(0, l.integrity / l.maxIntegrity);
+        const cls = l.severed ? "gone" : frac < 0.34 ? "bad" : frac < 0.7 ? "warn" : "";
+        return `<div class="limb ${cls}">
+            <span>${l.spec.label}</span>
+            <i style="width:${(frac * 100).toFixed(0)}%"></i>
+          </div>`;
+      }).join("");
+    this.dummyEl.innerHTML = `<h2>Dummy &mdash; ${this.dummy.severedCount} severed</h2>${rows}`;
   }
 }
 

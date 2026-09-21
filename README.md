@@ -5,9 +5,10 @@ Sword*: the sword arm is a simulated limb, not a set of attack animations. You
 drag the mouse, the arm follows, and the blade's damage — and its bounce, its
 lag, its refusal to go where you asked — comes out of the physics.
 
-**This is stage 2 of 5.** There is nothing to fight yet, and that is deliberate.
-Stage 2 answers one question: *does swinging a sword at a wall feel good?* If it
-doesn't, nothing built on top of it will.
+**This is stage 3 of 5.** Stage 2 answered one question — *does swinging a sword
+at a wall feel good?* — and stage 3 gives that swing consequences: a practice
+dummy that comes apart when you cut it properly, and refuses to when you don't.
+There is still no opponent; nothing here hits back.
 
 ```
 npm install
@@ -73,22 +74,45 @@ The physical limb still has to get there under a clamped force and frequently
 cannot. That failure is the mechanic. An IK-driven arm would put the hand on
 target every frame and the blade would pass through the wall.
 
-### Impact quality
+### Damage
 
 Hits are described by three numbers, not a hitbox test:
 
 ```
-closing speed  — how fast the blade was going INTO the surface
-edge alignment — |dot(edge direction, contact normal)|; 1 = edge-on, 0 = flat
-contact point  — where along the blade; the hilt is a bad place to catch things
+damage = (closing speed − 2 m/s) × edge alignment² × sweet spot
 ```
 
-Swing hard with the edge leading and you get *clean cut*. Swing hard with the
-blade turned ninety degrees and you get *flat of the blade* and a shower of
-nothing. Stage 3 multiplies these together into damage; for now they print in the
-bottom-left so you can feel the difference.
+- **closing speed** — a slow blade pushes, it does not cut. Below the threshold
+  a hit is a shove no matter how well aimed.
+- **edge alignment** — *squared*, so it is brutal. Forty-five degrees off keeps
+  you 28% of your damage; ninety degrees and you have slapped someone with a
+  steel plank.
+- **sweet spot** — the hilt does nothing and the tip has speed but no mass
+  behind it. The percussion point, about two thirds down, does everything.
 
-## Three things the physics taught us
+There is no light attack or heavy attack. The only way to raise the number is to
+swing faster, with the edge leading, and connect on the right part of the blade
+— which is to say, to actually cut properly.
+
+### The dummy
+
+A canvas figure hangs from a gallows, pinned at the chest so it swings and spins
+when struck but cannot be knocked out of reach. Every limb is a rigid body
+jointed to its parent, and every joint holds an integrity value that good cuts
+deplete. At zero the joint is removed from the world and the limb — with
+everything hanging off it — becomes debris, carrying the blade's momentum with
+it.
+
+Severing happens at joints rather than through geometry. Real mesh cutting is an
+order of magnitude more work and reads the same at speed, and the player-facing
+rule stays learnable: **hit a forearm and you take the hand; hit the upper arm
+and you take the whole arm.** Limbs darken toward the cut colour as their joint
+gives way, and the panel on the right tracks every joint still holding.
+
+Joints are tuned against the damage curve, so a wrist goes in one or two good
+strikes and cutting a body in half at the waist takes real commitment.
+
+## Four things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -105,6 +129,17 @@ elbow and no forearm twist, rotating the cutting edge *is* swinging the elbow
 around the shoulder→hand line. Treating them as two controls had them fighting
 over one joint, worth 45° of standing orientation error. A right-drag rotates
 the arm's plane, and the edge comes with it.
+
+**Contact events arrive too late to measure a hit.** Rapier reports contacts
+after `world.step()`, by which point the solver has already stopped the blade
+dead against whatever it hit. Reading the blade's velocity there gave the speed
+it *ended* at — a 24 m/s cut scored as a 0.1 m/s nudge and did no damage at all.
+The blade's motion is now snapshotted before the step, and damage is computed
+from how fast it was travelling as it arrived. A related trap: a blade resting
+against a target emits contact events every frame at a fraction of a metre per
+second, and a single global cooldown let that noise swallow the real strike a
+few frames later. The cooldown is per-collider now, and resting contacts are
+discarded rather than reported.
 
 **A proportional controller cannot hold a weight without error.** Holding the
 sword up costs a standing ~45N, and a P term only makes force from error, so the
@@ -138,6 +173,8 @@ Some things look like bugs and are not:
   running out. It's where the whip comes from.
 - **Reach is capped short of full extension.** Near a straight arm the elbow has
   no leverage and the limb locks. An 8cm margin keeps it always able to bend.
+- **The torso cannot be severed.** It is what the dummy hangs from, so there is
+  no joint to cut it off at. Damage still registers; it just has nowhere to go.
 
 ## Structure
 
@@ -155,16 +192,21 @@ src/
     arm.ts           THE MECHANIC — read this one first
     fighter.ts       torso and locomotion
     arena.ts         a room built to be hit
+    dummy.ts         the practice dummy, and how it comes apart
+    damage.ts        the damage curve
     impacts.ts       contact events -> impact quality
+    targets.ts       collider -> name registry
     trail.ts         the swept arc
   ui/                HUD and tuning panel
 tools/smoke.ts       headless harness driving the real modules
 ```
 
-`npm run smoke` runs the real `Arm`, `Fighter` and `Arena` against Rapier in
-Node — no WebGL, no browser. It asserts the claim the design rests on: that the
-arm tracks the mouse closely when free and *fails to* when blocked. If the
-second ever stops failing, the mechanic is gone.
+`npm run smoke` runs the real `Arm`, `Fighter`, `Arena` and `Dummy` against
+Rapier in Node — no WebGL, no browser, 25 checks in about two seconds. It
+asserts the claim the design rests on: that the arm tracks the mouse closely
+when free and *fails to* when blocked. If the second ever stops failing, the
+mechanic is gone. It also drives a real scripted swing all the way through to a
+severed limb, which is the only test that exercises the whole chain at once.
 
 ## Stack
 
@@ -176,6 +218,5 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-3. Contact damage and a training dummy with severable limbs.
 4. An opponent that swings back.
 5. Arena, rounds, UI.

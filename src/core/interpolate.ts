@@ -62,6 +62,14 @@ export class Interpolator {
     }
   }
 
+  /**
+   * Drop every entry. Required before rebuilding anything whose rigid bodies
+   * were removed from the world -- a stale entry would read a freed handle.
+   */
+  clear(): void {
+    this.entries.length = 0;
+  }
+
   /** After teleporting bodies, drop the stale history so nothing streaks. */
   snap(): void {
     this.commit();

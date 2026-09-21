@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { GROUP, groups, type PhysicsWorld } from "../core/physics";
+import type { Targets } from "./targets";
 
 /**
  * A room to swing in. Everything here exists to be hit: a stone floor, walls
@@ -14,16 +15,8 @@ const HALF = 9;       // room half-extent, metres
 const WALL_H = 4.2;
 const WALL_T = 0.4;
 
-export interface Arena {
-  /** Collider handles that count as "world" for impact reporting. */
-  handles: Set<number>;
-  labelFor(handle: number): string;
-}
-
-export function buildArena(phys: PhysicsWorld, scene: THREE.Scene): Arena {
+export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targets): void {
   const { rapier, world } = phys;
-  const handles = new Set<number>();
-  const labels = new Map<number, string>();
 
   const filter = groups(GROUP.WORLD, GROUP.FIGHTER | GROUP.BLADE | GROUP.PROP | GROUP.WORLD);
 
@@ -48,8 +41,7 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene): Arena {
         .setContactForceEventThreshold(1.0),
       body,
     );
-    handles.add(col.handle);
-    labels.set(col.handle, label);
+    targets.register(col.handle, label);
 
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), material);
     mesh.position.set(x, y, z);
@@ -89,10 +81,6 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene): Arena {
   // --- a thin post: the tunnelling test case. If CCD is off, you cut air. ---
   box("thin post", timber, 0.05, 1.0, 0.05, -2.2, 1.0, 1.8);
 
-  return {
-    handles,
-    labelFor: (h) => labels.get(h) ?? "something",
-  };
 }
 
 /** Where the fighter spawns, clear of everything. */
