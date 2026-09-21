@@ -47,16 +47,29 @@ interface Stroke {
   roll: number;
 }
 
-/** A small repertoire. Deliberately readable and deliberately limited. */
+/**
+ * A small repertoire, tuned by measurement rather than by eye.
+ *
+ * Every stroke ends in the band a little below shoulder height, because that
+ * is where a standing opponent's chest is and because a vertical torso can
+ * only be cut by a blade travelling ACROSS it. An earlier set led with big
+ * overhead chops, which look right and are nearly worthless: swung down the
+ * side of an upright body the edge is perpendicular to the surface it touches,
+ * so it grazes at an edge alignment of essentially zero. The rolls are
+ * negative for the same reason — the sign that puts the arm in a plane whose
+ * edge leads the travel.
+ */
 const STROKES: Stroke[] = [
-  // Overhead, straight down the middle.
-  { fromYaw: -0.15, fromPitch: 1.25, toYaw: 0.05, toPitch: -0.75, roll: 0 },
-  // Diagonal from its right shoulder down across the body.
-  { fromYaw: -1.05, fromPitch: 1.0, toYaw: 0.75, toPitch: -0.5, roll: 0.5 },
-  // Flat horizontal, waist height.
-  { fromYaw: -1.25, fromPitch: 0.05, toYaw: 1.0, toPitch: -0.05, roll: 1.35 },
-  // Backhand, returning right to left.
-  { fromYaw: 1.0, fromPitch: 0.35, toYaw: -1.1, toPitch: 0.1, roll: -1.2 },
+  // Diagonal into the chest — the highest-scoring line by some margin.
+  { fromYaw: -1.15, fromPitch: 0.25, toYaw: 0.95, toPitch: -0.35, roll: -1.1 },
+  // Steeper descending diagonal, finishing lower.
+  { fromYaw: -1.25, fromPitch: 0.1, toYaw: 1.0, toPitch: -0.6, roll: -0.6 },
+  // Low sweep at the waist and thighs.
+  { fromYaw: -1.3, fromPitch: -0.45, toYaw: 1.05, toPitch: -0.9, roll: 0 },
+  // Backhand, returning right to left. Rolled the same way: the blade is
+  // symmetric, so which edge leads costs nothing, and this is the arm plane
+  // that measured well.
+  { fromYaw: 1.05, fromPitch: 0.15, toYaw: -1.2, toPitch: -0.4, roll: -1.0 },
 ];
 
 export class Ai implements ArmInput {
@@ -68,6 +81,11 @@ export class Ai implements ArmInput {
   private state: State = "close";
   private timer = 0;
   private stroke = STROKES[0];
+  /**
+   * Forces a single stroke, so one line's geometry can be measured in
+   * isolation. This is how the table above was tuned; leave it null in play.
+   */
+  strokeOverride: Stroke | null = null;
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.46, roll: 0 };
 
   private dx = 0;
@@ -112,7 +130,7 @@ export class Ai implements ArmInput {
         this.keys.back = range < RANGE.tooClose;
         if (range <= RANGE.tooFar && range >= RANGE.tooClose) {
           this.begin("windup", 0.28 / this.aggression);
-          this.stroke = STROKES[(Math.random() * STROKES.length) | 0];
+          this.stroke = this.strokeOverride ?? STROKES[(Math.random() * STROKES.length) | 0];
         }
         break;
 
@@ -139,7 +157,7 @@ export class Ai implements ArmInput {
           reach: 0.50, roll: this.stroke.roll,
         };
         this.keys.forward = range > RANGE.strike;
-        if (this.timer <= 0) this.begin("recover", 0.3);
+        if (this.timer <= 0) this.begin("recover", 0.22);
         break;
 
       case "recover":
@@ -147,8 +165,10 @@ export class Ai implements ArmInput {
         this.keys.forward = false;
         this.keys.back = range < RANGE.tooClose;
         if (this.timer <= 0) {
-          // After a swing it either presses or resets, so it is not a metronome.
-          this.begin(Math.random() < 0.35 * this.aggression ? "close" : "backoff", 0.45);
+          // After a swing it mostly presses, and occasionally resets so it is
+          // not a metronome. Backing off after three swings in four made it
+          // spend more of the fight retreating than fighting.
+          this.begin(Math.random() < 0.75 * this.aggression ? "close" : "backoff", 0.35);
         }
         break;
 

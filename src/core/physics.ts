@@ -31,10 +31,27 @@ export function groups(membership: number, filter: number): number {
  */
 export interface Side {
   readonly name: "a" | "b";
-  /** For the torso and the arm's own limbs. */
+  /** For every hittable body part. */
   readonly bodyFilter: number;
   /** For the blade. */
   readonly bladeFilter: number;
+  /**
+   * For the invisible locomotion hull.
+   *
+   * Identical to `bodyFilter` except that blades pass straight through. The
+   * hull spans the whole figure, so if it stopped a sword every cut would
+   * land on a nondescript capsule instead of on a head or an arm.
+   */
+  readonly hullFilter: number;
+  /**
+   * For parts that exist only to be hit — the kinematic legs.
+   *
+   * A kinematic body is immovable by anything it touches, so if the legs
+   * collided with the world or the other fighter they would shove rather than
+   * be shoved. Restricting them to the opposing blade makes them cuttable
+   * without letting them bulldoze the room.
+   */
+  readonly hitOnlyFilter: number;
   readonly body: number;
   readonly blade: number;
 }
@@ -47,6 +64,8 @@ function makeSide(name: "a" | "b", body: number, blade: number,
     // but is transparent to the sword in its own hand.
     bodyFilter: groups(body, GROUP.WORLD | GROUP.PROP | foeBody | foeBlade),
     bladeFilter: groups(blade, GROUP.WORLD | GROUP.PROP | foeBody | foeBlade),
+    hullFilter: groups(body, GROUP.WORLD | GROUP.PROP | foeBody),
+    hitOnlyFilter: groups(body, foeBlade),
   };
 }
 
@@ -73,7 +92,9 @@ export async function createPhysics(gravityY: number): Promise<PhysicsWorld> {
   // The arm is a stiff constraint chain driven by large forces. The default
   // 4 solver iterations let it stretch visibly at the shoulder under load;
   // more iterations buy rigidity far more cheaply than raising the gains does.
-  world.numSolverIterations = 12;
+  // 16 rather than 12 since the fighters gained a jointed head and off-arm,
+  // which put more constraints on the same body.
+  world.numSolverIterations = 16;
 
   const events = new RAPIER.EventQueue(true);
 

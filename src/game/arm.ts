@@ -3,7 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
 
 import type { Tuning } from "../tuning";
-import type { Fighter } from "./fighter";
+import { SHOULDER_LOCAL, type Fighter } from "./fighter";
 
 /**
  * THE MECHANIC.
@@ -132,9 +132,17 @@ export class Arm {
   bladeMesh!: THREE.Group;
   private ghostMesh!: THREE.Group;
 
-  /** Mouse-driven intent, in torso-local spherical coordinates. */
+  /**
+   * Mouse-driven intent, in torso-local spherical coordinates.
+   *
+   * The rest pitch sits below the shoulder because the elbow hangs under the
+   * shoulder-to-hand line, so the forearm — and the blade welded to it —
+   * angles UP out of the hand. Level with the shoulder the tip rides around
+   * 2.1m, over the head of anything worth hitting; dropping the hand brings
+   * the blade back toward the height a standing opponent occupies.
+   */
   private armYaw = 0.30;
-  private armPitch = -0.15;
+  private armPitch = -0.30;
   private reach = 0.46;
   private roll = 0;
 
@@ -241,7 +249,9 @@ export class Arm {
     // Shoulder: spherical, 3 DOF, anchored at the torso's shoulder point.
     this.shoulderJoint = world.createImpulseJoint(
       rapier.JointData.spherical(
-        { x: 0.28, y: 0.30, z: 0 },          // torso-local shoulder (see SHOULDER_LOCAL)
+        // Must match Fighter.shoulderWorld, or the ghost hand is computed from
+        // one shoulder while the arm hangs off another.
+        { x: SHOULDER_LOCAL.x, y: SHOULDER_LOCAL.y, z: SHOULDER_LOCAL.z },
         { x: 0, y: -UPPER_HALF, z: 0 },      // top of the upper arm
       ),
       this.fighter.body, this.upper, true,
@@ -648,7 +658,7 @@ export class Arm {
     this.severedAt = null;
     this.limp = false;
     this.armYaw = 0.30;
-    this.armPitch = -0.15;
+    this.armPitch = -0.30;
     this.reach = 0.46;
     this.roll = 0;
     this.computeGhost(t);

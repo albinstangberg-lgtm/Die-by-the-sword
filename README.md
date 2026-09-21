@@ -112,7 +112,7 @@ gives way, and the panel on the right tracks every joint still holding.
 Joints are tuned against the damage curve, so a wrist goes in one or two good
 strikes and cutting a body in half at the waist takes real commitment.
 
-## Five things the physics taught us
+## Six things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -129,6 +129,14 @@ elbow and no forearm twist, rotating the cutting edge *is* swinging the elbow
 around the shoulder→hand line. Treating them as two controls had them fighting
 over one joint, worth 45° of standing orientation error. A right-drag rotates
 the arm's plane, and the edge comes with it.
+
+**A kinematic body is born at the origin.** The legs reach their real position
+through `setNextKinematicTranslation`, which interpolates — so on the first step
+they crossed the room at about 200 m/s, shoving everything they were allowed to
+touch. The fighters' arms came apart and blade speeds hit twenty million metres
+per second. Kinematic parts are placed outright before the first step now, and
+they collide with the opposing blade only: a kinematic body is immovable by
+anything it hits, so anything else it touches it bulldozes.
 
 **Nothing must drive a corpse.** `Fighter.update` pins the torso upright and
 overwrites its horizontal velocity every step. Kept running on a fighter at zero
@@ -183,6 +191,11 @@ Some things look like bugs and are not:
 - **You can walk straight through the practice dummy.** A fighter is driven by
   setting its velocity each step, so it shoves lighter things aside rather than
   being stopped by them. Two fighters do collide with each other.
+- **The blade hangs angled up out of the hand.** The elbow sits below the
+  shoulder-to-hand line, so the forearm — and the sword welded to it — points
+  upward. From a 1.51m shoulder the tip rests around 2.1m. Rolling the edge over
+  with a right-drag swings the arm's plane and brings it down; this is the
+  single biggest thing to learn, and see the note below on what it costs.
 
 ## Structure
 
@@ -199,6 +212,7 @@ src/
   game/
     arm.ts           THE MECHANIC — read this one first
     fighter.ts       torso and locomotion
+    anatomy.ts       one set of human proportions, shared by everyone
     arena.ts         a room built to be hit
     combatant.ts     a fighter, their arm, and what a cut does to them
     ai.ts            the opponent's brain — mouse deltas, nothing more
@@ -227,6 +241,31 @@ TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
 Physics is a fixed 60Hz accumulator with render interpolation — stiff PD drives
 explode under a variable timestep. CCD is on for the blade and forearm; without
 it a fast tip tunnels straight through the thin post.
+
+## Known regression: cuts land less cleanly since the rebuild
+
+Giving the fighters human proportions moved the shoulder from 0.90m to 1.51m and
+replaced a 0.24m-radius capsule spanning knee to head with a 0.17m torso between
+waist and neck. Both make a fighter a much harder target than the barrel they
+replaced, and the numbers moved a long way:
+
+| | before | after |
+|---|---|---|
+| passive player vs. the opponent, 40s | 6/100 health | ~70/100 |
+| best damage from a scripted sweep at the dummy | 5.1 | 0.11 |
+
+Some of that is the change working as intended. Some of it is not. The mechanism
+is visible in the traces: at a 1.51m shoulder the blade angles up out of the
+hand, so at any range where its arc crosses a chest-height target it is in
+*continuous contact* and never builds speed — 24 contacts at 3.7 m/s instead of
+one at 12. Standing closer makes it worse, not better (214 contacts, 4.3 m/s
+peak).
+
+The honest position is that scripted sweeps are now a bad way to test this and a
+worse way to tune it. The levers, in the order worth trying: the pole vector in
+`arm.ts` (which decides how far the elbow hangs below the arm and so how steeply
+the blade angles up), `MAX_REACH`, and the default rest pitch. All three want a
+human on the mouse to judge.
 
 ## What's next
 
