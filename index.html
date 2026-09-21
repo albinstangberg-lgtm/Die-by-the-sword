@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Die by the Sword — arm prototype</title>
+    <style>
+      :root {
+        --ink: #e8e2d6;
+        --dim: #9c9282;
+        --panel: rgba(18, 17, 15, 0.86);
+        --line: rgba(232, 226, 214, 0.16);
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; height: 100%; overflow: hidden;
+        background: #0b0b0c; color: var(--ink);
+        font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      #app { position: fixed; inset: 0; }
+      canvas { display: block; }
+
+      .overlay { position: fixed; pointer-events: none; }
+      /* The arena runs from near-black shadow to lit stone, so the readouts
+         need to carry on both. */
+      #hud, #impact { text-shadow: 0 1px 3px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.7); }
+
+      /* --- click-to-start veil --- */
+      #veil {
+        inset: 0; display: flex; align-items: center; justify-content: center;
+        background: rgba(8, 8, 9, 0.82); backdrop-filter: blur(3px);
+        pointer-events: auto; cursor: pointer; text-align: center; z-index: 30;
+      }
+      #veil.hidden { display: none; }
+      #veil .inner { max-width: 30rem; padding: 0 1.5rem; }
+      #veil h1 {
+        font-size: 1.5rem; font-weight: 600; letter-spacing: 0.14em;
+        text-transform: uppercase; margin: 0 0 0.4rem;
+      }
+      #veil p { color: var(--dim); margin: 0.35rem 0; }
+      #veil .cue {
+        margin-top: 1.4rem; padding: 0.6rem 1rem; border: 1px solid var(--line);
+        display: inline-block; letter-spacing: 0.1em; text-transform: uppercase;
+      }
+
+      /* --- controls / readouts --- */
+      #hud { top: 0; left: 0; padding: 0.9rem 1.1rem; z-index: 10; }
+      #hud dl { display: grid; grid-template-columns: auto auto; gap: 0 0.9rem; margin: 0; }
+      #hud dt { color: var(--dim); }
+      #hud dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+      #hud h2 {
+        font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--dim); font-weight: 500; margin: 0 0 0.45rem;
+      }
+      #hud section + section { margin-top: 1rem; }
+      .bar { height: 3px; background: rgba(232,226,214,0.14); margin-top: 0.25rem; }
+      .bar > i { display: block; height: 100%; background: var(--ink); transition: width 60ms linear; }
+      .bar.warn > i { background: #e0a33c; }
+      .bar.bad > i { background: #d8562f; }
+
+      #impact {
+        bottom: 0; left: 0; padding: 0.9rem 1.1rem; z-index: 10;
+        min-height: 5.5rem;
+      }
+      #impact .quality { font-size: 1.1rem; letter-spacing: 0.1em; text-transform: uppercase; }
+      #impact .detail { color: var(--dim); }
+      #impact.fade { opacity: 0; transition: opacity 700ms ease; }
+
+      /* --- tuning panel --- */
+      #panel {
+        top: 0; right: 0; width: 19rem; max-height: 100vh; overflow-y: auto;
+        background: var(--panel); border-left: 1px solid var(--line);
+        padding: 0.9rem 1rem 2rem; pointer-events: auto; z-index: 20;
+      }
+      #panel.hidden { display: none; }
+      #panel h2 {
+        font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--dim); font-weight: 500; margin: 1.1rem 0 0.5rem;
+      }
+      #panel h2:first-child { margin-top: 0; }
+      #panel .note { color: var(--dim); margin: 0 0 0.8rem; }
+      .row { margin-bottom: 0.55rem; }
+      .row label { display: flex; justify-content: space-between; gap: 0.5rem; }
+      .row label span:last-child { font-variant-numeric: tabular-nums; color: var(--dim); }
+      .row input[type="range"] { width: 100%; margin: 0.15rem 0 0; accent-color: #c9bfa8; }
+      .row.toggle label { cursor: pointer; }
+      .row.toggle input { accent-color: #c9bfa8; }
+      #panel button {
+        width: 100%; margin-top: 0.9rem; padding: 0.45rem; cursor: pointer;
+        background: transparent; color: var(--ink); border: 1px solid var(--line);
+        font: inherit; letter-spacing: 0.08em; text-transform: uppercase;
+      }
+      #panel button:hover { background: rgba(232,226,214,0.07); }
+      #panel::-webkit-scrollbar { width: 8px; }
+      #panel::-webkit-scrollbar-thumb { background: rgba(232,226,214,0.18); }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud" class="overlay"></div>
+    <div id="impact" class="overlay"></div>
+    <div id="panel" class="overlay hidden"></div>
+    <div id="veil">
+      <div class="inner">
+        <h1>Die by the Sword</h1>
+        <p>Stage 2 &mdash; the arm.</p>
+        <p>Move the mouse to move your sword arm. It is a physical limb, not an animation: it has weight, it lags, and it will bury itself in the walls.</p>
+        <div class="cue">Click to take the blade</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
