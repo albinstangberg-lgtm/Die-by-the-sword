@@ -83,10 +83,16 @@ async function main(): Promise<void> {
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
 
+  // Everything with a rigid body goes through the interpolator, and nothing
+  // else may place those meshes afterwards. Half the figure used to be absent
+  // from this list and copied straight from the physics state during render
+  // instead, which threw the interpolation away for that half: above 60Hz the
+  // torso stepped while the sword in its hand ran smooth.
   const registerBodies = () => {
     interp.clear();
     for (const c of everyone) {
       interp.add(c.fighter.body, c.fighter.mesh);
+      for (const [body, mesh] of c.fighter.jointedParts) interp.add(body, mesh);
       interp.add(c.arm.upper, c.arm.upperMesh);
       interp.add(c.arm.fore, c.arm.foreMesh);
       interp.add(c.arm.blade, c.arm.bladeMesh);
@@ -218,8 +224,7 @@ async function main(): Promise<void> {
     },
     render: (alpha, dt) => {
       interp.apply(alpha);
-      for (const c of everyone) c.syncMeshes(tuning);
-      dummy.syncMeshes();
+      for (const c of everyone) c.syncMeshes(tuning, alpha);
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
       hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded);

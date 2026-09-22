@@ -83,18 +83,25 @@ export class Fighter {
   private offUpper!: RAPIER.RigidBody;
   private offFore!: RAPIER.RigidBody;
 
-  /** Kinematic lower body, posed rather than simulated. */
+  /**
+   * Kinematic lower body, posed rather than simulated.
+   *
+   * The swing angles are kept for two steps so render can interpolate them.
+   * Every other mesh in the fight is placed by the Interpolator from a rigid
+   * body's transform; these are the one thing with no body to read, so they
+   * would otherwise step at 60Hz inside a body that does not.
+   */
   private legs: {
     thigh: RAPIER.RigidBody; shin: RAPIER.RigidBody;
     hipPivot: THREE.Object3D; kneePivot: THREE.Object3D;
     thighMesh: THREE.Object3D; shinMesh: THREE.Object3D;
     sign: number;
+    hip: number; knee: number;
+    prevHip: number; prevKnee: number;
   }[] = [];
 
   private stridePhase = 0;
   private headMesh!: THREE.Object3D;
-  private offUpperMesh!: THREE.Object3D;
-  private offForeMesh!: THREE.Object3D;
 
   /** Whether the ground probe found anything to push off. */
   grounded = true;
@@ -319,8 +326,6 @@ export class Fighter {
 
     this.offUpper = upper.body;
     this.offFore = fore.body;
-    this.offUpperMesh = upper.mesh;
-    this.offForeMesh = fore.mesh;
 
     this.scene.add(upper.mesh, fore.mesh);
 
@@ -394,6 +399,7 @@ export class Fighter {
         thigh: kinematic(SEGMENT.thigh, `${side} thigh`, thighMesh),
         shin: kinematic(SEGMENT.shin, `${side} shin`, shinMesh),
         hipPivot, kneePivot, thighMesh, shinMesh, sign,
+        hip: 0, knee: 0, prevHip: 0, prevKnee: 0,
       });
     }
   }
@@ -547,17 +553,30 @@ export class Fighter {
 
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
-      const hip = Math.sin(phase) * STRIDE_SWING;
+      const swing = Math.sin(phase) * STRIDE_SWING;
       // A knee only bends one way, so the back half of the cycle is flattened.
-      const knee = Math.max(0, -Math.sin(phase - 0.6)) * 0.9;
+      const bend = Math.max(0, -Math.sin(phase - 0.6)) * 0.9;
 
       // Airborne: one knee up, the other trailing. Purely cosmetic -- the legs
       // are kinematic and never carry the jump -- but a figure that keeps
       // walking in mid-air reads as a bug.
       const tuckHip = leg.sign > 0 ? 0.85 : -0.3;
       const tuckKnee = leg.sign > 0 ? 1.25 : 0.55;
-      leg.hipPivot.rotation.x = hip + (tuckHip - hip) * this.tuck;
-      leg.kneePivot.rotation.x = knee + (tuckKnee - knee) * this.tuck;
+
+      leg.prevHip = leg.hip;
+      leg.prevKnee = leg.knee;
+      leg.hip = swing + (tuckHip - swing) * this.tuck;
+      leg.knee = bend + (tuckKnee - bend) * this.tuck;
+      // A teleport has no previous pose worth easing out of.
+      if (teleport) {
+        leg.prevHip = leg.hip;
+        leg.prevKnee = leg.knee;
+      }
+
+      // The colliders are pushed from these matrices below, so the pose used
+      // here has to be this step's, not a fraction of the way into it.
+      leg.hipPivot.rotation.x = leg.hip;
+      leg.kneePivot.rotation.x = leg.knee;
     }
     this.mesh.updateMatrixWorld(true);
 
@@ -607,13 +626,42 @@ export class Fighter {
     );
   }
 
-  syncMesh(): void {
-    const p = this.body.translation();
-    this.mesh.position.set(p.x, p.y, p.z);
-    this.mesh.rotation.set(0, this.yaw, 0);
-    copyTransform(this.head, this.headMesh);
-    copyTransform(this.offUpper, this.offUpperMesh);
-    copyTransform(this.offFore, this.offForeMesh);
+  /**
+   * Per FRAME, not per step: ease the legs between the last two poses.
+   *
+   * Everything else the fighter shows -- the body group, the head, the off
+   * arm -- is a rigid body, and the Interpolator places those from the physics
+   * state either side of the frame. The legs are the exception: they are posed
+   * by a walk cycle rather than simulated, so there is no pair of transforms
+   * to read and they have to carry their own.
+   *
+   * This method used to place the body group and the jointed limbs as well,
+   * straight from the live physics state. It ran AFTER the Interpolator in the
+   * same frame, so it overwrote smoothed transforms with hard ones and threw
+   * the interpolation away: on anything faster than 60Hz the torso stepped
+   * while the sword it was holding did not. It also pinned the body mesh's
+   * rotation to yaw, which meant a corpse tumbled in the physics world and
+   * stayed bolt upright on screen.
+   */
+  applyPose(alpha: number): void {
+    const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    for (const leg of this.legs) {
+      leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
+      leg.kneePivot.rotation.x = leg.prevKnee + (leg.knee - leg.prevKnee) * a;
+    }
+  }
+
+  /**
+   * Every part with a body of its own, for the render interpolator.
+   *
+   * The head and both off-arm segments are jointed rigid bodies; the torso and
+   * pelvis are colliders on the hull and ride with the body group, and the
+   * legs are posed rather than simulated.
+   */
+  get jointedParts(): [RAPIER.RigidBody, THREE.Object3D][] {
+    return this.parts
+      .filter((p) => p.body !== undefined)
+      .map((p) => [p.body!, p.mesh] as [RAPIER.RigidBody, THREE.Object3D]);
   }
 
   reset(spawn: THREE.Vector3): void {
@@ -682,13 +730,6 @@ export class Fighter {
 }
 
 // -----------------------------------------------------------------------------
-
-function copyTransform(body: RAPIER.RigidBody, obj: THREE.Object3D): void {
-  const p = body.translation();
-  const r = body.rotation();
-  obj.position.set(p.x, p.y, p.z);
-  obj.quaternion.set(r.x, r.y, r.z, r.w);
-}
 
 const _p = new THREE.Vector3();
 const _q = new THREE.Quaternion();

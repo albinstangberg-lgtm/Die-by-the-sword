@@ -216,8 +216,13 @@ export class Combatant {
     this.arm.reset(tuning);
   }
 
-  syncMeshes(tuning: Tuning): void {
-    this.fighter.syncMesh();
+  /**
+   * Per frame. `alpha` is how far through the current physics step the frame
+   * falls, which is what the posed legs need to ease between their last two
+   * poses; every rigid body is placed by the Interpolator instead.
+   */
+  syncMeshes(tuning: Tuning, alpha: number): void {
+    this.fighter.applyPose(alpha);
     this.arm.syncMeshes(tuning);
   }
 }

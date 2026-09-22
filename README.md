@@ -14,7 +14,7 @@ telling you what they are about to do before they do it.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 95 checks, no browser needed
+npm run smoke    # headless physics harness — 98 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -273,7 +273,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Twelve things the physics taught us
+## Thirteen things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -367,6 +367,20 @@ are built from one factory now, used both at birth and at reset, and the limb
 is laid back out in its rest pose before the joint is made — a joint created
 across a metre of gap is a metre of constraint violation, and the solver
 answers that by firing the limb at its anchor.
+
+**A mesh placed twice is a mesh that is not interpolated.** Render ran
+`interp.apply(alpha)` and then walked the figures copying transforms straight
+off the physics bodies — so for everything that did both, the second write
+threw the first away. Only the sword arm survived it. Above 60Hz the torso,
+the head, the off arm and every limb of the practice dummy stepped at the
+physics rate while the sword in the hand ran smooth, which reads as the body
+juddering against its own arm. The same copy also pinned the body mesh's
+rotation to yaw, so a corpse tumbled in the physics world and stayed bolt
+upright on screen. The rule now is that anything with a rigid body is placed by
+the Interpolator and by nothing else. The one exception earns it: the posed
+legs have no body to read, so they carry their own two poses and ease between
+them, and the ghost hand is deliberately snapped because showing pure input a
+step in the past would understate the very lag it exists to reveal.
 
 And one about the harness rather than the game:
 
@@ -463,7 +477,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 95 checks in under a
+and `Ai` against Rapier in Node — no WebGL, no browser, 98 checks in under a
 minute. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.

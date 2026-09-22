@@ -392,17 +392,6 @@ export class Dummy {
 
   // ---------------------------------------------------------------------------
 
-  /** Copy physics transforms onto the meshes. */
-  syncMeshes(): void {
-    for (const limb of this.limbs.values()) {
-      const p = limb.body.translation();
-      const r = limb.body.rotation();
-      limb.mesh.position.set(p.x, p.y, p.z);
-      limb.mesh.quaternion.set(r.x, r.y, r.z, r.w);
-    }
-
-  }
-
   /** Remaining (unsevered) limbs, for the HUD. */
   get standing(): Limb[] {
     return [...this.limbs.values()].filter((l) => l.spec.jointKind !== null && !l.severed);

@@ -1178,6 +1178,45 @@ async function resetPutsSeveredLimbsBackOn(): Promise<void> {
     `intent "${rig.ai.intent}", tip ${rig.foe.arm.state.tipSpeed.toFixed(1)} m/s`);
 }
 
+async function everyMovingPartIsInterpolated(): Promise<void> {
+  console.log("\nnothing is placed twice, and the posed legs carry their own frames");
+  const rig = await buildRig();
+  rig.step(60);
+
+  // Anything with a body of its own has to be offered to the interpolator, or
+  // it gets placed from the live physics state instead and steps at 60Hz
+  // inside a body that does not.
+  const withBodies = rig.foe.fighter.parts.filter((p) => p.body !== undefined);
+  check("every jointed part is offered to the interpolator",
+    withBodies.length > 0 && rig.foe.fighter.jointedParts.length === withBodies.length,
+    `${rig.foe.fighter.jointedParts.length} of ${withBodies.length}: ` +
+    withBodies.map((p) => p.name).join(", "));
+
+  // The legs are the one thing with no body to read, so they carry their own
+  // two poses. Walk, then check that the frame either side of a step differs
+  // and that a frame between them lands between them.
+  const walk = { ...NO_KEYS, forward: true };
+  rig.step(30, walk);
+
+  const hip = (alpha: number) => {
+    rig.fighter.applyPose(alpha);
+    // The hip pivot is the first child added under the body group per leg.
+    const pivots = rig.fighter.mesh.children.filter((c) => c.type === "Object3D");
+    return pivots[0].rotation.x;
+  };
+
+  rig.step(1, walk);
+  const at0 = hip(0);
+  const at1 = hip(1);
+  const mid = hip(0.5);
+  const between = Math.abs(mid - (at0 + at1) / 2) < 1e-6;
+
+  check("a leg's pose differs across one physics step", Math.abs(at1 - at0) > 1e-4,
+    `hip swung ${(at1 - at0).toFixed(4)} rad in one step`);
+  check("and a frame halfway through lands halfway between", between,
+    `alpha 0 ${at0.toFixed(4)}, 0.5 ${mid.toFixed(4)}, 1 ${at1.toFixed(4)}`);
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1212,6 +1251,7 @@ async function run(): Promise<void> {
   await attacksAreTelegraphed();
   await alliesShareAnArenaWithoutCuttingEachOther();
   await resetPutsSeveredLimbsBackOn();
+  await everyMovingPartIsInterpolated();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +
