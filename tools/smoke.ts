@@ -1108,6 +1108,76 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
     !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
 }
 
+async function resetPutsSeveredLimbsBackOn(): Promise<void> {
+  console.log("\nreset puts severed limbs back on");
+  const rig = await buildRig();
+  rig.step(60);
+
+  const part = (name: string) =>
+    rig.foe.fighter.parts.find((p) => p.name === name)!;
+  const cut = (handle: number, times: number) => {
+    for (let i = 0; i < times; i++) rig.foe.receive(fakeImpact(handle));
+  };
+
+  // Take the sword arm and the off arm off first; the head is last because
+  // losing it ends the fight and stops anything else registering.
+  cut(rig.foe.arm.upper.collider(0)!.handle, 4);
+  cut(part("offShoulder").collider.handle, 4);
+  cut(part("head").collider.handle, 4);
+
+  check("the foe came apart to begin with",
+    rig.foe.arm.disarmed && part("offShoulder").severed === true
+      && part("head").severed === true,
+    `arm ${rig.foe.arm.severedAt}, off arm and head off`);
+
+  rig.foe.reset(rig.tuning, FOE_SPAWN);
+  rig.ai.reset();
+  rig.impacts.resetSweeps();
+
+  const stillOff = ["head", "offShoulder", "offElbow"].filter(
+    (n) => part(n).severed === true);
+  check("nothing reports itself severed after a reset",
+    !rig.foe.arm.disarmed && stillOff.length === 0,
+    stillOff.length ? `still flagged severed: ${stillOff.join(", ")}` : "every flag cleared");
+
+  // Flags are cheap. What matters is whether the JOINTS are back: run two
+  // seconds of live fight and see whether the parts are still where a body
+  // keeps them, or somewhere across the room.
+  rig.fight(120);
+
+  // Measure the JOINT, not the limb. The upper arm's centre sits near the
+  // shoulder either way, because the drive holds the hand at a target anchored
+  // to the shoulder — an arm attached to nothing still hovers roughly where it
+  // belongs. What only a joint can do is pin the arm's TOP END to the anchor.
+  const shoulder = rig.foe.fighter.shoulderWorld(new THREE.Vector3());
+  const upper = rig.foe.arm.upper;
+  const r = upper.rotation();
+  const p = upper.translation();
+  const top = new THREE.Vector3(0, -rig.foe.fighter.build.segment.upperArm.length / 2, 0)
+    .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+    .add(new THREE.Vector3(p.x, p.y, p.z));
+  const armGap = shoulder.distanceTo(top);
+  check("the sword arm is pinned to the shoulder, not just hovering there",
+    armGap < 0.03,
+    `top of the upper arm sits ${(armGap * 1000).toFixed(0)} mm from its anchor`);
+
+  const torso = rig.foe.position(new THREE.Vector3());
+  const near = (name: string) => {
+    const body = part(name).body!;
+    const p = body.translation();
+    return torso.distanceTo(new THREE.Vector3(p.x, p.y, p.z));
+  };
+  check("the head is still on the neck", near("head") < 1.2,
+    `head sits ${near("head").toFixed(2)} m from the torso`);
+  check("the off arm is still on", near("offShoulder") < 1.2,
+    `off arm sits ${near("offShoulder").toFixed(2)} m from the torso`);
+
+  // And it has to be a working fighter again, not a mannequin holding a sword.
+  check("it fights again after being put back together",
+    rig.foe.arm.state.tipSpeed > 0.5 || rig.ai.intent !== "beaten",
+    `intent "${rig.ai.intent}", tip ${rig.foe.arm.state.tipSpeed.toFixed(1)} m/s`);
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1141,6 +1211,7 @@ async function run(): Promise<void> {
   await eachSpeciesCanFight();
   await attacksAreTelegraphed();
   await alliesShareAnArenaWithoutCuttingEachOther();
+  await resetPutsSeveredLimbsBackOn();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

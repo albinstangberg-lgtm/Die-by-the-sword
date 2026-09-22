@@ -336,32 +336,8 @@ export class Arm {
     this.bladeCollider = this.weaponColliders[this.weaponColliders.length - 1];
 
     // --- joints ---
-    // Shoulder: spherical, 3 DOF, anchored at the torso's shoulder point.
-    this.shoulderJoint = world.createImpulseJoint(
-      rapier.JointData.spherical(
-        // Must match Fighter.shoulderWorld, or the ghost hand is computed from
-        // one shoulder while the arm hangs off another.
-        { x: build.shoulderLocal.x, y: build.shoulderLocal.y, z: build.shoulderLocal.z },
-        { x: 0, y: -upperHalf, z: 0 },      // top of the upper arm
-      ),
-      this.fighter.body, this.upper, true,
-    );
-
-    // Elbow: revolute, 1 DOF, hinging about the arm's local X. Limited so it
-    // bends one way only — an elbow that inverts instantly looks like a bug.
-    const elbow = this.elbowJoint = world.createImpulseJoint(
-      rapier.JointData.revolute(
-        { x: 0, y: upperHalf, z: 0 },
-        { x: 0, y: -foreHalf, z: 0 },
-        { x: 1, y: 0, z: 0 },
-      ),
-      this.upper, this.fore, true,
-    ) as RAPIER.RevoluteImpulseJoint;
-    // A real elbow does not hyperextend, and allowing even a few degrees of it
-    // here lets the joint cross to the far side of straight, where the sign of
-    // the bend is undefined and the arm can jam. The upper bound keeps it
-    // permanently on one side of the singularity.
-    elbow.setLimits(-2.45, -0.06);
+    this.shoulderJoint = this.makeShoulderJoint();
+    this.elbowJoint = this.makeElbowJoint();
 
     // Hand: the weapon is welded rigidly. Identity frames mean the weapon's +Y
     // (its length) continues the forearm's +Y, and its +Z is the cutting edge.
@@ -375,6 +351,49 @@ export class Arm {
 
     this.buildMeshes(fighter.palette.skin);
     scene.add(this.group);
+  }
+
+  /**
+   * The two joints that can be cut, built from scratch.
+   *
+   * Factories rather than inline construction, because a reset has to be able
+   * to put the arm back ON. Severing removes the joint from the world outright
+   * — there is no "disabled" state to flip back — so reattaching means
+   * building it again, and the only way to be sure the new one matches the old
+   * is for both to come from here.
+   */
+  private makeShoulderJoint(): RAPIER.ImpulseJoint {
+    const { rapier, world } = this.phys;
+    const l = this.build.shoulderLocal;
+    // Spherical, 3 DOF, anchored at the torso's shoulder point. Must match
+    // Fighter.shoulderWorld, or the ghost hand is computed from one shoulder
+    // while the arm hangs off another.
+    return world.createImpulseJoint(
+      rapier.JointData.spherical(
+        { x: l.x, y: l.y, z: l.z },
+        { x: 0, y: -this.upperHalf, z: 0 },      // top of the upper arm
+      ),
+      this.fighter.body, this.upper, true,
+    );
+  }
+
+  private makeElbowJoint(): RAPIER.RevoluteImpulseJoint {
+    const { rapier, world } = this.phys;
+    // Revolute, 1 DOF, hinging about the arm's local X.
+    const elbow = world.createImpulseJoint(
+      rapier.JointData.revolute(
+        { x: 0, y: this.upperHalf, z: 0 },
+        { x: 0, y: -this.foreHalf, z: 0 },
+        { x: 1, y: 0, z: 0 },
+      ),
+      this.upper, this.fore, true,
+    ) as RAPIER.RevoluteImpulseJoint;
+    // A real elbow does not hyperextend, and allowing even a few degrees of it
+    // here lets the joint cross to the far side of straight, where the sign of
+    // the bend is undefined and the arm can jam. The upper bound keeps it
+    // permanently on one side of the singularity.
+    elbow.setLimits(-2.45, -0.06);
+    return elbow;
   }
 
   // -------------------------------------------------------------------------
@@ -968,6 +987,7 @@ export class Arm {
 
   /** Re-seat the arm after a reset, so it doesn't whip back across the room. */
   reset(t: Tuning): void {
+    const wasSevered = this.severedAt;
     this.severedAt = null;
     this.limp = false;
     this.armYaw = 0.30;
@@ -992,6 +1012,18 @@ export class Arm {
     place(this.upper, this.upperHalf);
     place(this.fore, this.upperLen + this.foreHalf);
     place(this.blade, this.upperLen + this.foreLen);
+
+    // Put the limb back on, AFTER it has been laid out straight along the arm
+    // direction: a joint built across the gap to wherever the severed arm came
+    // to rest is that much constraint violation, and the solver answers it by
+    // firing the limb at its anchor.
+    //
+    // Clearing `severedAt` alone was worse than leaving it cut. The arm read as
+    // attached, the drive started flying it again, and it was held in roughly
+    // the right place only because the hand's target happens to be anchored to
+    // the shoulder — a limb kept on by a controller rather than by a joint.
+    if (wasSevered === "shoulder") this.shoulderJoint = this.makeShoulderJoint();
+    if (wasSevered === "elbow") this.elbowJoint = this.makeElbowJoint();
   }
 
   /**

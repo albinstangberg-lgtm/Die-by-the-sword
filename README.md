@@ -14,7 +14,7 @@ telling you what they are about to do before they do it.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 89 checks, no browser needed
+npm run smoke    # headless physics harness — 95 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -273,7 +273,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Eleven things the physics taught us
+## Twelve things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -354,6 +354,19 @@ leaves the shaft pointing the same way in each, and the only thing left between
 them is the hand travelling up its own line. That is a thrust, and it took the
 goblin from grazing a standing target for 21 points in forty seconds to emptying
 its health bar in the same time.
+
+**A reset has to put the joints back, not just the flags.** Severing removes
+the joint from the world outright — there is no disabled state to flip back —
+so a reset that cleared `severed` and teleported the limb home produced a
+fighter who believed it had a head while the head lay four metres away. The
+sword arm was worse: clearing the flag without rebuilding the shoulder left the
+limb reading as attached and being *flown* by its own PD controller, held
+roughly in place only because the hand's target happens to be anchored to the
+shoulder. It looked almost right, which is the dangerous kind of wrong. Joints
+are built from one factory now, used both at birth and at reset, and the limb
+is laid back out in its rest pose before the joint is made — a joint created
+across a metre of gap is a metre of constraint violation, and the solver
+answers that by firing the limb at its anchor.
 
 And one about the harness rather than the game:
 
@@ -450,13 +463,15 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 89 checks in under a
+and `Ai` against Rapier in Node — no WebGL, no browser, 95 checks in under a
 minute. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
 
 It also drives a real scripted swing all the way through to a severed limb,
-jumps a fighter and measures where it lands, checks that an axe really does come
+takes a fighter apart and checks that a reset puts it back together — measuring
+the joint anchor rather than the limb, because an arm attached to nothing still
+hovers roughly where it belongs — jumps a fighter and measures where it lands, checks that an axe really does come
 round slower than a sword on the same arm and the same command, proves that a
 spear held by the butt cannot be steered where a choked-up one can, and runs
 half a minute of live fight against each species to check it closes, swings,

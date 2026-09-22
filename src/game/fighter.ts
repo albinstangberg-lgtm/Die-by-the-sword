@@ -80,11 +80,8 @@ export class Fighter {
   readonly parts: FighterPart[] = [];
 
   private head!: RAPIER.RigidBody;
-  private headJoint: RAPIER.ImpulseJoint | null = null;
   private offUpper!: RAPIER.RigidBody;
   private offFore!: RAPIER.RigidBody;
-  private offShoulderJoint: RAPIER.ImpulseJoint | null = null;
-  private offElbowJoint: RAPIER.ImpulseJoint | null = null;
 
   /** Kinematic lower body, posed rather than simulated. */
   private legs: {
@@ -223,20 +220,62 @@ export class Fighter {
       this.head,
     );
 
-    this.headJoint = world.createImpulseJoint(
-      rapier.JointData.spherical(
-        { x: 0, y: local(STANDING.neck), z: 0 },
-        { x: 0, y: -seg.length / 2, z: 0 },
-      ),
-      this.body, this.head, true,
-    );
-
     this.headMesh = buildHeadMesh(this.palette, seg.radius);
     this.scene.add(this.headMesh);
     this.parts.push({
       name: "head", label: "head", collider, body: this.head,
-      joint: this.headJoint, severed: false, mesh: this.headMesh,
+      joint: this.jointFor("head"), severed: false, mesh: this.headMesh,
     });
+  }
+
+  /**
+   * Build one of the severable joints from scratch.
+   *
+   * A factory rather than three inline calls in the constructor, because a
+   * reset has to be able to put a limb back ON. Severing removes the joint
+   * from the world outright — there is no "disabled" state to flip back — so
+   * the only way to reattach anything is to make the joint again, and the only
+   * way to be sure the new one matches the old is for both to come from here.
+   */
+  private jointFor(name: string): RAPIER.ImpulseJoint {
+    const { rapier, world } = this.phys;
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
+
+    if (name === "head") {
+      return world.createImpulseJoint(
+        rapier.JointData.spherical(
+          { x: 0, y: local(STANDING.neck), z: 0 },
+          { x: 0, y: -SEGMENT.head.length / 2, z: 0 },
+        ),
+        this.body, this.head, true,
+      );
+    }
+    if (name === "offShoulder") {
+      return world.createImpulseJoint(
+        rapier.JointData.spherical(
+          { x: -STANDING.shoulderX, y: local(STANDING.shoulder), z: 0 },
+          { x: 0, y: -SEGMENT.upperArm.length / 2, z: 0 },
+        ),
+        this.body, this.offUpper, true,
+      );
+    }
+    if (name !== "offElbow") {
+      // Only three parts have a joint to rebuild. Anything else reaching here
+      // means a new severable part was added without teaching this about it,
+      // and silently handing back an elbow would be far harder to spot.
+      throw new Error(`no joint recipe for "${name}"`);
+    }
+    const elbow = world.createImpulseJoint(
+      rapier.JointData.revolute(
+        { x: 0, y: SEGMENT.upperArm.length / 2, z: 0 },
+        { x: 0, y: -SEGMENT.foreArm.length / 2, z: 0 },
+        { x: 1, y: 0, z: 0 },
+      ),
+      this.offUpper, this.offFore, true,
+    );
+    (elbow as RAPIER.RevoluteImpulseJoint).setLimits(-2.3, -0.05);
+    return elbow;
   }
 
   /** The left arm: present, jointed, severable — but never driven by anyone. */
@@ -283,32 +322,17 @@ export class Fighter {
     this.offUpperMesh = upper.mesh;
     this.offForeMesh = fore.mesh;
 
-    this.offShoulderJoint = world.createImpulseJoint(
-      rapier.JointData.spherical(
-        { x: sx, y: local(STANDING.shoulder), z: 0 },
-        { x: 0, y: -SEGMENT.upperArm.length / 2, z: 0 },
-      ),
-      this.body, upper.body, true,
-    );
-    this.offElbowJoint = world.createImpulseJoint(
-      rapier.JointData.revolute(
-        { x: 0, y: SEGMENT.upperArm.length / 2, z: 0 },
-        { x: 0, y: -SEGMENT.foreArm.length / 2, z: 0 },
-        { x: 1, y: 0, z: 0 },
-      ),
-      upper.body, fore.body, true,
-    );
-    (this.offElbowJoint as RAPIER.RevoluteImpulseJoint).setLimits(-2.3, -0.05);
-
     this.scene.add(upper.mesh, fore.mesh);
 
     this.parts.push({
       name: "offShoulder", label: "off arm", collider: upper.collider,
-      body: upper.body, joint: this.offShoulderJoint, severed: false, mesh: upper.mesh,
+      body: upper.body, joint: this.jointFor("offShoulder"),
+      severed: false, mesh: upper.mesh,
     });
     this.parts.push({
       name: "offElbow", label: "off forearm", collider: fore.collider,
-      body: fore.body, joint: this.offElbowJoint, severed: false, mesh: fore.mesh,
+      body: fore.body, joint: this.jointFor("offElbow"),
+      severed: false, mesh: fore.mesh,
     });
   }
 
@@ -605,19 +629,55 @@ export class Fighter {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
 
-    // Severed parts stay severed until the whole fighter is rebuilt; what a
-    // reset can do is put the still-attached ones back where they belong.
-    const place = (body: RAPIER.RigidBody, y: number, x = 0) => {
+    // Put the pieces back where they belong BEFORE reattaching them. A joint
+    // created across a metre of gap is a metre of constraint violation, and
+    // the solver resolves it by firing the limb at its anchor.
+    //
+    // The rotations matter as much as the positions. A severed forearm comes
+    // to rest at whatever angle it fell at, and the elbow is a hinge: build it
+    // around a forearm lying on its side and the joint has to unwind the whole
+    // error on the first step.
+    const place = (body: RAPIER.RigidBody, y: number, x: number, upright: boolean) => {
       body.setTranslation({ x: spawn.x + x, y: spawn.y + y, z: spawn.z }, true);
+      // Limbs are built with local +Y running DOWN the limb, which is a half
+      // turn about X from the identity the head sits at.
+      body.setRotation(upright ? { x: 0, y: 0, z: 0, w: 1 } : { x: 1, y: 0, z: 0, w: 0 }, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      body.resetForces(true);
+      body.resetTorques(true);
     };
-    place(this.head, local(STANDING.neck + SEGMENT.head.length / 2));
+    place(this.head, local(STANDING.neck + SEGMENT.head.length / 2), 0, true);
     place(this.offUpper, local(STANDING.shoulder - SEGMENT.upperArm.length / 2),
-      -STANDING.shoulderX);
+      -STANDING.shoulderX, false);
     place(this.offFore,
       local(STANDING.shoulder - SEGMENT.upperArm.length - SEGMENT.foreArm.length / 2),
-      -STANDING.shoulderX);
+      -STANDING.shoulderX, false);
+
+    this.reattach();
+  }
+
+  /**
+   * Put every severed part back on.
+   *
+   * Severing removes the joint from the world, so a reset that only clears the
+   * flags leaves a head lying where it fell and a fighter that believes it
+   * still has one. The parts list owns the joint, so the rule is simply: if a
+   * part has no joint, make it one.
+   *
+   * Cutting a shoulder marks the forearm severed without touching its elbow —
+   * the elbow was fine, the thing it hung from was not — so that one only
+   * needs its flag cleared, and asking for a second elbow joint would leave
+   * two constraints fighting over the same pair of bodies.
+   */
+  private reattach(): void {
+    for (const part of this.parts) {
+      if (!part.severed) continue;
+      if (part.joint === null || part.joint === undefined) {
+        part.joint = this.jointFor(part.name);
+      }
+      part.severed = false;
+    }
   }
 }
 
