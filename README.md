@@ -5,16 +5,18 @@ Sword*: the sword arm is a simulated limb, not a set of attack animations. You
 drag the mouse, the arm follows, and the blade's damage — and its bounce, its
 lag, its refusal to go where you asked — comes out of the physics.
 
-**This is stage 5.** Stage 2 asked whether swinging a sword at a wall feels
+**This is stage 6.** Stage 2 asked whether swinging a sword at a wall feels
 good. Stage 3 gave the swing consequences. Stage 4 put someone in the room who
-swings back. Stage 5 gives you something to fight that is not a copy of you: an
+swings back. Stage 5 gave you something to fight that is not a copy of you: an
 orc with an axe and a goblin with a spear, both bound by the same physics, both
-telling you what they are about to do before they do it.
+telling you what they are about to do before they do it. Stage 6 stops them
+sharing a room — there are three now, with doors between them — and makes a cut
+look like one.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 98 checks, no browser needed
+npm run smoke    # headless physics harness — 114 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -133,6 +135,103 @@ Sweeping the blade's line reports the speed it was *actually* travelling when it
 arrived, which is the number the whole damage model is built on. It also means
 you can swing from inside your own reach, where the arc crosses a target's
 centre rather than skidding off its near surface.
+
+### What a cut looks like
+
+Underneath, a fighter is what it always was: an invisible capsule that walks,
+carrying a handful of capsule colliders that a blade can find and a set of
+joints that can be cut. None of that changed here. What changed is the
+drawing.
+
+Each capsule is now a **tapered shell** — a profile swept round the limb's own
+axis, so it has a shoulder end and a wrist end and a little muscle in between —
+and the joints between them are filled with balls, so the silhouette runs
+unbroken from shoulder to hand instead of reading as a bag of sausages. A neck,
+a belt, hands and feet finish it. Every shell is built from the same two
+numbers as the collider it stands in for, and every one of them is either a
+mesh the Interpolator already places or a child of one, so the rule that
+nothing else may move a body's mesh still holds.
+
+There is exactly one deliberate mismatch between what you see and what a blade
+finds: the **head is drawn about a centimetre and a half proud of its collider**,
+because that collider is sized by mass and a head at that radius reads as sunk
+into its own shoulders. The slop is the right way round — the head you can see
+is the generous one, so a cut that looks like a miss is one.
+
+A joint ball belongs to the *proximal* side — shoulders on the torso, elbows on
+the upper arm, knees on the thigh — which is what makes a severed limb come
+away with a flat cut face rather than a ball joint, and leaves the body with
+something rounded where the arm used to be.
+
+**And a cut bleeds.** A sever used to be a joint quietly leaving the world: the
+piece dropped, a dark disc appeared, and the moment read as nothing. Now it
+throws a burst of droplets along the blade's own travel, and the two faces it
+left — the piece that fell and the stump on the body — go on emptying for a
+second and a half afterwards. Both are local points on meshes that are already
+placed every frame, so the arm bleeds all the way to the floor and the stump
+bleeds from the shoulder rather than from where the shoulder used to be.
+
+Lesser cuts spray in proportion to the damage they actually did, so a flat slap
+produces nothing and the blood agrees with the number in the HUD.
+
+Which hits bleed and which throw sparks is not a lookup. The two hit paths
+already know: **a solver contact is stone or steel**, because a blade collides
+with nothing else, and **a swept hit is flesh**, because that is the only thing
+a sweep looks for. Sparks come off the wall, blood comes out of the body, and
+neither has to be told what it hit.
+
+## The testing area
+
+Three rooms, and the point of them is that they are not one room.
+
+```
+        ┌───────────────────────────┐
+        │          THE HALL         │           ┌───────────────┐
+        │           an orc          │   door    │   THE CELL    │
+        │  a low beam, a block and  ├───────────┤   a goblin,   │
+        │        a thin post        │           │  and nothing  │
+        │                           │           │     else      │
+        └────────────┐   ┌──────────┘           └───────────────┘
+                     │   │ door
+        ┌────────────┘   └──────────┐
+        │     THE TRAINING ROOM     │
+        │   the practice dummy and  │
+        │        four pillars       │
+        │                           │
+        └───────────────────────────┘
+               you start here
+```
+
+You start in the training room with the practice dummy and four pillars, and
+nothing else in it — a cut you land there is a cut you can read. North through
+the door is the hall, which holds the orc and the scenery a big swing gets
+caught on. East out of the hall is the cell, which holds the goblin and
+nothing at all, because a spear's reach is the whole argument and a cluttered
+room would answer it for you.
+
+Walls change what an opponent can know, and that turns out to be the whole of
+the layout:
+
+**An animal that cannot see you does not come for you.** Every opponent casts
+one ray, eye to eye, against the architecture and nothing else — bodies do not
+block it, the hanging dummy does not block it, stone does. If the line is
+broken it holds its post: it does not track you, it does not turn, and it
+keeps its weapon where a waiting animal keeps it. The fight panel says
+`waiting`, which is also how you can tell at a glance that the room you are in
+is yours.
+
+Sight alone is not enough to start a fight, and a door is why. A door is a hole
+you can see a long way through, so a bare line-of-sight test had the orc set off
+across its hall the moment you lined up with the doorway eighteen metres away
+in another room. **Notice is close range** — nine metres — and once it has
+noticed you, sight alone keeps it coming. So you can stand in the training room
+and look through the door at an orc that has not seen you yet, and walk through
+that door and find that it has.
+
+Losing sight does not stop a fight dead either: it keeps coming for two and a
+half seconds after the line breaks, which is about one pillar's worth. An
+opponent that downed tools every time you stepped behind something would be
+trivial to beat and absurd to watch.
 
 ## The bestiary
 
@@ -273,7 +372,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Thirteen things the physics taught us
+## Fifteen things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -382,6 +481,23 @@ legs have no body to read, so they carry their own two poses and ease between
 them, and the ghost hand is deliberately snapped because showing pure input a
 step in the past would understate the very lag it exists to reveal.
 
+**A hull moved on its own drags itself back.** Putting a fighter somewhere
+else by setting its hull's position leaves its head, its off arm and its whole
+sword arm where they were, hanging off joints that are now a room long. The
+solver answers three violated constraints of that size the only way it can, and
+the body it had just been handed ends up over a metre from where it was put —
+which looks exactly like a physics bug and is in fact a teleport that only
+moved a third of the animal. Everything that moves a fighter goes through the
+one reset that puts the whole figure down together, harness included.
+
+**A door is a hole you can see a long way through.** The line-of-sight rule
+above is what makes each room its own fight, and on its own it very nearly
+threw that away: an orc eighteen metres off in another room can see you
+perfectly well the moment you line up with the doorway between you, and it set
+off at once. Sight decides whether it can *keep* coming; a separate, short
+notice range decides whether it starts. Two numbers, because they are two
+questions.
+
 And one about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -442,14 +558,21 @@ Some things look like bugs and are not:
   brace against, it moves you considerably further.
 - **The orc and the goblin never cut each other.** Their weapons pass through
   their own team. Friendly fire would be excellent and it is not here yet.
-- **Standing still gets you killed in well under a minute** by any one of them,
-  and much faster by both.
+- **Backing into a wall fades you out.** The camera sits three metres behind
+  you and a wall that close leaves it inside the stone, looking at the outside
+  of the room. It is pulled in to the wall instead, and your own body — then,
+  closer still, your arm — fades so that what you can see is the room rather
+  than your own shoulder. Step forward and you come back.
+- **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **Standing still gets you killed in well under a minute** by whichever of
+  them you have walked in on, and much faster by both, if you manage to bring
+  them together.
 
 ## Structure
 
 ```
 src/
-  main.ts            wiring, camera, who is in the room
+  main.ts            wiring, camera, who is in which room
   tuning.ts          every constant that shapes the feel
   core/
     loop.ts          fixed 60Hz accumulator
@@ -463,12 +586,14 @@ src/
     species.ts       the bestiary — a size, a weapon, a list of attacks
     anatomy.ts       one set of proportions, scaled to any body
     fighter.ts       torso, locomotion and the jump
-    arena.ts         a room built to be hit
+    arena.ts         three rooms built to be hit, and the doors between them
     combatant.ts     a fighter, their arm, and what a cut does to them
     ai.ts            the opponent's brain — mouse deltas, nothing more
     cutting.ts       swept-segment hit detection: how a weapon finds flesh
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
+    skin.ts          the visible body: tapered shells over the capsules
+    blood.ts         droplets, and the two faces a cut leaves behind
     impacts.ts       contact events -> impact quality
     targets.ts       collider -> name registry
     trail.ts         the swept arc
@@ -477,7 +602,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 98 checks in under a
+and `Ai` against Rapier in Node — no WebGL, no browser, 114 checks in under a
 minute. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -491,6 +616,13 @@ spear held by the butt cannot be steered where a choked-up one can, and runs
 half a minute of live fight against each species to check it closes, swings,
 lands cuts, and never exceeds the reach of its own arm.
 
+It also holds the layout to its claims: that each subject is in its own room,
+that a wall stops a line of sight and a doorway does not, that an opponent
+which cannot see you neither moves nor swings — and that walking into its room
+starts a fight. And it takes a joint apart to check that the cut reports two
+faces to bleed from, that both are attached to something that is placed every
+frame, and that the droplets fall, land and go.
+
 ## Stack
 
 TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
@@ -501,5 +633,6 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the room. Friendly fire. An off-hand that does
-something — a shield, or the second hand a spear actually wants.
+Rounds and a reason to be in the rooms. Friendly fire. An off-hand that does
+something — a shield, or the second hand a spear actually wants. Blood that
+stays on the floor, and on the blade.

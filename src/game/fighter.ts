@@ -4,6 +4,11 @@ import type { PhysicsWorld, Side } from "../core/physics";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
 import { HUMAN, type Build, type Segment } from "./anatomy";
+import {
+  disposeTree, footMesh, handMesh, headMesh as headShape, jointBall, shellMesh,
+  stumpCap,
+} from "./skin";
+import type { WoundEnd } from "./blood";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -21,6 +26,12 @@ import { HUMAN, type Build, type Segment } from "./anatomy";
  * hold itself upright is a research project; a skeleton hung off something that
  * cannot fall over is an afternoon. The sword arm is the exception and lives in
  * arm.ts, because it is the one limb a player actually drives.
+ *
+ * What you SEE is a second thing laid over that, and only that: skin.ts draws
+ * each capsule as a tapered shell and fills the joints between them, so the
+ * figure reads as a body rather than as the pile of parts it is underneath.
+ * No collider, mass or joint changes for it, and every shell is a child of a
+ * mesh the Interpolator already places.
  */
 
 export interface Palette {
@@ -103,6 +114,15 @@ export class Fighter {
   private stridePhase = 0;
   private headMesh!: THREE.Object3D;
 
+  /** One set of materials for the whole figure, from its palette. */
+  private clothMat!: THREE.MeshStandardMaterial;
+  private skinMat!: THREE.MeshStandardMaterial;
+  private markMat!: THREE.MeshStandardMaterial;
+  private beltMat!: THREE.MeshStandardMaterial;
+
+  /** Dark caps added to cut faces, cleared when a reset puts the limb back. */
+  private readonly caps: THREE.Object3D[] = [];
+
   /** Whether the ground probe found anything to push off. */
   grounded = true;
   private coyote = COYOTE;
@@ -111,6 +131,8 @@ export class Fighter {
   private tuck = 0;
   private readonly groundRay: RAPIER.Ray;
   private readonly groundReach: number;
+  private readonly sightRay: RAPIER.Ray;
+  private readonly _eye = new THREE.Vector3();
 
   private readonly tmpVec = new THREE.Vector3();
   private readonly _q = new THREE.Quaternion();
@@ -134,6 +156,14 @@ export class Fighter {
 
     this.groundRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
     this.groundReach = HULL.height / 2 + GROUND_PROBE * build.scale;
+    this.sightRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+
+    this.clothMat = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.85 });
+    this.skinMat = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.68 });
+    this.markMat = new THREE.MeshStandardMaterial({ color: palette.mark, roughness: 0.6 });
+    this.beltMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(palette.cloth).multiplyScalar(0.55), roughness: 0.7,
+    });
 
     this.body = world.createRigidBody(
       rapier.RigidBodyDesc.dynamic()
@@ -156,11 +186,29 @@ export class Fighter {
       this.body,
     );
 
+    // The trunk. A chest that tapers to a waist and hips that flare out of it,
+    // drawn a little wider than they are deep, because a body is.
+    const chest = shellMesh(this.clothMat, {
+      from: SEGMENT.torso.radius * 0.82,
+      to: SEGMENT.torso.radius * 0.84,
+      length: SEGMENT.torso.length,
+      belly: 1.12,
+    });
+    chest.scale.set(1.16, 1, 0.86);
     this.collider = this.rigidPart("torso", "body", SEGMENT.torso,
-      local((STANDING.waist + STANDING.neck) / 2), 0, palette.cloth);
-    this.rigidPart("pelvis", "hips", SEGMENT.pelvis,
-      local((STANDING.hip + STANDING.waist) / 2), 0, palette.cloth);
+      local((STANDING.waist + STANDING.neck) / 2), 0, chest);
 
+    const hips = shellMesh(this.clothMat, {
+      from: SEGMENT.pelvis.radius * 0.98,
+      to: SEGMENT.pelvis.radius * 0.86,
+      length: SEGMENT.pelvis.length,
+      belly: 1.06,
+    });
+    hips.scale.set(1.1, 1, 0.92);
+    this.rigidPart("pelvis", "hips", SEGMENT.pelvis,
+      local((STANDING.hip + STANDING.waist) / 2), 0, hips);
+
+    this.buildTrunkFill();
     this.buildHead();
     this.buildOffArm();
     this.buildLegs();
@@ -179,7 +227,7 @@ export class Fighter {
   /** A collider mounted straight onto the hull — moves with it, cannot come off. */
   private rigidPart(
     name: string, label: string, seg: { radius: number; length: number; mass: number },
-    y: number, x: number, colour: number,
+    y: number, x: number, mesh: THREE.Object3D,
   ): RAPIER.Collider {
     const { rapier, world } = this.phys;
     const half = Math.max(0.01, seg.length / 2 - seg.radius);
@@ -193,16 +241,55 @@ export class Fighter {
       this.body,
     );
 
-    const mesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(seg.radius, half * 2, 6, 14),
-      new THREE.MeshStandardMaterial({ color: colour, roughness: 0.85 }),
-    );
     mesh.position.set(x, y, 0);
-    mesh.castShadow = true;
     this.mesh.add(mesh);
 
     this.parts.push({ name, label, collider, mesh });
     return collider;
+  }
+
+  /**
+   * The lumps that make a trunk continuous: shoulders, hips, a neck, a belt.
+   *
+   * They hang off the body group rather than off the torso mesh, because that
+   * mesh is scaled to an oval cross-section and a ball inherited into that
+   * scale comes out an egg.
+   */
+  private buildTrunkFill(): void {
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
+
+    for (const sx of [-1, 1]) {
+      const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.clothMat, 0.8);
+      shoulder.position.set(sx * STANDING.shoulderX, local(STANDING.shoulder), 0);
+      this.mesh.add(shoulder);
+
+      const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.clothMat, 0.92);
+      hip.position.set(sx * STANDING.hipX, local(STANDING.hip), 0);
+      this.mesh.add(hip);
+    }
+
+    // A neck, and it has to be long enough to see: shoulders sit a hand's
+    // width below the skull, and without a column between them the head reads
+    // as sitting straight on the chest.
+    const neck = shellMesh(this.skinMat, {
+      from: SEGMENT.head.radius * 0.66,
+      to: SEGMENT.head.radius * 0.56,
+      length: SEGMENT.head.radius * 2.0,
+    });
+    neck.position.y = local(STANDING.neck) - SEGMENT.head.radius * 0.35;
+    this.mesh.add(neck);
+
+    const belt = new THREE.Mesh(
+      new THREE.CylinderGeometry(
+        SEGMENT.pelvis.radius * 1.03, SEGMENT.pelvis.radius * 1.03,
+        0.055 * this.build.scale, 20),
+      this.beltMat,
+    );
+    belt.scale.set(1.1, 1, 0.92);
+    belt.position.y = local(STANDING.waist);
+    belt.castShadow = true;
+    this.mesh.add(belt);
   }
 
   private buildHead(): void {
@@ -227,7 +314,7 @@ export class Fighter {
       this.head,
     );
 
-    this.headMesh = buildHeadMesh(this.palette, seg.radius);
+    this.headMesh = headShape(seg.radius, this.skinMat, this.markMat);
     this.scene.add(this.headMesh);
     this.parts.push({
       name: "head", label: "head", collider, body: this.head,
@@ -293,7 +380,7 @@ export class Fighter {
     const p = this.body.translation();
     const sx = -STANDING.shoulderX;
 
-    const make = (seg: Segment, topY: number) => {
+    const make = (seg: Segment, topY: number, wide: number, narrow: number) => {
       const centre = topY - seg.length / 2;
       const body = world.createRigidBody(
         rapier.RigidBodyDesc.dynamic()
@@ -312,17 +399,31 @@ export class Fighter {
           .setContactForceEventThreshold(1.0),
         body,
       );
-      const mesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(seg.radius, half * 2, 6, 12),
-        new THREE.MeshStandardMaterial({ color: this.palette.skin, roughness: 0.7 }),
-      );
-      mesh.castShadow = true;
+      // Local +Y runs from the joint DOWN the limb, so -Y is the shoulder end
+      // and the taper runs thick to thin in that order.
+      const mesh = shellMesh(this.skinMat, {
+        from: seg.radius * wide,
+        to: seg.radius * narrow,
+        length: seg.length,
+        belly: 1.05,
+      });
       return { body, collider, mesh, seg };
     };
 
-    const upper = make(SEGMENT.upperArm, STANDING.shoulder);
+    const upper = make(SEGMENT.upperArm, STANDING.shoulder, 1.06, 0.84);
     const elbowY = STANDING.shoulder - SEGMENT.upperArm.length;
-    const fore = make(SEGMENT.foreArm, elbowY);
+    const fore = make(SEGMENT.foreArm, elbowY, 1.0, 0.68);
+
+    // The elbow belongs to the upper arm and the hand to the forearm, so a cut
+    // at either joint leaves a rounded joint on the body and a flat cut face
+    // on the piece that fell.
+    const elbow = jointBall(SEGMENT.foreArm.radius * 1.15, this.skinMat);
+    elbow.position.y = SEGMENT.upperArm.length / 2;
+    upper.mesh.add(elbow);
+
+    const hand = handMesh(SEGMENT.foreArm.radius * 1.22, this.skinMat);
+    hand.position.y = SEGMENT.foreArm.length / 2;
+    fore.mesh.add(hand);
 
     this.offUpper = upper.body;
     this.offFore = fore.body;
@@ -358,27 +459,41 @@ export class Fighter {
       hipPivot.position.set(sign * STANDING.hipX, local(STANDING.hip), 0);
       this.mesh.add(hipPivot);
 
-      const thighMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(SEGMENT.thigh.radius,
-          SEGMENT.thigh.length - SEGMENT.thigh.radius * 2, 6, 12),
-        new THREE.MeshStandardMaterial({ color: this.palette.cloth, roughness: 0.85 }),
-      );
+      // A leg hangs off its pivot, so here +Y is the joint end and -Y the far
+      // one -- the opposite way round from an arm, and worth stating twice.
+      const thighMesh = shellMesh(this.clothMat, {
+        from: SEGMENT.thigh.radius * 0.8,
+        to: SEGMENT.thigh.radius * 1.02,
+        length: SEGMENT.thigh.length,
+        belly: 1.06,
+      });
       thighMesh.position.y = -SEGMENT.thigh.length / 2;
-      thighMesh.castShadow = true;
       hipPivot.add(thighMesh);
+
+      const knee = jointBall(SEGMENT.shin.radius * 1.12, this.clothMat);
+      knee.position.y = -SEGMENT.thigh.length / 2;
+      thighMesh.add(knee);
 
       const kneePivot = new THREE.Object3D();
       kneePivot.position.y = -SEGMENT.thigh.length;
       hipPivot.add(kneePivot);
 
-      const shinMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(SEGMENT.shin.radius,
-          SEGMENT.shin.length - SEGMENT.shin.radius * 2, 6, 12),
-        new THREE.MeshStandardMaterial({ color: this.palette.cloth, roughness: 0.85 }),
-      );
+      const shinMesh = shellMesh(this.clothMat, {
+        from: SEGMENT.shin.radius * 0.62,
+        to: SEGMENT.shin.radius * 1.0,
+        length: SEGMENT.shin.length,
+        belly: 1.04,
+      });
       shinMesh.position.y = -SEGMENT.shin.length / 2;
-      shinMesh.castShadow = true;
       kneePivot.add(shinMesh);
+
+      // Forward is -Z, so the foot lies out ahead of the ankle rather than
+      // down from it. Scenery: the collider is the shin and stops at the sole.
+      const foot = footMesh(SEGMENT.shin.radius * 0.72,
+        SEGMENT.shin.length * 0.52, this.beltMat);
+      foot.position.set(0, -SEGMENT.shin.length / 2 + SEGMENT.shin.radius * 0.3,
+        -SEGMENT.shin.length * 0.12);
+      shinMesh.add(foot);
 
       const kinematic = (seg: Segment, label: string, mesh: THREE.Object3D) => {
         const bodyR = world.createRigidBody(rapier.RigidBodyDesc.kinematicPositionBased());
@@ -493,6 +608,41 @@ export class Fighter {
     ) !== null;
   }
 
+  /** Eye point in world space, near enough: the top of the head. */
+  eyeWorld(out: THREE.Vector3): THREE.Vector3 {
+    const p = this.body.translation();
+    const { standing: STANDING, segment: SEGMENT } = this.build;
+    return out.set(
+      p.x, p.y + this.build.local(STANDING.crown) - SEGMENT.head.radius, p.z);
+  }
+
+  /**
+   * Is there a clear line from this fighter's eyes to that point?
+   *
+   * One ray against the architecture and nothing else. It is what an opponent
+   * uses to decide whether you are its problem yet, and the whole reason the
+   * orc waits in its hall instead of walking into the far side of a wall for
+   * the length of the fight.
+   *
+   * The last few centimetres are not tested: a target standing with its back
+   * to a wall is not hidden by that wall.
+   */
+  sees(point: THREE.Vector3): boolean {
+    this.eyeWorld(this._eye);
+    const dx = point.x - this._eye.x;
+    const dy = point.y - this._eye.y;
+    const dz = point.z - this._eye.z;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist < 0.2) return true;
+
+    this.sightRay.origin = { x: this._eye.x, y: this._eye.y, z: this._eye.z };
+    this.sightRay.dir = { x: dx / dist, y: dy / dist, z: dz / dist };
+    return this.phys.world.castRay(
+      this.sightRay, dist - 0.15, true,
+      undefined, this.side.sightFilter, undefined, this.body,
+    ) === null;
+  }
+
   /** Weak PD keeping head and off-arm in a living posture rather than limp. */
   private holdPose(_dt: number): void {
     const hullRot = this.body.rotation();
@@ -590,10 +740,47 @@ export class Fighter {
     return this.parts.find((p) => p.name === name)?.severed === true;
   }
 
-  /** Cut a jointed part free. Children go with it. */
-  sever(name: string): boolean {
+  /**
+   * Fade the whole figure out, 1 solid and 0 gone.
+   *
+   * For the camera, which in three rooms with doorways is forever being backed
+   * into a wall. Pulling it in to the stone is the only way to keep the room
+   * in view, and pulling it in that far puts it inside the body -- so the body
+   * gets out of the way. The sword arm has materials of its own and is
+   * deliberately not touched: the one thing you must never lose sight of is
+   * the thing you are swinging.
+   */
+  setFade(amount: number): void {
+    const a = amount < 0 ? 0 : amount > 1 ? 1 : amount;
+    if (Math.abs(a - this.fade) < 0.01) return;
+    this.fade = a;
+
+    for (const m of [this.clothMat, this.skinMat, this.markMat, this.beltMat]) {
+      m.transparent = a < 1;
+      m.opacity = a;
+      m.depthWrite = a > 0.6;
+    }
+    // A material at zero opacity still casts a shadow, so the figure has to
+    // leave the scene rather than merely turn invisible.
+    const shown = a > 0.02;
+    this.mesh.visible = shown;
+    for (const part of this.parts) {
+      if (part.body !== undefined) part.mesh.visible = shown;
+    }
+  }
+
+  private fade = 1;
+
+  /**
+   * Cut a jointed part free. Children go with it.
+   *
+   * Returns the two faces the cut left -- the piece and the stump -- or null
+   * if there was nothing there to cut. They are local points on meshes the
+   * Interpolator places, so blood drawn from them follows both ends about.
+   */
+  sever(name: string): WoundEnd[] | null {
     const part = this.parts.find((p) => p.name === name);
-    if (!part || !part.joint || part.severed) return false;
+    if (!part || !part.joint || part.severed) return null;
     this.phys.world.removeImpulseJoint(part.joint, true);
     part.joint = null;
     part.severed = true;
@@ -605,7 +792,46 @@ export class Fighter {
       const fore = this.parts.find((p) => p.name === "offElbow");
       if (fore) fore.severed = true;
     }
-    return true;
+    return this.capCut(part);
+  }
+
+  /**
+   * A dark dome over the cut face, so a severed part reads as cut rather than
+   * dropped. Every part here is built with its joint end at -Y.
+   */
+  private capCut(part: FighterPart): WoundEnd[] {
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
+
+    const shape = part.name === "head"
+      ? { half: SEGMENT.head.radius * 1.04, end: SEGMENT.head.radius * 0.74 }
+      : part.name === "offShoulder"
+        ? { half: SEGMENT.upperArm.length / 2, end: SEGMENT.upperArm.radius * 1.06 }
+        : { half: SEGMENT.foreArm.length / 2, end: SEGMENT.foreArm.radius };
+
+    const cap = stumpCap(shape.end);
+    cap.position.y = -(shape.half - shape.end * 0.5);
+    cap.rotation.x = Math.PI;
+    part.mesh.add(cap);
+    this.caps.push(cap);
+
+    // The other face: whatever the piece came off. A neck and a shoulder are
+    // on the body group; an off forearm comes off the upper arm above it.
+    const upper = this.parts.find((p) => p.name === "offShoulder");
+    const socket: WoundEnd = part.name === "head"
+      ? { object: this.mesh, local: new THREE.Vector3(0, local(STANDING.neck), 0) }
+      : part.name === "offShoulder"
+        ? {
+            object: this.mesh,
+            local: new THREE.Vector3(
+              -STANDING.shoulderX, local(STANDING.shoulder), 0),
+          }
+        : {
+            object: upper?.mesh ?? this.mesh,
+            local: new THREE.Vector3(0, SEGMENT.upperArm.length / 2, 0),
+          };
+
+    return [{ object: part.mesh, local: cap.position.clone() }, socket];
   }
 
   position(out: THREE.Vector3): THREE.Vector3 {
@@ -719,6 +945,12 @@ export class Fighter {
    * two constraints fighting over the same pair of bodies.
    */
   private reattach(): void {
+    for (const cap of this.caps) {
+      cap.removeFromParent();
+      disposeTree(cap);
+    }
+    this.caps.length = 0;
+
     for (const part of this.parts) {
       if (!part.severed) continue;
       if (part.joint === null || part.joint === undefined) {
@@ -747,23 +979,3 @@ function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = 
   body.setNextKinematicRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w });
 }
 
-function buildHeadMesh(p: Palette, radius: number): THREE.Object3D {
-  const g = new THREE.Group();
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 16, 12),
-    new THREE.MeshStandardMaterial({ color: p.skin, roughness: 0.7 }),
-  );
-  head.castShadow = true;
-  g.add(head);
-
-  // Marks the facing direction — without it you cannot tell which way anyone
-  // is looking, which matters a lot once someone is trying to kill you.
-  const nose = new THREE.Mesh(
-    new THREE.ConeGeometry(radius * 0.33, radius * 0.87, 8),
-    new THREE.MeshStandardMaterial({ color: p.mark, roughness: 0.6 }),
-  );
-  nose.position.set(0, 0, -radius);
-  nose.rotation.x = -Math.PI / 2;
-  g.add(nose);
-  return g;
-}

@@ -79,6 +79,14 @@ export interface Side {
   readonly hitOnlyFilter: number;
   /** For the downward probe that decides whether the feet are on something. */
   readonly groundFilter: number;
+  /**
+   * For the line-of-sight ray.
+   *
+   * Walls and pillars only. Bodies do not block sight -- an orc can see you
+   * past the goblin in front of it -- and neither does the hanging practice
+   * dummy, which is a prop rather than architecture.
+   */
+  readonly sightFilter: number;
   readonly body: number;
   readonly blade: number;
 }
@@ -122,6 +130,7 @@ export function makeSides(teams: readonly number[]): Side[] {
       hullFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP | otherHulls),
       hitOnlyFilter: groups(mine.body, foeBlades),
       groundFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP),
+      sightFilter: groups(mine.hull, GROUP.WORLD),
     };
   });
 }

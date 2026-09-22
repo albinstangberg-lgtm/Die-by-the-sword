@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
+import { disposeTree, handMesh, jointBall, shellMesh, stumpCap } from "./skin";
+import type { WoundEnd } from "./blood";
 
 import type { Tuning } from "../tuning";
 import type { Build } from "./anatomy";
@@ -165,6 +167,8 @@ export class Arm {
   /** Live total weapon mass, which the panel can change for the player. */
   private weaponMass: number;
   private glow: THREE.MeshStandardMaterial[] = [];
+  /** Dark caps on cut faces, cleared when a reset puts the arm back on. */
+  private readonly caps: THREE.Object3D[] = [];
   private tell = 0;
 
   private shoulderJoint: RAPIER.ImpulseJoint | null = null;
@@ -742,16 +746,27 @@ export class Arm {
     const upper = this.build.segment.upperArm;
     const fore = this.build.segment.foreArm;
 
-    this.upperMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(
-        upper.radius, Math.max(0.01, upper.length - upper.radius * 2), 6, 12), skin,
-    );
-    this.foreMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(
-        fore.radius, Math.max(0.01, fore.length - fore.radius * 2), 6, 12), skin,
-    );
-    this.upperMesh.castShadow = true;
-    this.foreMesh.castShadow = true;
+    // Both bodies are built with local +Y running from the shoulder out toward
+    // the hand, so the limb tapers from -Y to +Y and the hand goes at +foreHalf.
+    this.upperMesh = shellMesh(skin, {
+      from: upper.radius * 1.06, to: upper.radius * 0.84,
+      length: upper.length, belly: 1.05,
+    });
+    this.foreMesh = shellMesh(skin, {
+      from: fore.radius, to: fore.radius * 0.68,
+      length: fore.length, belly: 1.05,
+    });
+
+    const elbow = jointBall(fore.radius * 1.15, skin);
+    elbow.position.y = this.upperHalf;
+    this.upperMesh.add(elbow);
+
+    // A hand around the grip. The weapon is welded to the forearm rather than
+    // held, so without one the sword grows out of a tapered stump.
+    const hand = handMesh(fore.radius * 1.22, skin);
+    hand.position.y = this.foreHalf;
+    this.foreMesh.add(hand);
+
     this.group.add(this.upperMesh, this.foreMesh);
 
     const built = this.weapon.build();
@@ -780,6 +795,35 @@ export class Arm {
       m.emissiveIntensity = a * 0.6;
     }
   }
+
+  /**
+   * Fade the limb and its weapon out, 1 solid and 0 gone.
+   *
+   * Only ever the player's, and only when the camera has been pulled in so
+   * close by a wall that the arm is what you are looking at instead of the
+   * room. It goes later and faster than the body does -- it is the last thing
+   * to disappear, because it is the thing you are steering.
+   */
+  setFade(amount: number): void {
+    const a = clamp(amount, 0, 1);
+    if (Math.abs(a - this.fadeAmount) < 0.01) return;
+    this.fadeAmount = a;
+
+    this.group.visible = a > 0.02;
+    for (const root of [this.upperMesh, this.foreMesh, this.bladeMesh]) {
+      root.traverse((o) => {
+        const mat = (o as THREE.Mesh).material;
+        if (!mat) return;
+        for (const m of Array.isArray(mat) ? mat : [mat]) {
+          m.transparent = a < 1;
+          m.opacity = a;
+          m.depthWrite = a > 0.6;
+        }
+      });
+    }
+  }
+
+  private fadeAmount = 1;
 
   /**
    * The limb meshes are placed by the Interpolator. Only the ghost is snapped —
@@ -989,6 +1033,11 @@ export class Arm {
   reset(t: Tuning): void {
     const wasSevered = this.severedAt;
     this.severedAt = null;
+    for (const cap of this.caps) {
+      cap.removeFromParent();
+      disposeTree(cap);
+    }
+    this.caps.length = 0;
     this.limp = false;
     this.armYaw = 0.30;
     this.armPitch = -0.30;
@@ -1032,20 +1081,38 @@ export class Arm {
    * the blade is welded to the hand and the hand is no longer attached to
    * anything that can be driven.
    */
-  sever(where: "shoulder" | "elbow"): void {
-    if (this.severedAt !== null) return;
+  sever(where: "shoulder" | "elbow"): WoundEnd[] {
+    if (this.severedAt !== null) return [];
     const joint = where === "shoulder" ? this.shoulderJoint : this.elbowJoint;
-    if (!joint) return;
+    if (!joint) return [];
 
     this.phys.world.removeImpulseJoint(joint, true);
     if (where === "shoulder") this.shoulderJoint = null; else this.elbowJoint = null;
     this.severedAt = where;
+
+    // The cut face. The limb's joint end is -Y, as everywhere else.
+    const seg = where === "shoulder"
+      ? { mesh: this.upperMesh, half: this.upperHalf, r: this.build.segment.upperArm.radius * 1.06 }
+      : { mesh: this.foreMesh, half: this.foreHalf, r: this.build.segment.foreArm.radius };
+    const cap = stumpCap(seg.r);
+    cap.position.y = -(seg.half - seg.r * 0.5);
+    cap.rotation.x = Math.PI;
+    seg.mesh.add(cap);
+    this.caps.push(cap);
+
+    // The face it came off: the shoulder on the body, or the elbow on what is
+    // left of the arm.
+    const socket: WoundEnd = where === "shoulder"
+      ? { object: this.fighter.mesh, local: this.build.shoulderLocal.clone() }
+      : { object: this.upperMesh, local: new THREE.Vector3(0, this.upperHalf, 0) };
 
     // Clear the accumulated drive forces, or they keep pushing after the cut.
     for (const b of [this.upper, this.fore, this.blade]) {
       b.resetForces(true);
       b.resetTorques(true);
     }
+
+    return [{ object: seg.mesh, local: cap.position.clone() }, socket];
   }
 
   get disarmed(): boolean {

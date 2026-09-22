@@ -5,6 +5,7 @@ import { Fighter } from "./fighter";
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
 import { jointScaleFor, maxHealthFor, SWORDSMAN, type Species } from "./species";
 import type { Impact } from "./impacts";
+import type { Wound, WoundEnd } from "./blood";
 import type { Targets } from "./targets";
 import type { Tuning } from "../tuning";
 import type { Keys } from "../input/input";
@@ -37,6 +38,8 @@ export interface CombatantState {
   elbow: number;
 }
 
+const _eye = new THREE.Vector3();
+
 export class Combatant {
   readonly fighter: Fighter;
   readonly arm: Arm;
@@ -51,8 +54,9 @@ export class Combatant {
   private joints: Record<ArmJoint, number>;
 
   onHurt?: (amount: number, part: string) => void;
-  onDisarm?: (where: ArmJoint) => void;
-  onLoseLimb?: (part: string) => void;
+  /** Both carry the cut, so whatever draws blood knows where it happened. */
+  onDisarm?: (where: ArmJoint, wound: Wound) => void;
+  onLoseLimb?: (part: string, wound: Wound) => void;
   onDeath?: () => void;
 
   /**
@@ -146,12 +150,12 @@ export class Combatant {
     if (target.joint !== null && !this.arm.disarmed) {
       this.joints[target.joint] -= amount;
       if (this.joints[target.joint] <= 0) {
-        this.arm.sever(target.joint);
-        this.onDisarm?.(target.joint);
+        const ends = this.arm.sever(target.joint);
+        this.onDisarm?.(target.joint, woundFrom(impact, ends));
       }
     } else if (target.joint === null) {
       // Heads and off arms come off the same way the dummy's do.
-      this.severBodyPart(target.part, amount);
+      this.severBodyPart(target.part, amount, impact);
     }
 
     if (this.health <= 0) this.collapse();
@@ -161,17 +165,19 @@ export class Combatant {
   /** Body parts other than the sword arm, cut free once they have taken enough. */
   private bodyDamage = new Map<string, number>();
 
-  private severBodyPart(name: string, amount: number): void {
+  private severBodyPart(name: string, amount: number, impact: Impact): void {
     const joint = SEVERABLE[name];
     if (joint === undefined) return;
     const cost = JOINT_INTEGRITY[joint] * this.jointScale;
     const done = (this.bodyDamage.get(name) ?? 0) + amount;
     this.bodyDamage.set(name, done);
-    if (done >= cost && this.fighter.sever(name)) {
-      this.onLoseLimb?.(name);
-      // Losing your head is losing the fight.
-      if (name === "head") { this.health = 0; this.collapse(); }
-    }
+    if (done < cost) return;
+
+    const ends = this.fighter.sever(name);
+    if (!ends) return;
+    this.onLoseLimb?.(name, woundFrom(impact, ends));
+    // Losing your head is losing the fight.
+    if (name === "head") { this.health = 0; this.collapse(); }
   }
 
   /**
@@ -204,6 +210,18 @@ export class Combatant {
     return this.fighter.position(out);
   }
 
+  /**
+   * Can this one see that one?
+   *
+   * Eye to eye, against the architecture and nothing else. It is how an
+   * opponent decides whether you are its problem yet, and it is the same
+   * question for both of them -- nobody here gets to know where you are
+   * through a wall.
+   */
+  sees(other: Combatant): boolean {
+    return this.fighter.sees(other.fighter.eyeWorld(_eye));
+  }
+
   reset(tuning: Tuning, at = this.spawn): void {
     this.health = this.maxHealth;
     this.dead = false;
@@ -225,4 +243,13 @@ export class Combatant {
     this.fighter.applyPose(alpha);
     this.arm.syncMeshes(tuning);
   }
+}
+
+/** A cut, as the blood system wants it. */
+function woundFrom(impact: Impact, ends: WoundEnd[]): Wound {
+  return {
+    at: impact.at.clone(),
+    along: impact.bladeVelocity.clone(),
+    ends,
+  };
 }

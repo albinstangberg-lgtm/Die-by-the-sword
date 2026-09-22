@@ -1,11 +1,15 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
+/** Where the key light sits relative to whatever it is lighting. */
+const KEY_OFFSET = new THREE.Vector3(-7, 12, 5);
+
 /** Scene, camera, lights, resize handling. Deliberately plain. */
 export class Renderer {
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly webgl: THREE.WebGLRenderer;
+  private readonly key: THREE.DirectionalLight;
 
   constructor(mount: HTMLElement) {
     this.webgl = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
@@ -36,19 +40,23 @@ export class Renderer {
     const hemi = new THREE.HemisphereLight(0x8899bb, 0x2a241e, 0.6);
     this.scene.add(hemi);
 
+    // The key light travels with the fight (see `follow`), so its shadow
+    // frustum only ever has to cover one room rather than all three.
     const key = new THREE.DirectionalLight(0xffe9c9, 2.0);
-    key.position.set(-7, 12, 5);
+    key.position.copy(KEY_OFFSET);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
     key.shadow.camera.near = 1;
-    key.shadow.camera.far = 40;
-    const s = 14;
+    key.shadow.camera.far = 42;
+    const s = 9;
     key.shadow.camera.left = -s;
     key.shadow.camera.right = s;
     key.shadow.camera.top = s;
     key.shadow.camera.bottom = -s;
     key.shadow.bias = -0.0008;
     this.scene.add(key);
+    this.scene.add(key.target);
+    this.key = key;
 
     const rim = new THREE.DirectionalLight(0x6f8fd0, 0.7);
     rim.position.set(6, 5, -8);
@@ -56,6 +64,19 @@ export class Renderer {
 
     this.resize();
     addEventListener("resize", () => this.resize());
+  }
+
+  /**
+   * Point the key light at a place.
+   *
+   * The arena is three rooms across thirty-odd metres. A shadow map covering
+   * all of it at once is either enormous or so coarse that a figure has no
+   * feet, so the light goes where the player is and takes its frustum with it.
+   */
+  follow(at: THREE.Vector3): void {
+    this.key.position.copy(at).add(KEY_OFFSET);
+    this.key.target.position.copy(at);
+    this.key.target.updateMatrixWorld();
   }
 
   private resize(): void {

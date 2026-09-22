@@ -4,6 +4,8 @@ import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physic
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
 import type { Impact } from "./impacts";
 import type { Targets } from "./targets";
+import { disposeTree, jointBall, shellMesh, stumpCap } from "./skin";
+import { DUMMY_BLOOD, type Wound, type WoundEnd } from "./blood";
 
 /**
  * A practice dummy that comes apart.
@@ -51,6 +53,13 @@ interface LimbSpec {
   mass: number;
   hinge?: [number, number, number];
   limits?: [number, number];
+  /**
+   * Radius at the proximal and distal ends, as fractions of `radius`.
+   *
+   * The limb runs from `from` to `to` and its mesh is built along that line,
+   * so these are always "parent end first" whichever way the limb points.
+   */
+  taper?: [number, number];
 }
 
 /**
@@ -63,13 +72,16 @@ interface LimbSpec {
  */
 const SKELETON: LimbSpec[] = [
   { name: "torso", label: "torso", parent: null, jointKind: null,
-    from: [0, 1.75, 0], to: [0, 1.20, 0], radius: 0.17, mass: 20 },
+    from: [0, 1.75, 0], to: [0, 1.20, 0], radius: 0.17, mass: 20,
+    taper: [1.0, 0.84] },
 
   { name: "head", label: "head", parent: "torso", jointKind: "neck",
-    from: [0, 1.75, 0], to: [0, 1.99, 0], radius: 0.115, mass: 4 },
+    from: [0, 1.75, 0], to: [0, 1.99, 0], radius: 0.115, mass: 4,
+    taper: [0.8, 0.96] },
 
   { name: "pelvis", label: "hips", parent: "torso", jointKind: "waist",
-    from: [0, 1.20, 0], to: [0, 0.96, 0], radius: 0.145, mass: 11 },
+    from: [0, 1.20, 0], to: [0, 0.96, 0], radius: 0.145, mass: 11,
+    taper: [0.9, 1.0] },
 
   { name: "upperArmR", label: "right arm", parent: "torso", jointKind: "shoulder",
     from: [0.21, 1.65, 0], to: [0.24, 1.36, 0], radius: 0.05, mass: 2.2 },
@@ -101,6 +113,10 @@ export interface Limb {
   body: RAPIER.RigidBody;
   collider: RAPIER.Collider;
   mesh: THREE.Mesh;
+  /** Half the limb's length, end to end. Where a cut face goes. */
+  half: number;
+  /** The ball filling this limb's joint, carried on the PARENT's mesh. */
+  socket: THREE.Mesh | null;
   joint: RAPIER.ImpulseJoint | null;
   parent: Limb | null;
   children: Limb[];
@@ -111,19 +127,10 @@ export interface Limb {
 
 export interface SeverEvent {
   label: string;
-  /** Cumulative damage that finally took it off. */
+  /** Where the blade crossed. */
   at: THREE.Vector3;
-}
-
-/** Free every geometry and material in a subtree. */
-function disposeTree(root: THREE.Object3D): void {
-  root.traverse((o) => {
-    const m = o as THREE.Mesh;
-    m.geometry?.dispose();
-    const mat = m.material;
-    if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-    else mat?.dispose();
-  });
+  /** Everything a spray of blood needs. See blood.ts. */
+  wound?: Wound;
 }
 
 export class Dummy {
@@ -227,16 +234,21 @@ export class Dummy {
         body,
       );
 
-      const mesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(spec.radius, capHalf * 2, 6, 12),
+      const [near, far] = spec.taper ?? [1.0, 0.86];
+      const mesh = shellMesh(
         new THREE.MeshStandardMaterial({ color: MAT.canvas, roughness: 0.92 }),
+        {
+          from: spec.radius * near,
+          to: spec.radius * far,
+          length,
+          belly: 1.05,
+        },
       );
-      mesh.castShadow = true;
       this.group.add(mesh);
 
       const maxIntegrity = spec.jointKind ? JOINT_INTEGRITY[spec.jointKind] : Infinity;
       const limb: Limb = {
-        spec, body, collider, mesh,
+        spec, body, collider, mesh, half: length / 2, socket: null,
         joint: null, parent: null, children: [],
         integrity: maxIntegrity, maxIntegrity, severed: false,
       };
@@ -279,6 +291,15 @@ export class Dummy {
         (joint as RAPIER.RevoluteImpulseJoint).setLimits(spec.limits[0], spec.limits[1]);
       }
       limb.joint = joint;
+
+      // The joint itself, filled in so the figure reads as one body rather
+      // than as a rack of sausages. It rides on the parent, which is what
+      // makes it the socket a severed limb leaves behind.
+      const socket = jointBall(spec.radius * 1.1,
+        new THREE.MeshStandardMaterial({ color: MAT.canvas, roughness: 0.92 }));
+      socket.position.set(a1.x, a1.y, a1.z);
+      parent.mesh.add(socket);
+      limb.socket = socket;
     }
 
     const beamUnderside = 2.54;
@@ -354,33 +375,43 @@ export class Dummy {
       true,
     );
 
-    this.capStump(limb);
-    this.onSever?.({ label: limb.spec.label, at: impact.at.clone() });
+    this.onSever?.({
+      label: limb.spec.label,
+      at: impact.at.clone(),
+      wound: this.capStump(limb, impact),
+    });
   }
 
-  /** A dark disc over the cut end, so a severed limb reads as cut, not dropped. */
-  private capStump(limb: Limb): void {
-    const r = limb.spec.radius;
-    const cap = new THREE.Mesh(
-      new THREE.CylinderGeometry(r * 0.96, r * 0.96, 0.012, 12),
-      new THREE.MeshStandardMaterial({ color: MAT.cut, roughness: 0.75 }),
-    );
-    // The proximal end is -Y in the limb's own frame.
-    cap.position.y = -(limb.mesh.geometry as THREE.CapsuleGeometry).parameters.length / 2 - r * 0.5;
-    limb.mesh.add(cap);
+  /**
+   * Dress the cut: a dark dome on the limb's own face, and the socket it came
+   * out of darkened where it stands. Returns the two faces, so whatever is
+   * drawing blood knows where to draw it from.
+   */
+  private capStump(limb: Limb, impact: Impact): Wound {
+    const r = limb.spec.radius * (limb.spec.taper?.[0] ?? 1);
 
-    if (limb.parent) {
-      const socket = new THREE.Mesh(
-        new THREE.SphereGeometry(r * 0.8, 10, 8),
-        new THREE.MeshStandardMaterial({ color: MAT.cut, roughness: 0.75 }),
-      );
-      const from = new THREE.Vector3(...limb.spec.from).add(this.origin);
-      const p = limb.parent.body.translation();
-      const rq = limb.parent.body.rotation();
-      socket.position.set(from.x - p.x, from.y - p.y, from.z - p.z)
-        .applyQuaternion(this._q.set(rq.x, rq.y, rq.z, rq.w).invert());
-      limb.parent.mesh.add(socket);
+    // The proximal end is -Y in the limb's own frame.
+    const cut = stumpCap(r);
+    cut.position.y = -(limb.half - r * 0.5);
+    cut.rotation.x = Math.PI;
+    limb.mesh.add(cut);
+
+    const ends: WoundEnd[] = [{ object: limb.mesh, local: cut.position.clone() }];
+
+    if (limb.socket) {
+      (limb.socket.material as THREE.MeshStandardMaterial).color.setHex(MAT.cut);
+      ends.push({
+        object: limb.parent!.mesh,
+        local: limb.socket.position.clone(),
+      });
     }
+
+    return {
+      at: impact.at.clone(),
+      along: impact.bladeVelocity.clone(),
+      ends,
+      tint: DUMMY_BLOOD,
+    };
   }
 
   /** Darken a limb as its joint gives way, so damage is visible before it parts. */

@@ -1,10 +1,12 @@
 import * as THREE from "three";
 import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
-import { createPhysics, makeSides } from "./core/physics";
+import { createPhysics, GROUP, groups, makeSides } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input } from "./input/input";
-import { buildArena, SPAWN } from "./game/arena";
+import {
+  buildArena, DUMMY_AT, GOBLIN_POST, ORC_POST, SPAWN,
+} from "./game/arena";
 import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
 import { Combatant } from "./game/combatant";
@@ -21,28 +23,30 @@ import { Panel, loadTuning } from "./ui/panel";
 /**
  * Die by the Sword.
  *
- * A room, a practice dummy, and two things that want to kill you: an orc with
- * an axe and a goblin with a spear. Every one of them -- you included -- is the
- * same Combatant driving the same physical arm under the same force clamp. The
- * only difference between a player and a monster here is who supplies the
- * mouse deltas, and how big the animal holding the weapon is.
+ * Three rooms, a practice dummy, and two things that want to kill you: an orc
+ * with an axe in the hall beyond the north door, and a goblin with a spear in
+ * the cell beyond that. Every one of them -- you included -- is the same
+ * Combatant driving the same physical arm under the same force clamp. The only
+ * difference between a player and a monster here is who supplies the mouse
+ * deltas, and how big the animal holding the weapon is.
  */
-
-/** Where the practice dummy hangs — clear of the pillars and the low beam. */
-const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
 
 /**
- * The opponents, and where they start.
+ * The opponents, and where they wait.
  *
- * Both across the room and well out of reach, and far enough apart that they
- * do not spend the first second shouldering past each other. Their spawn
- * heights are their own hulls' centres, so nobody starts the fight sunk into
- * the floor or dropping into it.
+ * One to a room, which is the whole point of the layout: you meet the orc on
+ * its own and then the goblin on its own, and whatever you learn from the
+ * first you get to use on the second. Their spawn heights are their own
+ * hulls' centres, so nobody starts sunk into the floor or dropping into it.
  */
 const FOES = [
-  { species: ORC, at: new THREE.Vector3(-1.9, ORC.build.hullCentreY + 0.11, -4.2) },
-  { species: GOBLIN, at: new THREE.Vector3(1.1, GOBLIN.build.hullCentreY + 0.11, -4.6) },
+  { species: ORC, at: post(ORC_POST, ORC.build.hullCentreY) },
+  { species: GOBLIN, at: post(GOBLIN_POST, GOBLIN.build.hullCentreY) },
 ];
+
+function post(at: THREE.Vector3, hullCentreY: number): THREE.Vector3 {
+  return new THREE.Vector3(at.x, hullCentreY + 0.11, at.z);
+}
 
 const mount = document.getElementById("app")!;
 const veil = document.getElementById("veil")!;
@@ -104,7 +108,11 @@ async function main(): Promise<void> {
   const hud = new Hud(hudEl, impactEl);
   hud.trackDummy(dummy);
   hud.trackFight(player, foes);
-  dummy.onSever = (e) => hud.showSever(e);
+  const blood = impacts.blood;
+  dummy.onSever = (e) => {
+    hud.showSever(e);
+    if (e.wound) blood.wound(e.wound);
+  };
 
   // The player's weapon can cut the dummy or anything on the other team; theirs
   // can only cut the player. Each weapon reports through the same reporter.
@@ -117,13 +125,20 @@ async function main(): Promise<void> {
     impacts.addBlade(f.combatant.arm, (i) => {
       if (player.receive(i)) hud.showHurt(i);
     });
-    f.combatant.onDisarm = () =>
-      hud.showSever({ label: `${f.combatant.name} is disarmed`, at: new THREE.Vector3() });
+    f.combatant.onDisarm = (_where, wound) => {
+      hud.showSever({ label: `${f.combatant.name} is disarmed`, at: wound.at });
+      blood.wound(wound);
+    };
+    f.combatant.onLoseLimb = (_part, wound) => blood.wound(wound);
     f.combatant.onDeath = () =>
       hud.showSever({ label: `${f.combatant.name} is down`, at: new THREE.Vector3() });
   }
 
-  player.onDisarm = () => hud.showSever({ label: "your sword arm", at: new THREE.Vector3() });
+  player.onDisarm = (_where, wound) => {
+    hud.showSever({ label: "your sword arm", at: wound.at });
+    blood.wound(wound);
+  };
+  player.onLoseLimb = (_part, wound) => blood.wound(wound);
 
   const input = new Input(renderer.webgl.domElement);
 
@@ -156,6 +171,7 @@ async function main(): Promise<void> {
     // cut everything in between.
     impacts.resetSweeps();
     trail.clear();
+    blood.clear();
     hud.trackDummy(dummy);
   };
   input.onLockChange = (locked) => {
@@ -172,7 +188,57 @@ async function main(): Promise<void> {
   const desiredPos = new THREE.Vector3();
   const desiredTarget = new THREE.Vector3();
   const fighterPos = new THREE.Vector3();
+  const camEye = new THREE.Vector3();
+  const camDir = new THREE.Vector3();
   let camInitialised = false;
+
+  /**
+   * How close the camera may come to a wall before it stops backing into it.
+   *
+   * One room was enough to get away without this -- you had to walk into a
+   * corner to see through anything. Three rooms with doorways between them are
+   * not: the camera sits nearly three metres behind the fighter, which is most
+   * of the way through the wall you are standing next to.
+   */
+  const CAM_CLEARANCE = 0.3;
+  /**
+   * And how close it may come to the fighter, whatever the wall says.
+   *
+   * It has to be allowed very close indeed, because a wall right behind you
+   * leaves nowhere else to put it: at a comfortable distance the camera ends
+   * up on the far side of the stone, looking at the outside of the room. So it
+   * comes in to just behind the head, and the figure gets out of the way
+   * instead (below).
+   */
+  const CAM_MIN = 0.5;
+  /**
+   * Where the figure starts to fade, and where it has gone entirely.
+   *
+   * The sword arm holds on longer than the body: it is the thing you are
+   * steering, and it only goes when the camera is close enough to be inside it.
+   */
+  const FADE_FROM = 2.1;
+  const FADE_TO = 0.95;
+  const ARM_FADE_FROM = 1.25;
+  const ARM_FADE_TO = 0.72;
+  // Anything the architecture collides with will do; a fighter is not a wall
+  // and the practice dummy is not either.
+  const camFilter = groups(GROUP.PROP, GROUP.WORLD);
+  const camRay = new phys.rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+
+  /** Pull the camera in to the nearest wall between it and the fighter. */
+  const clearWalls = (from: THREE.Vector3, to: THREE.Vector3) => {
+    camDir.copy(to).sub(from);
+    const reach = camDir.length();
+    if (reach < 1e-3) return;
+    camDir.multiplyScalar(1 / reach);
+
+    camRay.origin = { x: from.x, y: from.y, z: from.z };
+    camRay.dir = { x: camDir.x, y: camDir.y, z: camDir.z };
+    const hit = phys.world.castRay(camRay, reach, true, undefined, camFilter);
+    if (hit === null) return;
+    to.copy(from).addScaledVector(camDir, Math.max(CAM_MIN, hit.timeOfImpact - CAM_CLEARANCE));
+  };
 
   const updateCamera = (dt: number) => {
     fighter.position(fighterPos);
@@ -189,6 +255,9 @@ async function main(): Promise<void> {
     desiredTarget.copy(fighterPos).add(new THREE.Vector3(0, 0.55, 0))
       .lerp(arm.tipPosition, 0.28);
 
+    camEye.set(fighterPos.x, fighterPos.y + camOffset.y * 0.72, fighterPos.z);
+    clearWalls(camEye, desiredPos);
+
     if (!camInitialised) {
       camPos.copy(desiredPos);
       camTarget.copy(desiredTarget);
@@ -199,8 +268,20 @@ async function main(): Promise<void> {
       camTarget.lerp(desiredTarget, 1 - Math.exp(-9 * dt));
     }
 
+    // And once more from where the camera actually is, since the smoothing
+    // lags the desired position and can leave it inside the stone it was just
+    // pulled out of.
+    clearWalls(camEye, camPos);
+
+    // Close in, the fighter's own body is the only thing in shot, so it gets
+    // out of the way. Its sword arm does not.
+    const close = camPos.distanceTo(camEye);
+    fighter.setFade((close - FADE_TO) / (FADE_FROM - FADE_TO));
+    arm.setFade((close - ARM_FADE_TO) / (ARM_FADE_FROM - ARM_FADE_TO));
+
     renderer.camera.position.copy(camPos);
     renderer.camera.lookAt(camTarget);
+    renderer.follow(fighterPos);
   };
 
   const loop = new Loop({

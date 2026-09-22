@@ -4,6 +4,8 @@ import type { PhysicsWorld } from "../core/physics";
 import type { Arm } from "./arm";
 import type { Targets } from "./targets";
 import { Cutter, type SweptHit } from "./cutting";
+import { Blood } from "./blood";
+import { cutDamage } from "./damage";
 import type { Weapon } from "./weapons";
 
 /**
@@ -82,6 +84,16 @@ export class Impacts {
   /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
   private lastAt = new Map<number, number>();
   private sparks: Sparks;
+  /**
+   * Blood, and who gets it.
+   *
+   * The two hit paths already know the difference: a solver contact is stone
+   * or steel, because a blade collides with nothing else, and a swept hit is
+   * flesh, because that is the only thing a sweep looks for. So sparks come
+   * off the wall and blood comes out of the body, and neither needs to be
+   * told which it is hitting.
+   */
+  readonly blood: Blood;
 
   private readonly _n = new THREE.Vector3();
   private readonly _p = new THREE.Vector3();
@@ -96,6 +108,7 @@ export class Impacts {
     private targets: Targets,
   ) {
     this.sparks = new Sparks(scene);
+    this.blood = new Blood(scene);
   }
 
   /**
@@ -139,7 +152,9 @@ export class Impacts {
         this.lastAt.set(hit.collider.handle, now);
         this.latest = impact;
         entry.onImpact(impact);
-        this.sparks.burst(impact);
+        // A tenth of a clean cut's worth of damage is about the least that
+        // should show, so the spray agrees with the number in the HUD.
+        this.blood.spray(impact.at, impact.bladeVelocity, cutDamage(impact) / 10);
       }
     }
   }
@@ -231,6 +246,7 @@ export class Impacts {
     });
 
     this.sparks.update();
+    this.blood.update(1 / 60);
 
     // Colliders come and go as limbs are severed; don't grow the map forever.
     if (this.lastAt.size > 64) {

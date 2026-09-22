@@ -14,9 +14,11 @@
 
 import * as THREE from "three";
 import { createPhysics, makeSides } from "../src/core/physics";
-import { buildArena, SPAWN } from "../src/game/arena";
+import {
+  buildArena, DUMMY_AT, GOBLIN_POST, inRoom, ORC_POST, ROOMS, SPAWN, THIN_POST,
+} from "../src/game/arena";
 import { Targets } from "../src/game/targets";
-import { Dummy } from "../src/game/dummy";
+import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
@@ -27,6 +29,7 @@ import { Ai } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
 import type { Fighter } from "../src/game/fighter";
 import { Impacts, type Impact } from "../src/game/impacts";
+import { Blood } from "../src/game/blood";
 import { DEFAULTS, type Tuning } from "../src/tuning";
 import { KEY_MAP, type Keys } from "../src/input/input";
 
@@ -47,12 +50,25 @@ class FakeInput implements ArmInput {
   }
 }
 
-const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
-const FOE_SPAWN = new THREE.Vector3(-1.2, 0.95, -3.6);
+/**
+ * Where an opponent starts: the training room, across the floor from SPAWN.
+ *
+ * The rooms are walled off from each other now and an opponent that cannot
+ * see you does not come for you, so a foe parked in the hall would simply
+ * stand there. Every fight here is the two of them in one room.
+ */
+const FOE_X = -1.4;
+const FOE_Z = 4.4;
+const FOE_SPAWN = new THREE.Vector3(FOE_X, 0.95, FOE_Z);
 
 /** Spawn height for a body of a given build, so nothing starts in the floor. */
 function spawnFor(species: Species, x: number, z: number): THREE.Vector3 {
   return new THREE.Vector3(x, species.build.hullCentreY + 0.11, z);
+}
+
+/** The same spot, at the right height for whatever is standing on it. */
+function foeSpawn(species: Species): THREE.Vector3 {
+  return spawnFor(species, FOE_X, FOE_Z);
 }
 
 interface Rig {
@@ -77,6 +93,17 @@ interface Rig {
    * out of reach, which is not what these tests are trying to measure.
    */
   pin(at: THREE.Vector3 | null): void;
+  /**
+   * Put the player down somewhere else.
+   *
+   * Through the same reset the game uses, and not by shoving the hull: a hull
+   * moved on its own leaves its head, its off arm and its sword arm where
+   * they were, and three violated joints a room's length long drag it back
+   * over a metre on the first step. Resetting the sweeps matters as much --
+   * a blade whose last known position is across the arena cuts everything in
+   * between on its next one.
+   */
+  place(at: THREE.Vector3): void;
   /** Advance the simulation, optionally holding movement keys. */
   step(n?: number, keys?: Keys): void;
 }
@@ -135,6 +162,10 @@ async function buildRig(
       for (let i = 0; i < n; i++) advance(keys, true);
     },
     pin(at: THREE.Vector3 | null) { pinned = at; },
+    place(at: THREE.Vector3) {
+      player.reset(tuning, at);
+      impacts.resetSweeps();
+    },
   };
 }
 
@@ -389,7 +420,11 @@ async function survivesAbuse(): Promise<void> {
 
   const p = rig.arm.blade.translation();
   check("no NaN in the blade transform", finite(p), `blade at (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`);
-  check("blade stayed in the room", Math.abs(p.x) < 9 && Math.abs(p.z) < 9 && p.y > -1 && p.y < 6, "inside arena bounds");
+  const room = ROOMS.training;
+  check("blade stayed in the room",
+    p.x > room.minX - 1 && p.x < room.maxX + 1
+    && p.z > room.minZ - 1 && p.z < room.maxZ + 1 && p.y > -1 && p.y < 6,
+    `inside ${room.name}`);
   check(
     "arm never stretched off the shoulder",
     maxReach < 0.75,
@@ -407,11 +442,10 @@ async function thinPostIsHittable(): Promise<void> {
   const rig = await buildRig();
   rig.step(90);
 
-  // The post stands at (-2.2, 0..2.0, 1.8). Stand off it and aim at its middle.
-  const post = new THREE.Vector3(-2.2, 1.3, 1.8);
-  rig.fighter.body.setTranslation({ x: post.x, y: SPAWN.y, z: post.z + 1.0 }, true);
+  // The post stands two metres tall in the hall. Stand off it, aim at its middle.
+  const post = new THREE.Vector3(THIN_POST.x, 1.3, THIN_POST.z);
+  rig.place(new THREE.Vector3(post.x, SPAWN.y, post.z + 1.0));
   rig.fighter.yaw = 0;                   // facing -Z, post dead ahead
-  rig.arm.reset(rig.tuning);
   rig.step(45);
   aimBladeAt(rig, post);
 
@@ -536,10 +570,8 @@ async function aRealSwingSevers(): Promise<void> {
   // It passed for a while anyway, because the aiming routine drifted high and
   // kept taking the head off by accident.
   const arm = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
-  rig.fighter.body.setTranslation(
-    { x: DUMMY_AT.x, y: SPAWN.y, z: DUMMY_AT.z + 0.85 }, true);
+  rig.place(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
   rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
-  rig.arm.reset(rig.tuning);
   rig.pin(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
   rig.step(90);
 
@@ -600,10 +632,8 @@ async function bladesPassThroughFleshNotStone(): Promise<void> {
   // with flesh is stopped by it, and a stopped blade cannot cut: swings became
   // two dozen grazing contacts at 3 m/s instead of one arriving at twelve.
   const chest = new THREE.Vector3(DUMMY_AT.x, 1.5, DUMMY_AT.z + 0.15);
-  rig.fighter.body.setTranslation(
-    { x: DUMMY_AT.x, y: SPAWN.y, z: DUMMY_AT.z + 0.85 }, true);
+  rig.place(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
   rig.fighter.yaw = 0;
-  rig.arm.reset(rig.tuning);
   rig.pin(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
   rig.step(90);
   aimBladeAt(rig, chest);
@@ -898,7 +928,7 @@ async function aLegSweepCanBeJumped(): Promise<void> {
   // The counter the HUD prints for that attack has to actually be available,
   // which means two measured numbers meeting: how low the axe travels, and
   // how high the feet get.
-  const rig = await buildRig({}, ORC, spawnFor(ORC, -1.2, -3.6));
+  const rig = await buildRig({}, ORC, foeSpawn(ORC));
   rig.ai.attackOverride = ORC.attacks.find((a) => a.name === "leg sweep")!;
 
   let lowest = 99;
@@ -1032,7 +1062,7 @@ async function theBestiaryScalesHonestly(): Promise<void> {
 async function eachSpeciesCanFight(): Promise<void> {
   console.log("\nthe orc and the goblin can both close and cut");
   for (const species of [ORC, GOBLIN]) {
-    const rig = await buildRig({}, species, spawnFor(species, -1.2, -3.6));
+    const rig = await buildRig({}, species, foeSpawn(species));
     let closest = 99;
     let firstCut = -1;
     const gap = new THREE.Vector3();
@@ -1067,7 +1097,7 @@ async function attacksAreTelegraphed(): Promise<void> {
   }
 
   // And the tell is live: the weapon brightens as the windup runs out.
-  const rig = await buildRig({}, ORC, spawnFor(ORC, -1.2, -3.6));
+  const rig = await buildRig({}, ORC, foeSpawn(ORC));
   let sawWindup = false;
   let tellAtStart = 1;
   let tellAtEnd = 0;
@@ -1217,6 +1247,124 @@ async function everyMovingPartIsInterpolated(): Promise<void> {
     `alpha 0 ${at0.toFixed(4)}, 0.5 ${mid.toFixed(4)}, 1 ${at1.toFixed(4)}`);
 }
 
+
+async function theTestingAreaIsThreeRooms(): Promise<void> {
+  console.log("\nthree rooms, one subject in each");
+  check("you start in the training room",
+    inRoom(ROOMS.training, SPAWN.x, SPAWN.z),
+    `spawn (${SPAWN.x}, ${SPAWN.z}) in ${ROOMS.training.name}`);
+  check("so does the practice dummy",
+    inRoom(ROOMS.training, DUMMY_AT.x, DUMMY_AT.z),
+    `dummy at (${DUMMY_AT.x}, ${DUMMY_AT.z})`);
+  check("the orc waits in the hall",
+    inRoom(ROOMS.hall, ORC_POST.x, ORC_POST.z)
+    && !inRoom(ROOMS.training, ORC_POST.x, ORC_POST.z),
+    `orc at (${ORC_POST.x}, ${ORC_POST.z})`);
+  check("the goblin waits in the cell, past the orc",
+    inRoom(ROOMS.cell, GOBLIN_POST.x, GOBLIN_POST.z)
+    && !inRoom(ROOMS.hall, GOBLIN_POST.x, GOBLIN_POST.z),
+    `goblin at (${GOBLIN_POST.x}, ${GOBLIN_POST.z})`);
+
+  // And the walls are really there: the layout is only worth anything if a
+  // ray from one room to the next is stopped by something.
+  const rig = await buildRig();
+  rig.step(30);
+  const eye = new THREE.Vector3();
+
+  rig.foe.fighter.eyeWorld(eye);
+  check("across one room, the line is clear", rig.fighter.sees(eye),
+    "training room, no wall in between");
+
+  // Off the door line, so it is the wall being tested and not the hole in it.
+  const pastTheWall = new THREE.Vector3(-5.5, 1.6, -3.0);
+  check("into the next room, it is not", !rig.fighter.sees(pastTheWall),
+    "the partition stops it");
+
+  // The doorway is a hole in that partition, and it has to actually be one.
+  const doorway = new THREE.Vector3(0, 1.6, -0.6);
+  rig.place(new THREE.Vector3(0, SPAWN.y, 1.2));
+  rig.step(30);
+  check("but through the door it is clear again", rig.fighter.sees(doorway),
+    "standing on the door line, looking into the hall");
+}
+
+async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
+  console.log("\nan opponent that cannot see you holds its post");
+  const rig = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+
+  const where = () => rig.foe.position(new THREE.Vector3());
+  const start = where();
+  for (let i = 0; i < 60 * 4; i++) rig.fight(1);
+  const after = where();
+
+  check("it does not come for you through a wall",
+    rig.ai.intent === "waiting" && after.distanceTo(start) < 0.2,
+    `intent "${rig.ai.intent}", moved ${after.distanceTo(start).toFixed(2)} m in 4s`);
+  check("and it does not swing at a wall either",
+    rig.foe.arm.state.tipSpeed < 1.5 && rig.ai.committed === null,
+    `tip ${rig.foe.arm.state.tipSpeed.toFixed(1)} m/s, committed ` +
+    `${rig.ai.committed?.name ?? "nothing"}`);
+
+  // Walk into the hall and it is a fight.
+  rig.place(new THREE.Vector3(ORC_POST.x, SPAWN.y, ORC_POST.z + 4.5));
+  let closest = 99;
+  let peakTip = 0;
+  for (let i = 0; i < 60 * 8; i++) {
+    rig.fight(1);
+    const gap = rig.fighter.position(new THREE.Vector3());
+    const foeAt = where();
+    closest = Math.min(closest, Math.hypot(gap.x - foeAt.x, gap.z - foeAt.z));
+    peakTip = Math.max(peakTip, rig.foe.arm.state.tipSpeed);
+  }
+  check("walk into the room and it comes for you", closest < 2.4,
+    `closed to ${closest.toFixed(2)} m once it had the line`);
+  check("and swings once it is there", peakTip > 5,
+    `peak tip ${peakTip.toFixed(1)} m/s`);
+}
+
+async function severingBleeds(): Promise<void> {
+  console.log("\na severed joint bleeds from both faces");
+  const rig = await buildRig();
+  rig.step(30);
+
+  let event: SeverEvent | null = null;
+  rig.dummy.onSever = (e) => { event = e; };
+  const fore = rig.dummy.limbs.get("foreArmR")!;
+  for (let i = 0; i < 12 && event === null; i++) {
+    rig.dummy.receive(fakeImpact(fore.collider.handle));
+  }
+
+  const cut = event as SeverEvent | null;
+  check("the cut is reported with somewhere to bleed from",
+    cut !== null && cut.wound !== undefined && cut.wound.ends?.length === 2,
+    cut?.wound ? `${cut.wound.ends?.length} cut faces` : "no wound reported");
+
+  // Both faces have to be attached to something the interpolator moves, or the
+  // blood hangs in the air where the arm used to be.
+  const ends = cut?.wound?.ends ?? [];
+  check("both faces ride on a mesh that is placed every frame",
+    ends.length === 2 && ends.every((e) => e.object.parent !== null),
+    ends.map((e) => e.object.type).join(", ") || "none");
+
+  // And the pool itself: a wound throws droplets, they fall, and they stop.
+  const blood = new Blood(new THREE.Scene());
+  blood.wound({
+    at: new THREE.Vector3(0, 1.4, 0),
+    along: new THREE.Vector3(1, 0, 0),
+    ends,
+  });
+  const thrown = blood.live;
+  blood.update(1 / 60);
+  const bleeding = blood.bleeding;
+  for (let i = 0; i < 60 * 4; i++) blood.update(1 / 60);
+
+  check("a sever throws a burst of droplets", thrown > 20, `${thrown} droplets`);
+  check("and the cut faces keep emptying afterwards", bleeding === 2,
+    `${bleeding} faces still bleeding`);
+  check("it all soaks away eventually", blood.live === 0 && blood.bleeding === 0,
+    `${blood.live} droplets left after four seconds`);
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -1252,6 +1400,9 @@ async function run(): Promise<void> {
   await alliesShareAnArenaWithoutCuttingEachOther();
   await resetPutsSeveredLimbsBackOn();
   await everyMovingPartIsInterpolated();
+  await theTestingAreaIsThreeRooms();
+  await anOpponentWaitsUntilItSeesYou();
+  await severingBleeds();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

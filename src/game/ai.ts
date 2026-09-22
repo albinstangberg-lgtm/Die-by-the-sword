@@ -53,8 +53,31 @@ const AIM_AT = 0.72;
  */
 const SNAG_TIME = 0.5;
 
+/**
+ * How long it keeps coming after losing sight of you, seconds.
+ *
+ * Not zero, and the reason is the pillars: stepping behind one mid-fight
+ * breaks the line for a few frames, and an opponent that downed tools every
+ * time that happened would be trivial to beat and absurd to watch. Long
+ * enough to cover a pillar, short enough that leaving the room ends it.
+ */
+const MEMORY = 2.5;
+
+/**
+ * How near you have to be before it takes an interest, metres.
+ *
+ * Sight alone is not enough, and a doorway is why: a door is a hole you can
+ * see a long way through, so a bare line-of-sight test had the orc set off
+ * across its hall the moment you lined up with the door eighteen metres away
+ * on the far side of another room. Notice is close range; once it HAS noticed
+ * you, the line of sight alone keeps it coming, and it will follow you as far
+ * as it can see you.
+ */
+const NOTICE = 9;
+
 type State =
-  | "close" | "windup" | "strike" | "recover" | "backoff" | "free" | "beaten";
+  | "close" | "windup" | "strike" | "recover" | "backoff" | "free" | "beaten"
+  | "waiting";
 
 export class Ai implements ArmInput {
   readonly keys: Keys = {
@@ -105,6 +128,8 @@ export class Ai implements ArmInput {
   private readonly _mark = new THREE.Vector3();
   private readonly _was = new THREE.Vector3();
   private snag = 0;
+  /** Seconds of "I know where you are" left. Zero means it holds its post. */
+  private seen = 0;
 
   constructor(readonly species: Species) {
     this.attack = species.attacks[0];
@@ -136,6 +161,31 @@ export class Ai implements ArmInput {
     foe.position(this._foe);
     const toFoe = this._foe.clone().sub(this._self);
     const range = Math.hypot(toFoe.x, toFoe.z);
+
+    // An animal that cannot see you does not come for you.
+    //
+    // The rooms are walled off from each other, and without this the orc
+    // would spend the fight walking into the far side of a wall because it
+    // knew, through the stone, exactly where you were standing. One ray, the
+    // same one either of them could cast, and it is also what makes a doorway
+    // worth something: step into the light and the thing in the next room
+    // starts moving.
+    const sighted = self.sees(foe);
+    if (sighted && (this.seen > 0 || range < NOTICE)) this.seen = MEMORY;
+    else this.seen = Math.max(0, this.seen - dt);
+
+    if (this.seen <= 0) {
+      // Holding its post. It does not track you, it does not turn, and it
+      // keeps its weapon where a waiting animal keeps it.
+      if (this.state !== "waiting") this.begin("waiting", 0);
+      this.idle();
+      this.want = { yaw: 0.3, pitch: -0.12, reach: 0.55, roll: 0 };
+      this.steerArm(self, t, dt);
+      this.showTell(self);
+      this._was.copy(this._self);
+      return;
+    }
+    if (this.state === "waiting") this.begin("close", 0);
 
     this.face(self, toFoe);
     this.timer -= dt;
@@ -244,6 +294,7 @@ export class Ai implements ArmInput {
         break;
 
       case "beaten":
+      case "waiting":
         this.idle();
         break;
     }
@@ -263,7 +314,8 @@ export class Ai implements ArmInput {
   private checkSnag(t: Tuning, dt: number): void {
     const moved = this._self.distanceTo(this._was);
     this._was.copy(this._self);
-    if (this.state === "free" || this.state === "beaten") { this.snag = 0; return; }
+    if (this.state === "free" || this.state === "beaten"
+      || this.state === "waiting") { this.snag = 0; return; }
 
     const trying = this.keys.forward || this.keys.back;
     const expected = t.moveSpeed * this.species.build.scale * dt;
@@ -412,8 +464,9 @@ export class Ai implements ArmInput {
   }
 
   reset(): void {
-    this.state = "close";
+    this.state = "waiting";
     this.timer = 0;
+    this.seen = 0;
     this.dx = 0;
     this.dy = 0;
     this.wheel = 0;
