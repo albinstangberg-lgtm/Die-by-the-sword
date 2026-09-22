@@ -3,7 +3,7 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
-import { HULL, SEGMENT, STANDING, local } from "./anatomy";
+import { HUMAN, type Build, type Segment } from "./anatomy";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -32,10 +32,6 @@ export interface Palette {
 export const PLAYER_PALETTE: Palette = { cloth: 0x6b4a3a, skin: 0xa8826a, mark: 0xd8cbb4 };
 export const FOE_PALETTE: Palette = { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f };
 
-/** Right shoulder, in hull-local space. The sword arm hangs from here. */
-export const SHOULDER_LOCAL = new THREE.Vector3(
-  STANDING.shoulderX, local(STANDING.shoulder), 0);
-
 /** How hard the head and off-arm are held in their pose. */
 const HEAD_KP = 26, HEAD_KD = 3.2;
 const OFF_ARM_KP = 9, OFF_ARM_KD = 1.4;
@@ -45,6 +41,21 @@ const POSE_MAX_TORQUE = 40;
 /** Stride timing: radians of hip swing per metre travelled. */
 const STRIDE = 2.6;
 const STRIDE_SWING = 0.55;
+
+/**
+ * How long after the feet leave the ground a jump still counts, seconds.
+ *
+ * Small, but not zero: the probe below is a single ray and it flickers off for
+ * a step or two crossing anything uneven, and a jump that silently does
+ * nothing reads as a broken key rather than a missed input.
+ */
+const COYOTE = 0.09;
+/** After a take-off, how long before the feet can push again. */
+const JUMP_LOCK = 0.14;
+/** How far past the soles the ground probe looks, at human scale. */
+const GROUND_PROBE = 0.1;
+/** How fast the legs fold up once there is nothing to stand on. */
+const TUCK_RATE = 9;
 
 export interface FighterPart {
   name: string;
@@ -88,6 +99,15 @@ export class Fighter {
   private offUpperMesh!: THREE.Object3D;
   private offForeMesh!: THREE.Object3D;
 
+  /** Whether the ground probe found anything to push off. */
+  grounded = true;
+  private coyote = COYOTE;
+  private jumpLock = 0;
+  /** 0 standing, 1 fully folded up. Blended so the legs do not pop. */
+  private tuck = 0;
+  private readonly groundRay: RAPIER.Ray;
+  private readonly groundReach: number;
+
   private readonly tmpVec = new THREE.Vector3();
   private readonly _q = new THREE.Quaternion();
   private readonly _q2 = new THREE.Quaternion();
@@ -98,9 +118,18 @@ export class Fighter {
     private scene: THREE.Scene,
     spawn: THREE.Vector3,
     readonly side: Side,
-    private palette: Palette = PLAYER_PALETTE,
+    readonly palette: Palette = PLAYER_PALETTE,
+    /** Proportions. A goblin and an orc are this same class at other sizes. */
+    readonly build: Build = HUMAN,
   ) {
     const { rapier, world } = phys;
+    // Local aliases so every measurement below reads as anatomy rather than
+    // as a chain of property lookups.
+    const { segment: SEGMENT, standing: STANDING, hull: HULL } = build;
+    const local = build.local;
+
+    this.groundRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
+    this.groundReach = HULL.height / 2 + GROUND_PROBE * build.scale;
 
     this.body = world.createRigidBody(
       rapier.RigidBodyDesc.dynamic()
@@ -174,6 +203,8 @@ export class Fighter {
 
   private buildHead(): void {
     const { rapier, world } = this.phys;
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
     const p = this.body.translation();
     const seg = SEGMENT.head;
     const y = local(STANDING.neck + seg.length / 2);
@@ -200,7 +231,7 @@ export class Fighter {
       this.body, this.head, true,
     );
 
-    this.headMesh = buildHeadMesh(this.palette);
+    this.headMesh = buildHeadMesh(this.palette, seg.radius);
     this.scene.add(this.headMesh);
     this.parts.push({
       name: "head", label: "head", collider, body: this.head,
@@ -211,10 +242,12 @@ export class Fighter {
   /** The left arm: present, jointed, severable — but never driven by anyone. */
   private buildOffArm(): void {
     const { rapier, world } = this.phys;
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
     const p = this.body.translation();
     const sx = -STANDING.shoulderX;
 
-    const make = (seg: typeof SEGMENT.upperArm, topY: number) => {
+    const make = (seg: Segment, topY: number) => {
       const centre = topY - seg.length / 2;
       const body = world.createRigidBody(
         rapier.RigidBodyDesc.dynamic()
@@ -288,6 +321,8 @@ export class Fighter {
    */
   private buildLegs(): void {
     const { rapier, world } = this.phys;
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
 
     for (const sign of [-1, 1]) {
       const hipPivot = new THREE.Object3D();
@@ -316,7 +351,7 @@ export class Fighter {
       shinMesh.castShadow = true;
       kneePivot.add(shinMesh);
 
-      const kinematic = (seg: typeof SEGMENT.thigh, label: string, mesh: THREE.Object3D) => {
+      const kinematic = (seg: Segment, label: string, mesh: THREE.Object3D) => {
         const bodyR = world.createRigidBody(rapier.RigidBodyDesc.kinematicPositionBased());
         const half = Math.max(0.01, seg.length / 2 - seg.radius);
         const collider = world.createCollider(
@@ -353,6 +388,10 @@ export class Fighter {
       { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, false);
 
+    this.grounded = this.probeGround();
+    this.coyote = this.grounded ? COYOTE : Math.max(0, this.coyote - dt);
+    this.jumpLock = Math.max(0, this.jumpLock - dt);
+
     let ix = 0;
     let iz = 0;
     if (keys.forward) iz -= 1;
@@ -366,16 +405,62 @@ export class Fighter {
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
       v.set((ix * cos + iz * sin) / len, 0, (-ix * sin + iz * cos) / len)
-        .multiplyScalar(t.moveSpeed);
+        .multiplyScalar(t.moveSpeed * this.build.scale);
     }
 
     const current = this.body.linvel();
-    this.body.setLinvel({ x: v.x, y: current.y, z: v.z }, true);
+    let vy = current.y;
 
-    // Stride advances with distance covered, so the legs never skate.
-    this.stridePhase += Math.hypot(v.x, v.z) * dt * STRIDE;
+    // The take-off speed that clears `jumpHeight` under the world's gravity,
+    // rather than a hand-picked impulse: turning gravity down then floats the
+    // same jump instead of firing you into the ceiling.
+    if (keys.jump && this.coyote > 0 && this.jumpLock <= 0) {
+      vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
+      this.coyote = 0;
+      this.jumpLock = JUMP_LOCK;
+      this.grounded = false;
+    }
+
+    if (this.grounded) {
+      // On the ground the fighter simply IS its input velocity, which is what
+      // lets it shove lighter things aside rather than be stopped by them.
+      this.body.setLinvel({ x: v.x, y: vy, z: v.z }, true);
+    } else {
+      // In the air there is nothing to push against, so intent only nudges the
+      // line you left the ground on. This is also why a hard swing in mid-air
+      // visibly shoves you sideways: the arm's reaction has nowhere to go.
+      const a = Math.min(1, t.airControl);
+      this.body.setLinvel({
+        x: current.x + (v.x - current.x) * a,
+        y: vy,
+        z: current.z + (v.z - current.z) * a,
+      }, true);
+    }
+
+    // Stride advances with distance covered, so the legs never skate. Airborne
+    // there is no ground to measure against, so it holds and the legs fold up.
+    const target = this.grounded ? 0 : 1;
+    this.tuck += (target - this.tuck) * Math.min(1, TUCK_RATE * dt);
+    if (this.grounded) this.stridePhase += Math.hypot(v.x, v.z) * dt * STRIDE;
     this.poseLegs();
     this.holdPose(dt);
+  }
+
+  /**
+   * Is there anything under the feet?
+   *
+   * One ray straight down from the hull's centre, as long as the hull's own
+   * half-height plus a little. It deliberately looks for the world and for
+   * props only: a fighter should be able to jump onto the block or the
+   * gallows, but not off another fighter's shoulders.
+   */
+  private probeGround(): boolean {
+    const p = this.body.translation();
+    this.groundRay.origin = { x: p.x, y: p.y, z: p.z };
+    return this.phys.world.castRay(
+      this.groundRay, this.groundReach, true,
+      undefined, this.side.groundFilter, undefined, this.body,
+    ) !== null;
   }
 
   /** Weak PD keeping head and off-arm in a living posture rather than limp. */
@@ -438,9 +523,17 @@ export class Fighter {
 
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
-      leg.hipPivot.rotation.x = Math.sin(phase) * STRIDE_SWING;
+      const hip = Math.sin(phase) * STRIDE_SWING;
       // A knee only bends one way, so the back half of the cycle is flattened.
-      leg.kneePivot.rotation.x = Math.max(0, -Math.sin(phase - 0.6)) * 0.9;
+      const knee = Math.max(0, -Math.sin(phase - 0.6)) * 0.9;
+
+      // Airborne: one knee up, the other trailing. Purely cosmetic -- the legs
+      // are kinematic and never carry the jump -- but a figure that keeps
+      // walking in mid-air reads as a bug.
+      const tuckHip = leg.sign > 0 ? 0.85 : -0.3;
+      const tuckKnee = leg.sign > 0 ? 1.25 : 0.55;
+      leg.hipPivot.rotation.x = hip + (tuckHip - hip) * this.tuck;
+      leg.kneePivot.rotation.x = knee + (tuckKnee - knee) * this.tuck;
     }
     this.mesh.updateMatrixWorld(true);
 
@@ -482,7 +575,7 @@ export class Fighter {
     const p = this.body.translation();
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
-    const l = SHOULDER_LOCAL;
+    const l = this.build.shoulderLocal;
     return out.set(
       p.x + l.x * cos + l.z * sin,
       p.y + l.y,
@@ -500,8 +593,14 @@ export class Fighter {
   }
 
   reset(spawn: THREE.Vector3): void {
+    const { segment: SEGMENT, standing: STANDING } = this.build;
+    const local = this.build.local;
     this.yaw = 0;
     this.stridePhase = 0;
+    this.tuck = 0;
+    this.coyote = COYOTE;
+    this.jumpLock = 0;
+    this.grounded = true;
     this.body.setTranslation({ x: spawn.x, y: spawn.y, z: spawn.z }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -547,10 +646,10 @@ function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = 
   body.setNextKinematicRotation({ x: _q.x, y: _q.y, z: _q.z, w: _q.w });
 }
 
-function buildHeadMesh(p: Palette): THREE.Object3D {
+function buildHeadMesh(p: Palette, radius: number): THREE.Object3D {
   const g = new THREE.Group();
   const head = new THREE.Mesh(
-    new THREE.SphereGeometry(SEGMENT.head.radius, 16, 12),
+    new THREE.SphereGeometry(radius, 16, 12),
     new THREE.MeshStandardMaterial({ color: p.skin, roughness: 0.7 }),
   );
   head.castShadow = true;
@@ -559,10 +658,10 @@ function buildHeadMesh(p: Palette): THREE.Object3D {
   // Marks the facing direction — without it you cannot tell which way anyone
   // is looking, which matters a lot once someone is trying to kill you.
   const nose = new THREE.Mesh(
-    new THREE.ConeGeometry(0.038, 0.1, 8),
+    new THREE.ConeGeometry(radius * 0.33, radius * 0.87, 8),
     new THREE.MeshStandardMaterial({ color: p.mark, roughness: 0.6 }),
   );
-  nose.position.set(0, 0, -SEGMENT.head.radius);
+  nose.position.set(0, 0, -radius);
   nose.rotation.x = -Math.PI / 2;
   g.add(nose);
   return g;

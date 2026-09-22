@@ -3,44 +3,53 @@ import { STEP } from "./loop";
 
 export type Rapier = typeof RAPIER;
 
-/** Collision groups. Rapier packs membership in the high 16 bits, filter in the low 16. */
+/**
+ * Collision groups. Rapier packs membership in the high 16 bits, filter in the
+ * low 16, so there are sixteen bits to spend.
+ *
+ * Two go to the scenery. The rest are handed out three at a time -- body,
+ * weapon, hull -- to each fighter in the arena, which is what lets more than
+ * two of them share a room without a blade cutting the wrong person.
+ */
 export const GROUP = {
   WORLD: 0x0001,
   PROP: 0x0002,
-  BODY_A: 0x0004,
-  BLADE_A: 0x0008,
-  BODY_B: 0x0010,
-  BLADE_B: 0x0020,
-  // The locomotion hulls get their own groups. Sharing a group with the
-  // hittable parts meant a blade's swept cut struck the hull first — it
-  // encloses the whole figure — and the hit was thrown away for not belonging
-  // to any named body part, so nobody could wound anybody.
-  HULL_A: 0x0040,
-  HULL_B: 0x0080,
 } as const;
+
+/** Three bits each, after the two scenery bits: sixteen bits, four fighters. */
+export const MAX_FIGHTERS = 4;
+
+function slotBits(i: number): { body: number; blade: number; hull: number } {
+  const base = 2 + i * 3;
+  return { body: 1 << base, blade: 1 << (base + 1), hull: 1 << (base + 2) };
+}
 
 export function groups(membership: number, filter: number): number {
   return (membership << 16) | filter;
 }
 
 /**
- * Which groups a combatant's body and blade belong to, and what each collides
- * with.
+ * Which groups one fighter's body, weapon and hull belong to, and what each
+ * collides with.
  *
- * Two combatants need separate groups because a single shared FIGHTER group
- * cannot express "everyone's blade but my own" -- a fighter must be cut by the
- * other blade while its own sweeps through its shoulder untouched. Splitting by
- * side makes that a filter, not a special case.
+ * Every fighter gets its own slot because a single shared FIGHTER group cannot
+ * express "everyone's blade but my own" -- a fighter must be cut by other
+ * blades while its own sweeps through its shoulder untouched. Per-slot groups
+ * make that a filter rather than a special case, and teams decide who is
+ * hostile to whom.
  *
- * Note that the two blades DO collide with each other. Parrying is not a
- * scripted move here; it is just two swords occupying the same space.
+ * Note that weapons DO collide with each other. Parrying is not a scripted
+ * move here; it is just two blades occupying the same space.
  */
 export interface Side {
-  readonly name: "a" | "b";
+  /** Which of the arena's fighter slots this is. */
+  readonly index: number;
+  /** Fighters on the same team do not cut each other. */
+  readonly team: number;
   /** For every hittable body part. */
   readonly bodyFilter: number;
   /**
-   * For the blade.
+   * For the weapon.
    *
    * Deliberately excludes everything soft. A sword that physically collides
    * with a body is stopped by it, and a stopped blade cannot cut: the swing
@@ -49,52 +58,83 @@ export interface Side {
    * sweeping the blade's line (see cutting.ts).
    */
   readonly bladeFilter: number;
-  /** What a blade's swept cut may find: soft targets only. */
+  /** What a weapon's swept cut may find: soft targets on the other team. */
   readonly cuttableFilter: number;
   /**
    * For the invisible locomotion hull.
    *
-   * Identical to `bodyFilter` except that blades pass straight through. The
-   * hull spans the whole figure, so if it stopped a sword every cut would
-   * land on a nondescript capsule instead of on a head or an arm.
+   * Identical to `bodyFilter` except that blades pass straight through, and
+   * that it bumps into every other fighter's hull regardless of team -- allies
+   * take up space too.
    */
   readonly hullFilter: number;
   /**
-   * For parts that exist only to be hit — the kinematic legs.
+   * For parts that exist only to be hit -- the kinematic legs.
    *
    * A kinematic body is immovable by anything it touches, so if the legs
-   * collided with the world or the other fighter they would shove rather than
-   * be shoved. Restricting them to the opposing blade makes them cuttable
-   * without letting them bulldoze the room.
+   * collided with the world or another fighter they would shove rather than
+   * be shoved. Restricting them to hostile blades makes them cuttable without
+   * letting them bulldoze the room.
    */
   readonly hitOnlyFilter: number;
+  /** For the downward probe that decides whether the feet are on something. */
+  readonly groundFilter: number;
   readonly body: number;
   readonly blade: number;
 }
 
-function makeSide(name: "a" | "b", body: number, blade: number, hull: number,
-                  foeBody: number, foeBlade: number, foeHull: number): Side {
-  return {
-    name, body, blade,
-    // A fighter is hit by the other blade and bumps into the other fighter,
-    // but is transparent to the sword in its own hand.
-    bodyFilter: groups(body, GROUP.WORLD | GROUP.PROP | foeBody | foeBlade),
-    bladeFilter: groups(blade, GROUP.WORLD | foeBlade),
-    cuttableFilter: groups(blade, GROUP.PROP | foeBody),
-    hullFilter: groups(hull, GROUP.WORLD | GROUP.PROP | foeHull),
-    hitOnlyFilter: groups(body, foeBlade),
-  };
+/**
+ * Build one consistent set of sides from a team per fighter.
+ *
+ * Taking the whole roster at once is the point: hostility is a property of the
+ * line-up, not of a fighter, so the filters can only be correct if they are all
+ * derived together. `makeSides([0, 1, 1])` is a player against two allies who
+ * will not cut each other.
+ */
+export function makeSides(teams: readonly number[]): Side[] {
+  if (teams.length > MAX_FIGHTERS) {
+    throw new Error(`${teams.length} fighters; only ${MAX_FIGHTERS} collision slots exist`);
+  }
+  const bits = teams.map((_, i) => slotBits(i));
+
+  return teams.map((team, i) => {
+    const mine = bits[i];
+    let otherBodies = 0, otherHulls = 0, otherBlades = 0, foeBodies = 0, foeBlades = 0;
+    teams.forEach((t, j) => {
+      if (j === i) return;
+      otherBodies |= bits[j].body;
+      otherHulls |= bits[j].hull;
+      otherBlades |= bits[j].blade;
+      if (t !== team) {
+        foeBodies |= bits[j].body;
+        foeBlades |= bits[j].blade;
+      }
+    });
+
+    return {
+      index: i,
+      team,
+      body: mine.body,
+      blade: mine.blade,
+      bodyFilter: groups(mine.body, GROUP.WORLD | GROUP.PROP | otherBodies | foeBlades),
+      bladeFilter: groups(mine.blade, GROUP.WORLD | otherBlades),
+      cuttableFilter: groups(mine.blade, GROUP.PROP | foeBodies),
+      hullFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP | otherHulls),
+      hitOnlyFilter: groups(mine.body, foeBlades),
+      groundFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP),
+    };
+  });
 }
 
-export const SIDE_A = makeSide("a", GROUP.BODY_A, GROUP.BLADE_A, GROUP.HULL_A,
-  GROUP.BODY_B, GROUP.BLADE_B, GROUP.HULL_B);
-export const SIDE_B = makeSide("b", GROUP.BODY_B, GROUP.BLADE_B, GROUP.HULL_B,
-  GROUP.BODY_A, GROUP.BLADE_A, GROUP.HULL_A);
-
 /** Everything a blade or body can touch, for static scenery and loose props. */
-export const ALL_COMBATANTS =
-  GROUP.BODY_A | GROUP.BLADE_A | GROUP.HULL_A |
-  GROUP.BODY_B | GROUP.BLADE_B | GROUP.HULL_B;
+export const ALL_COMBATANTS = (() => {
+  let all = 0;
+  for (let i = 0; i < MAX_FIGHTERS; i++) {
+    const b = slotBits(i);
+    all |= b.body | b.blade | b.hull;
+  }
+  return all;
+})();
 
 export interface PhysicsWorld {
   rapier: Rapier;

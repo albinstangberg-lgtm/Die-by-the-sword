@@ -4,6 +4,7 @@ import type { PhysicsWorld } from "../core/physics";
 import type { Arm } from "./arm";
 import type { Targets } from "./targets";
 import { Cutter, type SweptHit } from "./cutting";
+import type { Weapon } from "./weapons";
 
 /**
  * Impact quality.
@@ -23,9 +24,6 @@ import { Cutter, type SweptHit } from "./cutting";
  * which is what makes a lazy swing bounce and a committed, edge-aligned one
  * bite. Nothing about it is a hitbox check.
  */
-
-const GRIP_LEN = 0.11;
-const BLADE_LEN = 0.86;
 
 /** Ignore repeat events from a sustained contact with the SAME collider. */
 const COOLDOWN_MS = 180;
@@ -47,7 +45,8 @@ export interface Impact {
   what: string;
   closingSpeed: number;   // m/s into the surface
   tangentSpeed: number;   // m/s along it — a draw cut
-  edgeAlign: number;      // 0..1
+  /** 0..1 alignment of whatever axis the weapon bites with. */
+  edgeAlign: number;
   alongBlade: number;     // 0 at the guard, 1 at the tip
   force: number;          // N, from the solver
   at: THREE.Vector3;
@@ -55,6 +54,10 @@ export interface Impact {
   colliderHandle: number;
   /** Blade velocity at the contact, so a severed limb flies the way you swung. */
   bladeVelocity: THREE.Vector3;
+  /** What landed it. Its leverage curve and cut threshold decide the damage. */
+  weapon: Weapon;
+  /** What that weapon weighs right now, in kg. */
+  massKg: number;
 }
 
 interface BladeEntry {
@@ -95,17 +98,26 @@ export class Impacts {
     this.sparks = new Sparks(scene);
   }
 
+  /**
+   * Register a weapon.
+   *
+   * A weapon is several colliders on one body -- an axe's haft and its head --
+   * and stone can be struck with any of them, so every handle routes back to
+   * the same entry. The cutter is kept across re-registration so a blade does
+   * not forget where it was and cut the whole room on its next sweep.
+   */
   addBlade(arm: Arm, onImpact: (i: Impact) => void): void {
     const existing = this.blades.get(arm.bladeCollider.handle);
-    this.blades.set(arm.bladeCollider.handle, {
+    const entry: BladeEntry = {
       arm, onImpact,
       cutter: existing?.cutter ?? new Cutter(this.phys, arm, arm.side.cuttableFilter),
-    });
+    };
+    for (const c of arm.weaponColliders) this.blades.set(c.handle, entry);
   }
 
   /** After teleporting a blade, so its next sweep does not cut the whole room. */
   resetSweeps(): void {
-    for (const b of this.blades.values()) b.cutter.reset();
+    for (const b of new Set(this.blades.values())) b.cutter.reset();
   }
 
   /**
@@ -115,7 +127,7 @@ export class Impacts {
    * here instead, at the speed the blade was actually travelling.
    */
   private sweepBlades(now: number): void {
-    for (const entry of this.blades.values()) {
+    for (const entry of new Set(this.blades.values())) {
       entry.cutter.sweep(this._swept);
       for (const hit of this._swept) {
         const last = this.lastAt.get(hit.collider.handle);
@@ -144,7 +156,7 @@ export class Impacts {
     const closingSpeed = Math.abs(normalComponent);
     const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
 
-    arm.edgeDirection(this._edge);
+    arm.biteDirection(this._edge);
     const edgeAlign = Math.abs(this._edge.dot(this._n));
 
     return {
@@ -158,6 +170,8 @@ export class Impacts {
       at: this._p.clone(),
       colliderHandle: hit.collider.handle,
       bladeVelocity: this._v.clone(),
+      weapon: arm.weapon,
+      massKg: arm.liveWeaponMass,
     };
   }
 
@@ -177,25 +191,33 @@ export class Impacts {
       if (!b1 && !b2) return;
 
       let entry: BladeEntry;
+      let bladeHandle: number;
       let otherHandle: number;
       if (b1 && b2) {
-        entry = b1.arm.state.tipSpeed >= b2.arm.state.tipSpeed ? b1 : b2;
-        otherHandle = entry === b1 ? h2 : h1;
+        const first = b1.arm.state.tipSpeed >= b2.arm.state.tipSpeed;
+        entry = first ? b1 : b2;
+        bladeHandle = first ? h1 : h2;
+        otherHandle = first ? h2 : h1;
       } else if (b1) {
         entry = b1;
+        bladeHandle = h1;
         otherHandle = h2;
       } else {
         entry = b2!;
+        bladeHandle = h2;
         otherHandle = h1;
       }
       const last = this.lastAt.get(otherHandle);
       if (last !== undefined && now - last < COOLDOWN_MS) return;
 
       const other = this.phys.world.getCollider(otherHandle);
-      if (!other) return;
+      // The part of the weapon that actually made contact: an axe's haft
+      // hitting a pillar is a different manifold from its head doing so.
+      const blade = this.phys.world.getCollider(bladeHandle);
+      if (!other || !blade) return;
 
       const force = e.totalForceMagnitude();
-      const impact = this.describe(entry.arm, other, force);
+      const impact = this.describe(entry.arm, blade, other, force);
       if (!impact) return;
 
       // A resting blade is not a hit, and must not start a cooldown either —
@@ -218,9 +240,9 @@ export class Impacts {
     }
   }
 
-  private describe(arm: Arm, other: RAPIER.Collider, force: number): Impact | null {
-    const blade = arm.bladeCollider;
-
+  private describe(
+    arm: Arm, blade: RAPIER.Collider, other: RAPIER.Collider, force: number,
+  ): Impact | null {
     let got = false;
     this._n.set(0, 1, 0);
     this._p.set(0, 0, 0);
@@ -247,16 +269,16 @@ export class Impacts {
     const closingSpeed = Math.abs(normalComponent);
     const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
 
-    // Edge alignment: the blade's local +X is the cutting edge.
-    arm.edgeDirection(this._edge);
+    // How squarely the weapon's own biting axis met the surface.
+    arm.biteDirection(this._edge);
     const edgeAlign = Math.abs(this._edge.dot(this._n));
 
-    // Where along the blade — project the contact into blade-local space,
+    // Where along the weapon — project the contact into weapon-local space,
     // again from the pre-step snapshot so all three measurements agree.
     const bp = arm.snapshotPos;
     this._local.set(this._p.x - bp.x, this._p.y - bp.y, this._p.z - bp.z)
       .applyQuaternion(this._q.copy(arm.snapshotQuat).invert());
-    const alongBlade = clamp01((this._local.y - GRIP_LEN) / BLADE_LEN);
+    const alongBlade = clamp01((this._local.y - arm.weapon.grip) / arm.weapon.span);
 
     return {
       quality: classify(closingSpeed, edgeAlign, alongBlade),
@@ -269,6 +291,8 @@ export class Impacts {
       at: this._p.clone(),
       colliderHandle: other.handle,
       bladeVelocity: this._v.clone(),
+      weapon: arm.weapon,
+      massKg: arm.liveWeaponMass,
     };
   }
 }

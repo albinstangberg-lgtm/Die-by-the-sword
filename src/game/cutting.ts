@@ -24,8 +24,14 @@ import type { Arm } from "./arm";
  * cutting, is an order of magnitude more work and reads the same at speed.
  */
 
-/** Samples along the blade. Each traces its own path between steps. */
-const SAMPLES = 7;
+/**
+ * Samples along the weapon. Each traces its own path between steps.
+ *
+ * Nine rather than seven since weapons stopped all being swords: an axe does
+ * its work in the last fifth of its length, and at seven samples that is one
+ * and a half of them.
+ */
+const SAMPLES = 9;
 
 export interface SweptHit {
   collider: RAPIER.Collider;
@@ -55,11 +61,19 @@ export class Cutter {
   }
 
   /**
-   * Trace the blade from its last position to its current one.
+   * Trace the weapon from its last position to its current one.
    *
-   * Call after `world.step()`. Returns at most one hit per sample, nearest
-   * first along the blade, so a cut is attributed to the part of the edge that
-   * actually reached the target.
+   * Call after `world.step()`. Returns at most one hit per sample, and the
+   * caller takes the first, so the ORDER is the attribution rule:
+   *
+   *   an edge   is walked guard-first. A cut belongs to the part of the edge
+   *             that reached the target, which on a sweep is the nearest one.
+   *   a point   is walked tip-first. A thrust belongs to the part that went
+   *             furthest in, and once a spear is through someone, every sample
+   *             behind the head has crossed them too.
+   *
+   * Getting this backwards makes a spear that lands its head, then reports the
+   * hit against thirty centimetres of shaft, and does nothing.
    */
   sweep(out: SweptHit[]): void {
     out.length = 0;
@@ -71,7 +85,9 @@ export class Cutter {
       return;
     }
 
-    for (let i = 0; i < SAMPLES; i++) {
+    const tipFirst = this.arm.weapon.bite === "point";
+    for (let n = 0; n < SAMPLES; n++) {
+      const i = tipFirst ? SAMPLES - 1 - n : n;
       const from = this.previous[i];
       const to = current[i];
       this._d.copy(to).sub(from);

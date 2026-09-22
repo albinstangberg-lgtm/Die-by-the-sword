@@ -3,149 +3,191 @@ import type { ArmInput } from "./arm";
 import type { Combatant } from "./combatant";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
+import type { Attack, Species } from "./species";
 
 /**
- * A dumb opponent.
+ * An opponent that tells you what it is about to do.
  *
- * It does not get to cheat. It drives its sword arm by emitting MOUSE DELTAS
+ * It does not get to cheat. It drives its weapon arm by emitting MOUSE DELTAS
  * through the same `ArmInput` surface the player's pointer feeds, so its blade
  * is subject to the same force clamp, the same reach limits, the same
- * saturating PD controller. It cannot teleport its sword, it cannot swing
- * faster than an arm can be moved, and if it buries its blade in a pillar it is
+ * saturating PD controller. It cannot teleport its weapon, it cannot swing
+ * faster than an arm can be moved, and if it buries its axe in a pillar it is
  * stuck there exactly as long as you would be.
  *
- * Everything it "decides" is which way to point and when to commit. Making that
- * smarter is stage 5's problem; making it fair is this file's whole job.
+ * What it has that stage 4's opponent did not is a REPERTOIRE. Its swings come
+ * from a short list of named attacks, each with a windup long enough to read,
+ * and while one is winding the weapon lights up and the HUD says which it is
+ * and how to beat it. That is the contract: the enemy commits out loud, and
+ * the fight is about whether you can do something with the three quarters of a
+ * second it just gave you.
+ *
+ * None of that makes an attack scripted. Once it commits, the arm is still
+ * being dragged toward a target pose under a clamped force. It overswings, it
+ * catches the low beam, it plants the axe in the floor, and the damage it does
+ * comes out of how fast the weapon happened to be travelling when it arrived.
+ *
+ * The attack table is written in offsets from LEVEL -- the arm pitch at which
+ * this creature's own weapon would cross its target's chest -- which is solved
+ * from its own kinematics when it winds up. One table therefore describes the
+ * same swing for a goblin and for an orc twice its height.
  */
 
 /** How fast the AI is allowed to move its hand, in pixels of mouse per second. */
 const HAND_SPEED = 1100;
 
-/**
- * Measured centre-to-centre between torsos.
- *
- * The blade reaches about 1.46m from the shoulder, but during a SWEEP it is
- * side-on rather than pointing at the target, so the distance it can actually
- * cut at is well under that. An earlier version wanted to strike from 1.65m,
- * where its swings looked right and passed through empty air every time.
- */
-const RANGE = {
-  /** Closer than this and it backs off — it has over-committed. */
-  tooClose: 0.78,
-  /** The distance it wants to strike from. */
-  strike: 1.15,
-  /** Further than this and it closes in. */
-  tooFar: 1.45,
-};
-
-type State = "close" | "windup" | "strike" | "recover" | "backoff" | "beaten";
-
-interface Stroke {
-  /** Where the arm winds up to, and where it sweeps through to. */
-  fromYaw: number; fromPitch: number;
-  toYaw: number; toPitch: number;
-  roll: number;
-}
+/** Where on a body an attack is aimed, 0 at the feet and 1 at the crown. */
+const AIM_AT = 0.72;
 
 /**
- * A small repertoire, tuned by measurement rather than by eye.
+ * How long it may want to walk, and not walk, before it concludes it is stuck.
  *
- * Every stroke ends in the band a little below shoulder height, because that
- * is where a standing opponent's chest is and because a vertical torso can
- * only be cut by a blade travelling ACROSS it. An earlier set led with big
- * overhead chops, which look right and are nearly worthless: swung down the
- * side of an upright body the edge is perpendicular to the surface it touches,
- * so it grazes at an edge alignment of essentially zero. The rolls are
- * negative for the same reason — the sign that puts the arm in a plane whose
- * edge leads the travel.
+ * Something always eventually is. A hull's velocity is merely SET each step,
+ * while the arm holding a caught weapon drives at hundreds of newtons through
+ * a joint chain, and that is no contest: the body gets dragged straight back
+ * to wherever the weapon is snagged. The case that found this was an orc
+ * hooking its axe over the low beam on the way across the room and then
+ * standing there for the rest of the fight, still dutifully pressing forward
+ * at zero metres per second. The beam is higher now; pillars, walls and the
+ * floor are all still there.
  */
-const STROKES: Stroke[] = [
-  // Diagonal into the chest — the highest-scoring line by some margin.
-  { fromYaw: -1.15, fromPitch: 0.25, toYaw: 0.95, toPitch: -0.35, roll: -1.1 },
-  // Steeper descending diagonal, finishing lower.
-  { fromYaw: -1.25, fromPitch: 0.1, toYaw: 1.0, toPitch: -0.6, roll: -0.6 },
-  // Low sweep at the waist and thighs.
-  { fromYaw: -1.3, fromPitch: -0.45, toYaw: 1.05, toPitch: -0.9, roll: 0 },
-  // Backhand, returning right to left. Rolled the same way: the blade is
-  // symmetric, so which edge leads costs nothing, and this is the arm plane
-  // that measured well.
-  { fromYaw: 1.05, fromPitch: 0.15, toYaw: -1.2, toPitch: -0.4, roll: -1.0 },
-];
+const SNAG_TIME = 0.5;
+
+type State =
+  | "close" | "windup" | "strike" | "recover" | "backoff" | "free" | "beaten";
 
 export class Ai implements ArmInput {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false,
+    turnLeft: false, turnRight: false, jump: false,
   };
 
   private state: State = "close";
   private timer = 0;
-  private stroke = STROKES[0];
+  private attack: Attack;
   /**
-   * Forces a single stroke, so one line's geometry can be measured in
-   * isolation. This is how the table above was tuned; leave it null in play.
+   * Where "level" is for this creature, at the wound-up reach and at the
+   * extended one.
+   *
+   * Two of them, because a thrust needs both. Extending the arm swings the
+   * elbow through a large angle, and the weapon welded to the forearm swings
+   * with it -- so a thrust that only aims its end pose comes in rotating about
+   * the hand, which puts the point's whole velocity at right angles to the
+   * shaft. Aiming BOTH ends at the target leaves the shaft pointing the same
+   * way in each, and the only thing left between them is the hand travelling
+   * up its own line. That is a thrust.
+   *
+   * `yaw` is zero for anything that swings: an edge's table is written against
+   * torso-forward and was tuned that way.
    */
-  strokeOverride: Stroke | null = null;
-  private want = { yaw: 0.3, pitch: -0.15, reach: 0.46, roll: 0 };
+  private levelFrom = { yaw: 0, pitch: 0 };
+  private levelTo = { yaw: 0, pitch: 0 };
+  /** Measured horizontal distance its percussion point covers, metres. */
+  private strikeReach = 1;
+  private windupLength = 1;
+
+  /**
+   * Forces a single attack, so one line's geometry can be measured in
+   * isolation. This is how the tables are tuned; leave it null in play.
+   */
+  attackOverride: Attack | null = null;
+
+  private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
 
   private dx = 0;
+  private wheel = 0;
   private dy = 0;
   private rollDx = 0;
+
+  private readonly _self = new THREE.Vector3();
+  private readonly _foe = new THREE.Vector3();
+  private readonly _probe = new THREE.Vector3();
+  private readonly _mark = new THREE.Vector3();
+  private readonly _was = new THREE.Vector3();
+  private snag = 0;
+
+  constructor(readonly species: Species) {
+    this.attack = species.attacks[0];
+  }
 
   /** Visible in the HUD, so it is obvious what it is up to. */
   get intent(): string {
     return this.state;
   }
 
-  private readonly _self = new THREE.Vector3();
-  private readonly _foe = new THREE.Vector3();
+  /** The attack it is currently committed to, or null if it is not. */
+  get committed(): Attack | null {
+    return this.state === "windup" || this.state === "strike" ? this.attack : null;
+  }
 
-  constructor(private aggression = 1) {}
+  /** 0..1 through the windup. What the weapon's glow is showing. */
+  get tell(): number {
+    if (this.state === "windup") {
+      return 1 - Math.max(0, Math.min(1, this.timer / this.windupLength));
+    }
+    return this.state === "strike" ? 1 : 0;
+  }
 
   /** Run once per fixed step, before the arm reads its input. */
   think(self: Combatant, foe: Combatant, t: Tuning, dt: number): void {
-    if (self.dead) { this.state = "beaten"; this.idle(); return; }
+    if (self.dead) { this.state = "beaten"; this.idle(); this.showTell(self); return; }
 
     self.position(this._self);
     foe.position(this._foe);
     const toFoe = this._foe.clone().sub(this._self);
     const range = Math.hypot(toFoe.x, toFoe.z);
 
-    this.face(self, toFoe, dt);
+    this.face(self, toFoe);
     this.timer -= dt;
 
-    // Disarmed: no sword, no plan. It backs away rather than pretending.
+    // Disarmed: no weapon, no plan. It backs away rather than pretending.
     if (self.arm.disarmed) {
       this.state = "beaten";
       this.keys.forward = false;
       this.keys.back = range < 3.0;
+      this.keys.jump = false;
       this.steerArm(self, t, dt);
+      this.showTell(self);
       return;
     }
 
+    this.measure(self, foe, t);
+    const close = this.strikeReach * this.species.range.close;
+    const strike = this.strikeReach * this.species.range.strike;
+    const far = this.strikeReach * this.species.range.far;
+
+    this.checkSnag(t, dt);
+
     switch (this.state) {
       case "close":
-        this.want = { yaw: 0.3, pitch: 0.1, reach: 0.44, roll: 0 };
-        this.keys.forward = range > RANGE.strike;
-        this.keys.back = range < RANGE.tooClose;
-        if (range <= RANGE.tooFar && range >= RANGE.tooClose) {
-          this.begin("windup", 0.28 / this.aggression);
-          this.stroke = this.strokeOverride ?? STROKES[(Math.random() * STROKES.length) | 0];
-        }
+        this.guard();
+        this.keys.forward = range > strike;
+        this.keys.back = range < close;
+        if (range <= far && range >= close) this.commit(range);
         break;
 
       case "windup":
+        // The tell. It stands still and shows you the weapon, and the longer
+        // the attack the longer it stands there.
         this.want = {
-          yaw: this.stroke.fromYaw, pitch: this.stroke.fromPitch,
-          reach: 0.40, roll: this.stroke.roll,
+          yaw: this.levelFrom.yaw + this.attack.from.yaw,
+          pitch: this.levelFrom.pitch + this.attack.from.pitch,
+          reach: this.attack.from.reach,
+          roll: this.attack.roll,
         };
         this.keys.forward = false;
         this.keys.back = false;
-        // Commit once the arm has actually got there, or when patience runs
-        // out — otherwise a blade caught on scenery would hold it forever.
-        if (this.timer <= 0 || this.armIsNear(self, 0.25)) {
-          this.begin("strike", 0.42);
-        }
+        // The windup runs its DECLARED length, every time.
+        //
+        // It used to commit early the moment the arm reached the wound-up
+        // pose, which on a fast arm cut the orc's three-quarter-second cleave
+        // in half. That is not a telegraph, it is a threat that sometimes
+        // lies; a player cannot learn a tell whose length depends on how
+        // cleanly the last swing finished. The timer alone also covers the
+        // case this was guarding against -- a weapon caught on scenery no
+        // longer holds the windup open forever, because the clock does not
+        // care whether the arm got there.
+        if (this.timer <= 0) this.begin("strike", this.attack.strike);
         break;
 
       case "strike":
@@ -153,29 +195,51 @@ export class Ai implements ArmInput {
         // foe decelerates into the hit and lands a shove; the whole damage
         // model is built on speed at contact.
         this.want = {
-          yaw: this.stroke.toYaw, pitch: this.stroke.toPitch,
-          reach: 0.50, roll: this.stroke.roll,
+          yaw: this.levelTo.yaw + this.attack.to.yaw,
+          pitch: this.levelTo.pitch + this.attack.to.pitch,
+          reach: this.attack.to.reach,
+          roll: this.attack.roll,
         };
-        this.keys.forward = range > RANGE.strike;
-        if (this.timer <= 0) this.begin("recover", 0.22);
+        // Stepping in closes to where the weapon works, not to contact. An
+        // attack that walks all the way in ends up swinging its arc past the
+        // target and connecting with whatever is left -- which for an axe
+        // meant landing every single blow on a shin.
+        this.keys.forward = this.attack.step > 0 && range > strike;
+        this.keys.back = this.attack.step < 0;
+        if (this.timer <= 0) this.begin("recover", this.attack.recover);
         break;
 
       case "recover":
-        this.want = { yaw: 0.3, pitch: 0.1, reach: 0.42, roll: 0 };
+        // Open. This is the window the windup bought you.
+        this.guard();
         this.keys.forward = false;
-        this.keys.back = range < RANGE.tooClose;
+        this.keys.back = range < close;
         if (this.timer <= 0) {
           // After a swing it mostly presses, and occasionally resets so it is
           // not a metronome. Backing off after three swings in four made it
           // spend more of the fight retreating than fighting.
-          this.begin(Math.random() < 0.75 * this.aggression ? "close" : "backoff", 0.35);
+          const press = Math.random() < 0.75 * this.species.aggression;
+          this.begin(press ? "close" : "backoff", 0.35);
         }
         break;
 
       case "backoff":
-        this.want = { yaw: 0.35, pitch: 0.2, reach: 0.40, roll: 0.3 };
+        this.guard(0.25);
         this.keys.forward = false;
-        this.keys.back = range < RANGE.tooFar;
+        this.keys.back = range < far;
+        if (this.timer <= 0) this.begin("close", 0);
+        break;
+
+      case "free":
+        // Caught on something. Pull the hand in and low and give ground --
+        // which is exactly what a player does with a blade planted in a wall,
+        // and works for the same reason: a folded arm has leverage a straight
+        // one does not.
+        this.want = {
+          yaw: this.levelTo.yaw + 0.2, pitch: this.levelTo.pitch - 0.9, reach: 0, roll: 0,
+        };
+        this.keys.forward = false;
+        this.keys.back = true;
         if (this.timer <= 0) this.begin("close", 0);
         break;
 
@@ -185,6 +249,96 @@ export class Ai implements ArmInput {
     }
 
     this.steerArm(self, t, dt);
+    this.showTell(self);
+  }
+
+  /**
+   * Notice when the feet are turning and the body is not going anywhere.
+   *
+   * Measured rather than inferred: it compares where it wanted to be with
+   * where it got, which needs nothing the creature does not already have. A
+   * weapon planted in stone is a real state the player gets into too, and the
+   * way out of it is the same for both of them.
+   */
+  private checkSnag(t: Tuning, dt: number): void {
+    const moved = this._self.distanceTo(this._was);
+    this._was.copy(this._self);
+    if (this.state === "free" || this.state === "beaten") { this.snag = 0; return; }
+
+    const trying = this.keys.forward || this.keys.back;
+    const expected = t.moveSpeed * this.species.build.scale * dt;
+    if (trying && moved < expected * 0.3) this.snag += dt;
+    else this.snag = 0;
+
+    if (this.snag > SNAG_TIME) {
+      this.snag = 0;
+      this.begin("free", 0.6);
+    }
+  }
+
+  /**
+   * Pick the next attack and start winding it.
+   *
+   * The level pitch is solved once, here, and held for the whole swing. Chasing
+   * a moving target through the strike would make every attack home, which is
+   * precisely what a telegraph is supposed to rule out: you should be able to
+   * step out of the line it committed to.
+   */
+  private commit(range: number): void {
+    const usable = this.species.attacks.filter((a) => {
+      if (!a.at) return true;
+      const f = range / this.strikeReach;
+      return f >= (a.at.min ?? 0) && f <= (a.at.max ?? Infinity);
+    });
+    const list = usable.length > 0 ? usable : this.species.attacks;
+    this.attack = this.attackOverride ?? list[(Math.random() * list.length) | 0];
+    this.windupLength = this.attack.windup;
+    this.begin("windup", this.attack.windup);
+  }
+
+  /**
+   * Re-measure what this body can reach and where level is.
+   *
+   * Both come from the arm's own kinematics, so a goblin measures a goblin's
+   * spear and an orc measures an orc's axe, and neither needs to be told a
+   * number in metres.
+   */
+  private measure(self: Combatant, foe: Combatant, t: Tuning): void {
+    const chest = this._foe.y
+      - foe.fighter.build.hullCentreY
+      + foe.fighter.build.standing.crown * AIM_AT;
+
+    if (this.state !== "strike") {
+      // An edge wants its arc to cross the chest; a point wants to be aimed at
+      // it, which takes both angles rather than just the pitch. Same table of
+      // offsets either way -- only what "level" means changes, and it changes
+      // with what is in the hand.
+      const roll = this.attack.roll;
+      if (self.arm.weapon.bite === "point") {
+        this._mark.set(this._foe.x, chest, this._foe.z);
+        self.arm.aimPointAt(this._mark, this.attack.from.reach, roll, t, this.levelFrom);
+        self.arm.aimPointAt(this._mark, this.attack.to.reach, roll, t, this.levelTo);
+      } else {
+        this.levelFrom.yaw = 0;
+        this.levelTo.yaw = 0;
+        this.levelFrom.pitch = self.arm.solvePitchForHeight(chest, 0, 1, roll, t);
+        this.levelTo.pitch = this.levelFrom.pitch;
+      }
+    }
+    self.arm.probeStrike(
+      this.levelTo.yaw, this.levelTo.pitch, 1, this.attack.roll, t, this._probe);
+    this.strikeReach = Math.max(
+      0.2, Math.hypot(this._probe.x - this._self.x, this._probe.z - this._self.z));
+  }
+
+  /** The resting guard: weapon up, a little across, level with the chest. */
+  private guard(lift = 0.15): void {
+    this.want = {
+      yaw: this.levelTo.yaw + 0.3,
+      pitch: this.levelTo.pitch + lift,
+      reach: 0.55,
+      roll: 0,
+    };
   }
 
   private begin(state: State, seconds: number): void {
@@ -199,10 +353,16 @@ export class Ai implements ArmInput {
     this.keys.right = false;
     this.keys.turnLeft = false;
     this.keys.turnRight = false;
+    this.keys.jump = false;
+  }
+
+  /** Light the weapon in proportion to how far through the windup it is. */
+  private showTell(self: Combatant): void {
+    self.arm.setTell(this.tell);
   }
 
   /** Turn toward the foe using the same turn keys the player has. */
-  private face(self: Combatant, toFoe: THREE.Vector3, _dt: number): void {
+  private face(self: Combatant, toFoe: THREE.Vector3): void {
     // Torso-forward is -Z, so the yaw that points at a direction d is
     // atan2(-d.x, -d.z).
     const wanted = Math.atan2(-toFoe.x, -toFoe.z);
@@ -215,15 +375,9 @@ export class Ai implements ArmInput {
     this.keys.turnRight = err < -dead;
   }
 
-  private armIsNear(self: Combatant, tolerance: number): boolean {
-    const aim = self.arm.aim;
-    return Math.abs(aim.yaw - this.want.yaw) < tolerance
-      && Math.abs(aim.pitch - this.want.pitch) < tolerance;
-  }
-
   /**
    * Convert "where I want the arm" into mouse travel, capped at a human hand
-   * speed. This is the only channel the AI has to its own sword.
+   * speed. This is the only channel the AI has to its own weapon.
    */
   private steerArm(self: Combatant, t: Tuning, dt: number): void {
     const aim = self.arm.aim;
@@ -241,13 +395,18 @@ export class Ai implements ArmInput {
     this.dy += -need(this.want.pitch - aim.pitch) * (t.invertY ? -1 : 1);
     this.rollDx += Math.max(-budget, Math.min(budget,
       (this.want.roll - aim.roll) / t.rollSensitivity));
+
+    // Reach is a fraction of its own arm, turned back into wheel notches.
+    const wantReach = self.arm.reachAt(this.want.reach);
+    this.wheel += Math.max(-4, Math.min(4, (wantReach - aim.reach) / t.reachRate));
   }
 
   // --- ArmInput ---
   consumeMouse(): { dx: number; dy: number; wheel: number; rollDx: number } {
-    const out = { dx: this.dx, dy: this.dy, wheel: 0, rollDx: this.rollDx };
+    const out = { dx: this.dx, dy: this.dy, wheel: this.wheel, rollDx: this.rollDx };
     this.dx = 0;
     this.dy = 0;
+    this.wheel = 0;
     this.rollDx = 0;
     return out;
   }
@@ -257,7 +416,12 @@ export class Ai implements ArmInput {
     this.timer = 0;
     this.dx = 0;
     this.dy = 0;
+    this.wheel = 0;
     this.rollDx = 0;
+    this.levelFrom = { yaw: 0, pitch: 0 };
+    this.levelTo = { yaw: 0, pitch: 0 };
+    this.snag = 0;
+    this.attack = this.species.attacks[0];
     this.idle();
   }
 }

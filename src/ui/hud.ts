@@ -5,6 +5,12 @@ import type { Combatant } from "../game/combatant";
 import type { Ai } from "../game/ai";
 import { cutDamage } from "../game/damage";
 
+/** One opponent and the brain driving it, as the fight panel needs them. */
+export interface TrackedFoe {
+  combatant: Combatant;
+  ai: Ai;
+}
+
 /**
  * Live readouts.
  *
@@ -40,11 +46,11 @@ export class Hud {
   private dummyEl!: HTMLElement;
   private fightEl!: HTMLElement;
   private player: Combatant | null = null;
-  private foe: Combatant | null = null;
-  private ai: Ai | null = null;
+  private foes: TrackedFoe[] = [];
   private hurtTimer = 0;
   private dummy: Dummy | null = null;
   private rollHint!: HTMLElement;
+  private jumpHint!: HTMLElement;
 
   constructor(root: HTMLElement, impactEl: HTMLElement) {
     this.root = root;
@@ -68,8 +74,10 @@ export class Hud {
           <dt>mouse</dt><dd>sword arm</dd>
           <dt>right-drag</dt><dd data-f="rollhint">roll edge</dd>
           <dt>wheel</dt><dd>reach</dd>
-          <dt>W A S D</dt><dd>move</dd>
-          <dt>Q / E</dt><dd>turn</dd>
+          <dt>W / S</dt><dd>forward, back</dd>
+          <dt>A / D</dt><dd>turn</dd>
+          <dt>Q / E</dt><dd>sidestep</dd>
+          <dt>Space</dt><dd data-f="jumphint">jump</dd>
           <dt>Tab</dt><dd>tuning panel</dd>
           <dt>R</dt><dd>reset</dd>
           <dt>Esc</dt><dd>release mouse</dd>
@@ -98,11 +106,12 @@ export class Hud {
     this.roll = f("roll");
     this.fps = f("fps");
     this.rollHint = f("rollhint");
+    this.jumpHint = f("jumphint");
     this.errBar = b("err");
     this.satBar = b("sat");
   }
 
-  update(s: ArmState, frameMs: number, rolling = false): void {
+  update(s: ArmState, frameMs: number, rolling = false, grounded = true): void {
     this.err.textContent = `${s.trackingError.toFixed(3)} m`;
     this.sat.textContent = `${Math.round(s.saturation * 100)}%`;
     this.tip.textContent = `${s.tipSpeed.toFixed(1)} m/s`;
@@ -114,6 +123,11 @@ export class Hud {
     // quietly stops sweeping the arm and it reads as a stuck control.
     this.rollHint.textContent = rolling ? "ROLLING" : "roll edge";
     this.rollHint.style.color = rolling ? "var(--ink)" : "";
+
+    // Air control is a fraction of ground control, so knowing you are off the
+    // floor matters: you cannot take a jump back.
+    this.jumpHint.textContent = grounded ? "jump" : "AIRBORNE";
+    this.jumpHint.style.color = grounded ? "" : "var(--ink)";
 
     // 0.25m of lag is a lot: at that point the blade is visibly not where you
     // asked for it, which is exactly when the mechanic is doing its job.
@@ -130,10 +144,15 @@ export class Hud {
       this.refreshDummy();
     }
 
-    const fsig = this.player && this.foe
-      ? `${Math.round(this.player.health)},${Math.round(this.foe.health)},` +
-        `${this.player.state.disarmed},${this.foe.state.disarmed},` +
-        `${this.player.dead},${this.foe.dead},${this.ai?.intent}`
+    const fsig = this.player
+      ? [
+          Math.round(this.player.health), this.player.state.disarmed, this.player.dead,
+          ...this.foes.flatMap((f) => [
+            Math.round(f.combatant.health), f.combatant.state.disarmed,
+            f.combatant.dead, f.ai.intent, f.ai.committed?.name ?? "",
+            Math.round(f.ai.tell * 8),
+          ]),
+        ].join(",")
       : "";
     if (fsig !== this.lastFightSig) {
       this.lastFightSig = fsig;
@@ -158,7 +177,7 @@ export class Hud {
       <div class="detail">
         ${i.closingSpeed.toFixed(1)} m/s into it
         &middot; ${i.tangentSpeed.toFixed(1)} m/s along
-        &middot; edge ${Math.round(i.edgeAlign * 100)}%
+        &middot; ${i.weapon.bite} ${Math.round(i.edgeAlign * 100)}%
         &middot; ${describePoint(i.alongBlade)}${sweet ? " (sweet spot)" : ""}
       </div>`;
     this.impactEl.classList.remove("fade");
@@ -177,10 +196,9 @@ export class Hud {
     this.dummy = dummy;
   }
 
-  trackFight(player: Combatant, foe: Combatant, ai: Ai): void {
+  trackFight(player: Combatant, foes: TrackedFoe[]): void {
     this.player = player;
-    this.foe = foe;
-    this.ai = ai;
+    this.foes = foes;
   }
 
   /** Flash the screen edge when the player is cut. */
@@ -199,7 +217,7 @@ export class Hud {
   }
 
   private refreshFight(): void {
-    if (!this.player || !this.foe) return;
+    if (!this.player) return;
     const row = (c: Combatant) => {
       const s = c.state;
       const pct = (s.health / s.maxHealth) * 100;
@@ -213,8 +231,29 @@ export class Hud {
           <i style="width:${pct.toFixed(0)}%"></i>
         </div>`;
     };
-    this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}${row(this.foe)}`
-      + `<div class="intent">${this.foe.name}: ${this.ai?.intent ?? "-"}</div>`;
+
+    /**
+     * The telegraph, in words.
+     *
+     * The weapon lighting up says "something is coming"; this says what, and
+     * what to do about it. Once you have learned the three attacks you can
+     * stop reading it -- which is the point of a fixed repertoire.
+     */
+    const tell = (f: TrackedFoe) => {
+      const a = f.ai.committed;
+      if (!a || f.combatant.dead) {
+        return `<div class="intent">${f.combatant.name}: ${f.ai.intent}</div>`;
+      }
+      const winding = f.ai.intent === "windup";
+      return `<div class="attack${winding ? " winding" : ""}">
+          <span class="move">${a.name}</span>
+          <span class="counter">${a.counter}</span>
+          <i style="width:${(f.ai.tell * 100).toFixed(0)}%"></i>
+        </div>`;
+    };
+
+    this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}`
+      + this.foes.map((f) => row(f.combatant) + tell(f)).join("");
   }
 
   /** Integrity bars for every joint still holding. */

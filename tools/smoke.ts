@@ -13,25 +13,28 @@
  */
 
 import * as THREE from "three";
-import { createPhysics, SIDE_A, SIDE_B } from "../src/core/physics";
+import { createPhysics, makeSides } from "../src/core/physics";
 import { buildArena, SPAWN } from "../src/game/arena";
 import { Targets } from "../src/game/targets";
 import { Dummy } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
-import { FOE_PALETTE, PLAYER_PALETTE } from "../src/game/fighter";
 import { Combatant } from "../src/game/combatant";
+import {
+  GOBLIN, ORC, SWORDSMAN, jointScaleFor, maxHealthFor, type Species,
+} from "../src/game/species";
+import { AXE, SPEAR, SWORD } from "../src/game/weapons";
 import { Ai } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
 import type { Fighter } from "../src/game/fighter";
 import { Impacts, type Impact } from "../src/game/impacts";
 import { DEFAULTS, type Tuning } from "../src/tuning";
-import type { Keys } from "../src/input/input";
+import { KEY_MAP, type Keys } from "../src/input/input";
 
 const STEP = 1 / 60;
 
 const NO_KEYS: Keys = {
   forward: false, back: false, left: false, right: false,
-  turnLeft: false, turnRight: false,
+  turnLeft: false, turnRight: false, jump: false,
 };
 
 /** A scriptable stand-in for pointer-lock input. */
@@ -46,6 +49,11 @@ class FakeInput implements ArmInput {
 
 const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
 const FOE_SPAWN = new THREE.Vector3(-1.2, 0.95, -3.6);
+
+/** Spawn height for a body of a given build, so nothing starts in the floor. */
+function spawnFor(species: Species, x: number, z: number): THREE.Vector3 {
+  return new THREE.Vector3(x, species.build.hullCentreY + 0.11, z);
+}
 
 interface Rig {
   arm: Arm;
@@ -73,16 +81,22 @@ interface Rig {
   step(n?: number, keys?: Keys): void;
 }
 
-async function buildRig(overrides: Partial<Tuning> = {}): Promise<Rig> {
+async function buildRig(
+  overrides: Partial<Tuning> = {},
+  foeSpecies: Species = SWORDSMAN,
+  foeAt: THREE.Vector3 = FOE_SPAWN,
+): Promise<Rig> {
   const tuning: Tuning = { ...DEFAULTS, ...overrides };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   buildArena(phys, scene, targets);
 
-  const player = new Combatant("you", "your", phys, scene, SPAWN, SIDE_A, PLAYER_PALETTE, tuning, targets);
-  const foe = new Combatant("foe", "his", phys, scene, FOE_SPAWN, SIDE_B, FOE_PALETTE, tuning, targets);
-  const ai = new Ai();
+  const [playerSide, foeSide] = makeSides([0, 1]);
+  const player = new Combatant(phys, scene, SPAWN, playerSide, tuning, targets,
+    SWORDSMAN, "you", "your");
+  const foe = new Combatant(phys, scene, foeAt, foeSide, tuning, targets, foeSpecies);
+  const ai = new Ai(foeSpecies);
 
   const fighter = player.fighter;
   const arm = player.arm;
@@ -124,30 +138,11 @@ async function buildRig(overrides: Partial<Tuning> = {}): Promise<Rig> {
   };
 }
 
-/**
- * Point the arm at a world position, the way the AI does — by emitting mouse
- * deltas until the aim gets there.
- *
- * Tests used to swing with hard-coded pixel deltas tuned by eye against
- * whatever the geometry happened to be. When the fighters were rebuilt with
- * human proportions the shoulder rose by 0.6m and every one of those numbers
- * silently became wrong, which looked like four separate gameplay regressions.
- * Aiming at a point instead means the tests survive the next time the body
- * changes shape.
- */
-function aimHandAt(rig: Rig, target: THREE.Vector3, steps = 110): void {
-  const shoulder = rig.fighter.shoulderWorld(new THREE.Vector3());
-  const dir = target.clone().sub(shoulder).normalize();
-
-  const pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
-  const worldYaw = Math.atan2(-dir.x, -dir.z);
-  let armYaw = worldYaw - rig.fighter.yaw;
-  while (armYaw > Math.PI) armYaw -= Math.PI * 2;
-  while (armYaw < -Math.PI) armYaw += Math.PI * 2;
-
+/** Drive the arm to a yaw and pitch, the way a hand would. */
+function aimAngles(rig: Rig, yaw: number, pitch: number, steps: number): void {
   const [yawMin, yawMax] = Arm.LIMITS.yaw;
   const [pitchMin, pitchMax] = Arm.LIMITS.pitch;
-  const wantYaw = Math.max(yawMin, Math.min(yawMax, armYaw));
+  const wantYaw = Math.max(yawMin, Math.min(yawMax, yaw));
   const wantPitch = Math.max(pitchMin, Math.min(pitchMax, pitch));
 
   for (let i = 0; i < steps; i++) {
@@ -163,21 +158,62 @@ function aimHandAt(rig: Rig, target: THREE.Vector3, steps = 110): void {
  *
  * Pointing the hand at a target misses it: the elbow hangs below the
  * shoulder-to-hand line, so the forearm and the blade welded to it angle
- * upward out of the hand and sail over. Rather than guess the offset, aim,
- * look at where the blade actually ended up, and correct by the error. Two or
- * three rounds converge, and it stays correct if the arm is ever reshaped.
+ * upward out of the hand and sail over.
+ *
+ * The vertical half of that is solved exactly, by the arm's own
+ * `solvePitchForHeight` -- the same kinematic probe an opponent uses to aim,
+ * so this drives production code rather than a second guess at it. Only the
+ * sideways miss is iterated, and that converges in two or three rounds because
+ * moving the aim sideways moves the blade sideways very nearly one for one.
+ *
+ * The earlier version iterated BOTH axes by adding the whole measured error
+ * back into the target. Vertically that relation is not monotonic -- past a
+ * point, dropping the hand lays the blade flatter and the strike stops
+ * following -- so it crept, overshot, and eventually parked the aim on a joint
+ * limit with the sword pointing behind its owner. It only ever converged
+ * because the low beam happened to hold the blade down; raising the beam for
+ * the orc exposed it.
  */
 function aimBladeAt(rig: Rig, target: THREE.Vector3, rounds = 4): void {
   const wanted = target.clone();
+  const shoulder = new THREE.Vector3();
+  const flat = new THREE.Vector3();
+
   for (let i = 0; i < rounds; i++) {
-    aimHandAt(rig, wanted, i === 0 ? 110 : 45);
+    rig.fighter.shoulderWorld(shoulder);
+    let yaw = Math.atan2(-(wanted.x - shoulder.x), -(wanted.z - shoulder.z))
+      - rig.fighter.yaw;
+    while (yaw > Math.PI) yaw -= Math.PI * 2;
+    while (yaw < -Math.PI) yaw += Math.PI * 2;
+
+    const [minReach, maxReach] = rig.arm.reachLimits;
+    const fraction = (rig.arm.aim.reach - minReach) / (maxReach - minReach);
+    const pitch = rig.arm.solvePitchForHeight(
+      wanted.y, yaw, fraction, rig.arm.aim.roll, rig.tuning);
+
+    aimAngles(rig, yaw, pitch, i === 0 ? 110 : 45);
 
     // The percussion point, about two thirds along, is what we want on target.
-    const hand = rig.arm.handPosition.clone();
-    const strike = hand.lerp(rig.arm.tipPosition, 0.7);
+    const strike = rig.arm.handPosition.clone().lerp(rig.arm.tipPosition, 0.7);
     const error = target.clone().sub(strike);
-    if (error.length() < 0.05) break;
-    wanted.add(error);
+
+    // Measure only the miss an AIM CAN FIX. The blade reaches as far as it
+    // reaches -- against a target inside that, the percussion point ends up a
+    // third of a metre PAST it, and that is not an error, it is a sweep going
+    // through someone. Counting it as one made the loop walk the aim point
+    // back toward the shoulder until the bearing flipped and the sword ended
+    // up pointing behind its owner.
+    flat.set(target.x - shoulder.x, 0, target.z - shoulder.z).normalize();
+    const along = error.x * flat.x + error.z * flat.z;
+    const acrossX = error.x - along * flat.x;
+    const acrossZ = error.z - along * flat.z;
+    if (Math.hypot(acrossX, acrossZ, error.y) < 0.06) return;
+
+    wanted.x += acrossX;
+    wanted.z += acrossZ;
+    // The solve aims the arm's own percussion point, which is not exactly the
+    // 0.7 measured here; damped so that difference is absorbed, not chased.
+    wanted.y += error.y * 0.5;
   }
 }
 
@@ -298,7 +334,7 @@ async function edgeRollTracks(): Promise<void> {
   rig.step(150);
 
   const edge = new THREE.Vector3();
-  rig.arm.edgeDirection(edge);
+  rig.arm.biteDirection(edge);
   const before = edge.clone();
 
   // Roll for less than a quarter turn. A blade is symmetric, so the controller
@@ -310,7 +346,7 @@ async function edgeRollTracks(): Promise<void> {
   rig.step(1);
   rig.step(110);
 
-  rig.arm.edgeDirection(edge);
+  rig.arm.biteDirection(edge);
   const turned = Math.acos(Math.min(1, Math.abs(before.dot(edge)))) * 180 / Math.PI;
 
   check(
@@ -396,7 +432,7 @@ async function damageCurveIsHonest(): Promise<void> {
   console.log("\ndamage rewards a real cut and nothing else");
 
   const at = (closingSpeed: number, edgeAlign: number, alongBlade: number) =>
-    cutDamage({ closingSpeed, edgeAlign, alongBlade });
+    cutDamage({ closingSpeed, edgeAlign, alongBlade, weapon: SWORD });
 
   const clean = at(9, 0.95, 0.72);
   const flat = at(9, 0.05, 0.72);
@@ -421,7 +457,8 @@ function fakeImpact(handle: number, over: Partial<Impact> = {}): Impact {
     quality: "clean", what: "test", closingSpeed: 9, tangentSpeed: 2,
     edgeAlign: 0.95, alongBlade: 0.72, force: 400,
     at: new THREE.Vector3(), colliderHandle: handle,
-    bladeVelocity: new THREE.Vector3(3, 0, 0), ...over,
+    bladeVelocity: new THREE.Vector3(3, 0, 0),
+    weapon: SWORD, massKg: SWORD.mass, ...over,
   };
 }
 
@@ -493,7 +530,12 @@ async function aRealSwingSevers(): Promise<void> {
   // start — but a blade that passes through can be swung from inside its own
   // reach, and a sweep that crosses the target's centre line puts real speed
   // along the contact normal instead of skidding across it.
-  const chest = new THREE.Vector3(DUMMY_AT.x, 1.5, DUMMY_AT.z + 0.15);
+  // Aim at the dummy's RIGHT UPPER ARM, not its chest. The chest is what the
+  // dummy hangs from, so it is the one part with no joint to cut it off at --
+  // a swing perfectly aimed there can never satisfy what this test asserts.
+  // It passed for a while anyway, because the aiming routine drifted high and
+  // kept taking the head off by accident.
+  const arm = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
   rig.fighter.body.setTranslation(
     { x: DUMMY_AT.x, y: SPAWN.y, z: DUMMY_AT.z + 0.85 }, true);
   rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
@@ -515,16 +557,25 @@ async function aRealSwingSevers(): Promise<void> {
     best = Math.max(best, cutDamage(i));
   });
 
-  aimBladeAt(rig, chest);
+  aimBladeAt(rig, arm);
+
+  // Wind up to one side, then sweep through at a CONSTANT mouse velocity --
+  // about 1.8 radians in a fifth of a second, which is what a swing is.
+  // Driving toward a fixed yaw instead makes the delta shrink as the arm
+  // arrives, so the blade decelerates into the target and lands a push: the
+  // same "aim through, not at" the opponent's strokes are built on.
+  const sweepRate = 0.13 / rig.tuning.sensitivity;
 
   let swings = 0;
   for (; swings < 24 && severed.length === 0; swings++) {
-    if (swings % 4 === 0) aimBladeAt(rig, chest, 2);
-    const to = rig.arm.aim.yaw + (swings % 2 === 0 ? -0.6 : 0.6);
-    for (let i = 0; i < 26; i++) {
-      rig.input.dx = -(to - rig.arm.aim.yaw) / rig.tuning.sensitivity * 0.5;
+    if (swings % 4 === 0) aimBladeAt(rig, arm, 2);
+    const dir = swings % 2 === 0 ? 1 : -1;
+    aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
+    for (let i = 0; i < 14; i++) {
+      rig.input.dx = dir * sweepRate;
       rig.step(1);
     }
+    rig.step(10);
   }
 
   check("a swung blade severs something", severed.length > 0,
@@ -748,6 +799,315 @@ async function deathDropsTheBody(): Promise<void> {
     before - after > 0.1, `torso fell ${(before - after).toFixed(2)} m`);
 }
 
+// --- stage 5: jumping, the bestiary, and the telegraph -----------------------
+
+async function theControlsAreWhereTheySay(): Promise<void> {
+  console.log("\nQ/E sidestep, A/D turn");
+  // A user-visible contract, and the one thing in this project a player has to
+  // unlearn from every other game. Worth a guard.
+  check("A and D turn", KEY_MAP.KeyA === "turnLeft" && KEY_MAP.KeyD === "turnRight",
+    `A -> ${KEY_MAP.KeyA}, D -> ${KEY_MAP.KeyD}`);
+  check("Q and E sidestep", KEY_MAP.KeyQ === "left" && KEY_MAP.KeyE === "right",
+    `Q -> ${KEY_MAP.KeyQ}, E -> ${KEY_MAP.KeyE}`);
+  check("Space jumps", KEY_MAP.Space === "jump", `Space -> ${KEY_MAP.Space}`);
+
+  const rig = await buildRig();
+  rig.step(60);
+  const before = rig.fighter.yaw;
+  rig.step(30, { ...NO_KEYS, turnLeft: true });
+  check("the turn keys actually turn the body", Math.abs(rig.fighter.yaw - before) > 0.4,
+    `yaw moved ${(rig.fighter.yaw - before).toFixed(2)} rad in half a second`);
+
+  const start = rig.fighter.position(new THREE.Vector3());
+  rig.step(40, { ...NO_KEYS, right: true });
+  const moved = rig.fighter.position(new THREE.Vector3()).sub(start);
+  check("the sidestep keys move without turning", moved.length() > 0.5,
+    `stepped ${moved.length().toFixed(2)} m sideways`);
+}
+
+async function jumpingLeavesTheGround(): Promise<void> {
+  console.log("\njumping");
+  const rig = await buildRig();
+  rig.step(90);
+
+  const rest = rig.fighter.position(new THREE.Vector3()).y;
+  check("it is standing on something to begin with", rig.fighter.grounded,
+    `resting at y ${rest.toFixed(2)}`);
+
+  // One jump, then let go of the key and wait it out.
+  let apex = rest;
+  for (let i = 0; i < 8; i++) {
+    rig.step(1, { ...NO_KEYS, jump: true });
+    apex = Math.max(apex, rig.fighter.position(new THREE.Vector3()).y);
+  }
+  let landedAfter = -1;
+  for (let i = 0; i < 120; i++) {
+    rig.step(1);
+    apex = Math.max(apex, rig.fighter.position(new THREE.Vector3()).y);
+    if (landedAfter < 0 && i > 10 && rig.fighter.grounded) landedAfter = i;
+  }
+
+  const climb = apex - rest;
+  const back = rig.fighter.position(new THREE.Vector3()).y;
+  check("a jump clears real height", climb > 0.3,
+    `rose ${climb.toFixed(2)} m (asked for ${DEFAULTS.jumpHeight})`);
+  check("it clears about what it was asked for, not more",
+    climb < DEFAULTS.jumpHeight * 1.5,
+    `apex ${climb.toFixed(2)} m against a ${DEFAULTS.jumpHeight} m jump`);
+  check("it comes back down", landedAfter >= 0 && Math.abs(back - rest) < 0.05,
+    `landed after ${(landedAfter / 60).toFixed(2)}s, back within ${Math.abs(back - rest).toFixed(3)} m`);
+
+  // Holding the key hops rather than climbing: each take-off has to wait for
+  // the feet to be on something again.
+  let hopApex = rest;
+  for (let i = 0; i < 180; i++) {
+    rig.step(1, { ...NO_KEYS, jump: true });
+    hopApex = Math.max(hopApex, rig.fighter.position(new THREE.Vector3()).y);
+  }
+  check("holding the key hops, it does not fly",
+    hopApex - rest < DEFAULTS.jumpHeight * 1.5,
+    `three seconds of held jump peaked at ${(hopApex - rest).toFixed(2)} m`);
+}
+
+async function airControlIsWeakerThanGround(): Promise<void> {
+  console.log("\na jump commits you to the line you left on");
+  const rig = await buildRig();
+  rig.step(90);
+
+  // On the ground, sidestepping from a standstill.
+  const groundStart = rig.fighter.position(new THREE.Vector3());
+  rig.step(24, { ...NO_KEYS, right: true });
+  const onGround = rig.fighter.position(new THREE.Vector3()).sub(groundStart).length();
+
+  // In the air, the same command from the same standstill.
+  const rig2 = await buildRig();
+  rig2.step(90);
+  rig2.step(6, { ...NO_KEYS, jump: true });      // leave the ground
+  const airStart = rig2.fighter.position(new THREE.Vector3());
+  rig2.step(24, { ...NO_KEYS, right: true });
+  const inAir = rig2.fighter.position(new THREE.Vector3()).sub(airStart);
+  const sideways = Math.hypot(inAir.x, inAir.z);
+
+  check("steering in the air costs you most of your control",
+    sideways < onGround * 0.5,
+    `${sideways.toFixed(2)} m airborne vs ${onGround.toFixed(2)} m on the ground`);
+}
+
+async function aLegSweepCanBeJumped(): Promise<void> {
+  console.log("\nthe orc's leg sweep travels under a jump");
+  // The counter the HUD prints for that attack has to actually be available,
+  // which means two measured numbers meeting: how low the axe travels, and
+  // how high the feet get.
+  const rig = await buildRig({}, ORC, spawnFor(ORC, -1.2, -3.6));
+  rig.ai.attackOverride = ORC.attacks.find((a) => a.name === "leg sweep")!;
+
+  let lowest = 99;
+  for (let i = 0; i < 60 * 12; i++) {
+    rig.fight(1);
+    if (rig.ai.intent === "strike") {
+      const tip = rig.foe.arm.tipPosition.y;
+      const hand = rig.foe.arm.handPosition.y;
+      lowest = Math.min(lowest, Math.max(tip, hand));
+    }
+  }
+
+  const jumper = await buildRig();
+  jumper.step(90);
+  const rest = jumper.fighter.position(new THREE.Vector3()).y;
+  let apex = rest;
+  for (let i = 0; i < 90; i++) {
+    jumper.step(1, { ...NO_KEYS, jump: true });
+    apex = Math.max(apex, jumper.fighter.position(new THREE.Vector3()).y);
+  }
+
+  check("the sweep really does travel low", lowest < 1.2,
+    `axe passed at ${lowest.toFixed(2)} m`);
+  check("a jump lifts the feet above it", apex - rest > lowest - 0.9,
+    `feet rose ${(apex - rest).toFixed(2)} m, sweep at ${(lowest - 0.9).toFixed(2)} m above the knee`);
+}
+
+async function weaponsAreToldApartByPhysics(): Promise<void> {
+  console.log("\nan axe, a spear and a sword are different objects");
+
+  check("the axe carries its weight at the far end",
+    AXE.parts[1].mass > AXE.parts[0].mass * 2 && AXE.parts[1].at > AXE.span * 0.8,
+    `${AXE.parts[1].mass}kg head at ${AXE.parts[1].at.toFixed(2)} m from the hand`);
+  check("the spear is held choked up, not by the butt",
+    SPEAR.parts[0].at < SPEAR.parts[0].halfLen,
+    `shaft centre ${SPEAR.parts[0].at.toFixed(2)} m from the hand, half-length ${SPEAR.parts[0].halfLen.toFixed(2)}`);
+  check("the spear reaches furthest", SPEAR.span > SWORD.span && SPEAR.span > AXE.span,
+    `spear ${SPEAR.span.toFixed(2)} m, axe ${AXE.span.toFixed(2)} m, sword ${SWORD.span.toFixed(2)} m`);
+
+  // Leverage: each weapon does its work somewhere different along itself.
+  const peak = (w: typeof SWORD) => {
+    let best = 0, at = 0;
+    for (let i = 0; i <= 40; i++) {
+      const v = w.sweetSpot(i / 40);
+      if (v > best) { best = v; at = i / 40; }
+    }
+    return at;
+  };
+  check("each weapon bites somewhere of its own",
+    peak(SWORD) < 0.85 && peak(AXE) > 0.85 && peak(SPEAR) > 0.9,
+    `sword ${peak(SWORD).toFixed(2)}, axe ${peak(AXE).toFixed(2)}, spear ${peak(SPEAR).toFixed(2)}`);
+  check("an axe haft does nothing", AXE.sweetSpot(0.5) === 0,
+    `mid-haft leverage ${AXE.sweetSpot(0.5).toFixed(2)}`);
+  check("a spear shaft does nothing", SPEAR.sweetSpot(0.6) === 0,
+    `mid-shaft leverage ${SPEAR.sweetSpot(0.6).toFixed(2)}`);
+
+  // The damage model reads the weapon, not a stat block.
+  const hit = (w: typeof SWORD, speed: number) =>
+    cutDamage({ closingSpeed: speed, edgeAlign: 0.95, alongBlade: peak(w), weapon: w });
+  check("an axe hits harder than a sword at the same speed",
+    hit(AXE, 10) > hit(SWORD, 10) * 1.2,
+    `axe ${hit(AXE, 10).toFixed(1)} vs sword ${hit(SWORD, 10).toFixed(1)}`);
+  check("a thrust is worth throwing at a speed a cut is not",
+    hit(SPEAR, 3.5) > hit(SWORD, 3.5) * 3,
+    `at 3.5 m/s: spear ${hit(SPEAR, 3.5).toFixed(1)} vs sword ${hit(SWORD, 3.5).toFixed(1)}`);
+}
+
+async function theAxeIsHarderToSwing(): Promise<void> {
+  console.log("\nthe axe's inertia is not a number, it is where the iron is");
+  // Same body, same arm, same drive, same command -- the ONLY difference is
+  // what is in the hand, so any difference in how far the weapon comes round
+  // is its mass distribution and nothing else.
+  const sweptAngle = async (weapon: typeof SWORD): Promise<number> => {
+    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_SPAWN);
+    rig.step(90);
+
+    const start = rig.foe.arm.blade.rotation();
+    const from = new THREE.Quaternion(start.x, start.y, start.z, start.w);
+    const rate = 0.13 / rig.tuning.sensitivity;
+    for (let i = 0; i < 18; i++) {
+      rig.foe.arm.readInput(
+        { consumeMouse: () => ({ dx: rate, dy: 0, wheel: 0, rollDx: 0 }) }, rig.tuning);
+      rig.foe.arm.drive(rig.tuning);
+      rig.step(1);
+    }
+    const end = rig.foe.arm.blade.rotation();
+    return from.angleTo(new THREE.Quaternion(end.x, end.y, end.z, end.w));
+  };
+
+  const sword = await sweptAngle(SWORD);
+  const axe = await sweptAngle(AXE);
+  check("an axe comes round slower than a sword on the same swing",
+    axe < sword * 0.95,
+    `in 0.3s: sword turned ${(sword * 180 / Math.PI).toFixed(0)}deg, ` +
+    `axe ${(axe * 180 / Math.PI).toFixed(0)}deg`);
+
+  // And the choked grip is not decoration. Take the same spear and hold it by
+  // the butt -- every part shifted forward by the length that used to hang
+  // behind the hand -- and the same arm can barely move it.
+  const behind = SPEAR.parts[0].halfLen - SPEAR.parts[0].at;
+  const byTheButt = {
+    ...SPEAR,
+    parts: SPEAR.parts.map((part) => ({ ...part, at: part.at + behind })),
+  };
+  const choked = await sweptAngle(SPEAR);
+  const butt = await sweptAngle(byTheButt);
+  check("a spear held choked up is steerable; held by the butt it is not",
+    butt < choked * 0.8,
+    `${behind.toFixed(2)} m of shaft behind the hand is worth ` +
+    `${(choked * 180 / Math.PI).toFixed(0)}deg against ${(butt * 180 / Math.PI).toFixed(0)}deg`);
+}
+
+async function theBestiaryScalesHonestly(): Promise<void> {
+  console.log("\nbigger is harder to kill, but not harder to dismember");
+  const orcHealth = maxHealthFor(ORC.build);
+  const goblinHealth = maxHealthFor(GOBLIN.build);
+  const humanHealth = maxHealthFor(SWORDSMAN.build);
+
+  check("an orc takes far more killing than a goblin",
+    orcHealth > goblinHealth * 3,
+    `orc ${orcHealth.toFixed(0)}, human ${humanHealth.toFixed(0)}, goblin ${goblinHealth.toFixed(0)}`);
+  check("its joints do NOT scale as fast as its health",
+    jointScaleFor(ORC.build) < ORC.build.massScale,
+    `joints x${jointScaleFor(ORC.build).toFixed(2)} against health x${ORC.build.massScale.toFixed(2)} ` +
+    `— which is why you take its arm off instead`);
+  check("a goblin is small, light and quick to cut",
+    GOBLIN.build.standing.crown < 1.5 && jointScaleFor(GOBLIN.build) < 0.6,
+    `${GOBLIN.build.standing.crown.toFixed(2)} m tall, joints x${jointScaleFor(GOBLIN.build).toFixed(2)}`);
+}
+
+async function eachSpeciesCanFight(): Promise<void> {
+  console.log("\nthe orc and the goblin can both close and cut");
+  for (const species of [ORC, GOBLIN]) {
+    const rig = await buildRig({}, species, spawnFor(species, -1.2, -3.6));
+    let closest = 99;
+    let firstCut = -1;
+    const gap = new THREE.Vector3();
+    const foeAt = new THREE.Vector3();
+
+    for (let i = 0; i < 60 * 30; i++) {
+      rig.fight(1);
+      rig.fighter.position(gap);
+      rig.foe.position(foeAt);
+      closest = Math.min(closest, Math.hypot(gap.x - foeAt.x, gap.z - foeAt.z));
+      if (firstCut < 0 && rig.player.health < 100) firstCut = i / 60;
+    }
+
+    check(`${species.name} closes the distance`, closest < 2.2,
+      `closed to ${closest.toFixed(2)} m`);
+    check(`${species.name} draws blood`, firstCut >= 0,
+      firstCut >= 0
+        ? `first cut at ${firstCut.toFixed(1)}s, player down to ${rig.player.health.toFixed(0)}`
+        : "never landed a hit in 30s");
+  }
+}
+
+async function attacksAreTelegraphed(): Promise<void> {
+  console.log("\nevery attack announces itself before it arrives");
+  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+    const shortest = Math.min(...species.attacks.map((a) => a.windup));
+    check(`${species.name} always gives you a windup`, shortest >= 0.18,
+      `shortest tell ${shortest.toFixed(2)}s across ${species.attacks.length} attacks`);
+    const named = species.attacks.every((a) => a.name.length > 0 && a.counter.length > 0);
+    check(`${species.name}'s attacks are named and answerable`, named,
+      species.attacks.map((a) => a.name).join(", "));
+  }
+
+  // And the tell is live: the weapon brightens as the windup runs out.
+  const rig = await buildRig({}, ORC, spawnFor(ORC, -1.2, -3.6));
+  let sawWindup = false;
+  let tellAtStart = 1;
+  let tellAtEnd = 0;
+  for (let i = 0; i < 60 * 20; i++) {
+    rig.fight(1);
+    if (rig.ai.intent === "windup") {
+      if (!sawWindup) { sawWindup = true; tellAtStart = rig.ai.tell; }
+      tellAtEnd = Math.max(tellAtEnd, rig.ai.tell);
+    }
+    if (rig.ai.intent === "close" && sawWindup) break;
+  }
+  check("a windup is a visible state, not an instant",
+    sawWindup && tellAtStart < 0.35 && tellAtEnd > 0.7,
+    `tell ran ${tellAtStart.toFixed(2)} -> ${tellAtEnd.toFixed(2)} over the windup`);
+  check("nothing is committed while it is not attacking",
+    rig.ai.committed === null || rig.ai.intent === "windup" || rig.ai.intent === "strike",
+    `intent "${rig.ai.intent}", committed ${rig.ai.committed?.name ?? "nothing"}`);
+}
+
+async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
+  console.log("\nthree fighters, two teams, one set of collision groups");
+  const sides = makeSides([0, 1, 1]);
+  const [you, orc, goblin] = sides;
+
+  // Rapier collides A and B only if each one's membership is in the other's
+  // filter, so "can cut" is readable straight off the numbers.
+  const canCut = (attacker: typeof you, victim: typeof you) =>
+    ((attacker.cuttableFilter >> 16) & (victim.bodyFilter & 0xffff)) !== 0
+    && ((victim.bodyFilter >> 16) & (attacker.cuttableFilter & 0xffff)) !== 0;
+
+  check("your weapon reaches both of them",
+    canCut(you, orc) && canCut(you, goblin), "player -> orc, player -> goblin");
+  check("theirs reach you", canCut(orc, you) && canCut(goblin, you),
+    "orc -> player, goblin -> player");
+  check("but not each other", !canCut(orc, goblin) && !canCut(goblin, orc),
+    "the orc's axe passes through the goblin");
+  check("and nobody cuts themselves",
+    !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
+}
+
 // -----------------------------------------------------------------------------
 
 async function run(): Promise<void> {
@@ -770,6 +1130,17 @@ async function run(): Promise<void> {
   await cuttingTheArmDisarms();
   await bladesIgnoreTheirOwnerButNotTheFoe();
   await deathDropsTheBody();
+
+  await theControlsAreWhereTheySay();
+  await jumpingLeavesTheGround();
+  await airControlIsWeakerThanGround();
+  await aLegSweepCanBeJumped();
+  await weaponsAreToldApartByPhysics();
+  await theAxeIsHarderToSwing();
+  await theBestiaryScalesHonestly();
+  await eachSpeciesCanFight();
+  await attacksAreTelegraphed();
+  await alliesShareAnArenaWithoutCuttingEachOther();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

@@ -43,6 +43,19 @@ export interface Tuning {
   // --- locomotion ---
   moveSpeed: number;   // m/s
   turnSpeed: number;   // rad/s
+  /**
+   * How high a standing jump clears, metres. The take-off speed is derived
+   * from this and gravity, so lowering gravity floats the jump rather than
+   * making it higher -- which is what you want from a knob called "gravity".
+   */
+  jumpHeight: number;
+  /**
+   * Authority over your own horizontal velocity while airborne, 0..1 per step.
+   * At 1 you steer in the air exactly as you do on the ground and a jump is
+   * free; at 0 you are committed to the line you took off along. Low, because
+   * a jump you cannot take back is a jump worth timing.
+   */
+  airControl: number;
 
   // --- debug view ---
   showGhost: boolean;   // draw the kinematic target the mouse actually controls
@@ -72,6 +85,8 @@ export const DEFAULTS: Tuning = {
 
   moveSpeed: 3.1,
   turnSpeed: 2.5,
+  jumpHeight: 0.62,
+  airControl: 0.055,
 
   showGhost: true,
   showTrail: true,
@@ -114,6 +129,9 @@ export const CONTROLS: Control[] = [
 
   { group: "Movement", key: "moveSpeed", label: "move speed  (m/s)", min: 0, max: 8, step: 0.1 },
   { group: "Movement", key: "turnSpeed", label: "turn speed  (rad/s)", min: 0, max: 6, step: 0.1 },
+  { group: "Movement", key: "jumpHeight", label: "jump height  (m)", min: 0, max: 2, step: 0.02 },
+  { group: "Movement", key: "airControl", label: "air control", min: 0, max: 1, step: 0.005,
+    hint: "How much of your ground steering you keep in the air. Near 0 a jump commits you to the line you left on." },
 
   { group: "Debug view", key: "showGhost", label: "show ghost hand" },
   { group: "Debug view", key: "showTrail", label: "show blade arc" },

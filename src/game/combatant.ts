@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import type { PhysicsWorld, Side } from "../core/physics";
 import { Arm, type ArmInput } from "./arm";
-import { Fighter, type Palette } from "./fighter";
+import { Fighter } from "./fighter";
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
+import { jointScaleFor, maxHealthFor, SWORDSMAN, type Species } from "./species";
 import type { Impact } from "./impacts";
 import type { Targets } from "./targets";
 import type { Tuning } from "../tuning";
@@ -17,13 +18,11 @@ import type { Keys } from "../input/input";
  * damage rules, and has no move the player cannot make.
  */
 
-const MAX_HEALTH = 100;
-
-/** What the non-sword-arm joints cost to cut through. */
-const SEVERABLE: Record<string, number> = {
-  head: JOINT_INTEGRITY.neck,
-  offShoulder: JOINT_INTEGRITY.shoulder,
-  offElbow: JOINT_INTEGRITY.elbow,
+/** Which non-weapon-arm joints can be cut, and which integrity each costs. */
+const SEVERABLE: Record<string, keyof typeof JOINT_INTEGRITY> = {
+  head: "neck",
+  offShoulder: "shoulder",
+  offElbow: "elbow",
 };
 
 /** Cutting either of these disarms the fighter — the sword is welded to the hand. */
@@ -41,15 +40,15 @@ export interface CombatantState {
 export class Combatant {
   readonly fighter: Fighter;
   readonly arm: Arm;
+  readonly maxHealth: number;
+  /** How much more punishment this body's joints take than a human's. */
+  private readonly jointScale: number;
 
-  health = MAX_HEALTH;
+  health: number;
   dead = false;
 
-  /** Integrity of the two joints holding the sword arm on. */
-  private joints: Record<ArmJoint, number> = {
-    shoulder: JOINT_INTEGRITY.shoulder,
-    elbow: JOINT_INTEGRITY.elbow,
-  };
+  /** Integrity of the two joints holding the weapon arm on. */
+  private joints: Record<ArmJoint, number>;
 
   onHurt?: (amount: number, part: string) => void;
   onDisarm?: (where: ArmJoint) => void;
@@ -67,24 +66,38 @@ export class Combatant {
   private handles = new Map<number, { joint: ArmJoint | null; part: string }>();
 
   constructor(
-    readonly name: string,
-    /** How the impact readout refers to this fighter's parts: "your", "his". */
-    possessive: string,
     phys: PhysicsWorld,
     scene: THREE.Scene,
     private spawn: THREE.Vector3,
     side: Side,
-    palette: Palette,
     tuning: Tuning,
     targets: Targets,
+    /** What this fighter is. Defaults to a human with a sword: the reference. */
+    readonly species: Species = SWORDSMAN,
+    /** How the fight panel names it -- "you" for the player. */
+    readonly name: string = species.name,
+    /** How an impact readout refers to its parts: "your", "the orc's". */
+    possessive: string = species.possessive,
   ) {
-    this.fighter = new Fighter(phys, scene, spawn, side, palette);
-    this.arm = new Arm(phys, scene, this.fighter, tuning, side);
+    this.fighter = new Fighter(phys, scene, spawn, side, species.palette, species.build);
+    this.arm = new Arm(phys, scene, this.fighter, tuning, species.weapon, side);
+    this.arm.power = species.power;
+
+    // Health and joints both scale with the body, but at different rates --
+    // health with mass, joints with cross-section. That gap is why cutting a
+    // big thing's arm off beats trying to out-damage it.
+    this.maxHealth = maxHealthFor(species.build);
+    this.health = this.maxHealth;
+    this.jointScale = jointScaleFor(species.build);
+    this.joints = {
+      shoulder: JOINT_INTEGRITY.shoulder * this.jointScale,
+      elbow: JOINT_INTEGRITY.elbow * this.jointScale,
+    };
 
     // A hit on the upper arm works the shoulder, a hit on the forearm works the
     // elbow — the same proximal-joint rule the dummy uses, so what the player
     // learns cutting practice transfers directly to cutting a person.
-    this.register(targets, this.arm.upper.collider(0)!.handle, "shoulder", `${possessive} sword arm`);
+    this.register(targets, this.arm.upper.collider(0)!.handle, "shoulder", `${possessive} weapon arm`);
     this.register(targets, this.arm.fore.collider(0)!.handle, "elbow", `${possessive} forearm`);
 
     // And every part of the body proper. Without this the head, off arm and
@@ -149,8 +162,9 @@ export class Combatant {
   private bodyDamage = new Map<string, number>();
 
   private severBodyPart(name: string, amount: number): void {
-    const cost = SEVERABLE[name];
-    if (cost === undefined) return;
+    const joint = SEVERABLE[name];
+    if (joint === undefined) return;
+    const cost = JOINT_INTEGRITY[joint] * this.jointScale;
     const done = (this.bodyDamage.get(name) ?? 0) + amount;
     this.bodyDamage.set(name, done);
     if (done >= cost && this.fighter.sever(name)) {
@@ -174,13 +188,15 @@ export class Combatant {
   }
 
   get state(): CombatantState {
+    const full = JOINT_INTEGRITY.shoulder * this.jointScale;
+    const fullElbow = JOINT_INTEGRITY.elbow * this.jointScale;
     return {
       health: this.health,
-      maxHealth: MAX_HEALTH,
+      maxHealth: this.maxHealth,
       disarmed: this.arm.disarmed,
       dead: this.dead,
-      shoulder: Math.max(0, this.joints.shoulder / JOINT_INTEGRITY.shoulder),
-      elbow: Math.max(0, this.joints.elbow / JOINT_INTEGRITY.elbow),
+      shoulder: Math.max(0, this.joints.shoulder / full),
+      elbow: Math.max(0, this.joints.elbow / fullElbow),
     };
   }
 
@@ -189,10 +205,10 @@ export class Combatant {
   }
 
   reset(tuning: Tuning, at = this.spawn): void {
-    this.health = MAX_HEALTH;
+    this.health = this.maxHealth;
     this.dead = false;
-    this.joints.shoulder = JOINT_INTEGRITY.shoulder;
-    this.joints.elbow = JOINT_INTEGRITY.elbow;
+    this.joints.shoulder = JOINT_INTEGRITY.shoulder * this.jointScale;
+    this.joints.elbow = JOINT_INTEGRITY.elbow * this.jointScale;
     this.bodyDamage.clear();
     this.fighter.body.setEnabledRotations(false, true, false, true);
     this.fighter.body.setAngularDamping(6);

@@ -13,19 +13,32 @@
 export interface Keys {
   forward: boolean;
   back: boolean;
+  /** Sidestep, not turn: the feet shuffle, the shoulders keep facing forward. */
   left: boolean;
   right: boolean;
   turnLeft: boolean;
   turnRight: boolean;
+  jump: boolean;
 }
 
-const KEY_MAP: Record<string, keyof Keys> = {
+/**
+ * A/D turn, Q/E sidestep.
+ *
+ * This is the reverse of the usual shooter layout and it is deliberate. The
+ * mouse is the ARM here, so turning is a keyboard move, and turning is the one
+ * you reach for constantly -- you turn to face, you turn to keep an opponent
+ * in front of you, you turn mid-swing to carry the blade further round. Putting
+ * it on the home-row keys next to W/S and leaving the stretch for the sidestep
+ * matches how often each is actually used.
+ */
+export const KEY_MAP: Record<string, keyof Keys> = {
   KeyW: "forward",
   KeyS: "back",
-  KeyA: "left",
-  KeyD: "right",
-  KeyQ: "turnLeft",
-  KeyE: "turnRight",
+  KeyA: "turnLeft",
+  KeyD: "turnRight",
+  KeyQ: "left",
+  KeyE: "right",
+  Space: "jump",
   // The arrow keys stay live as an alias; some people reach for them first.
   ArrowLeft: "turnLeft",
   ArrowRight: "turnRight",
@@ -34,7 +47,7 @@ const KEY_MAP: Record<string, keyof Keys> = {
 export class Input {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false,
+    turnLeft: false, turnRight: false, jump: false,
   };
 
   /** Mouse travel since the last `consumeMouse()`, in pixels. */

@@ -73,7 +73,15 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   }
 
   // --- low beam: punishes a big overhead, which is exactly the lesson ---
-  box("low beam", timber, 3.0, 0.16, 0.16, 0, 2.05, -2.6);
+  //
+  // Raised and shortened since the bestiary grew. At 2.05m it punished a
+  // two-metre orc simply for walking under it: the axe head rides at beam
+  // height, a 660N arm anchors the whole body to the timber, and the fight is
+  // over before it starts. And spanning the full width it reached over the
+  // practice dummy, so a raised sword caught it before it ever caught a swing.
+  // It now covers the middle of the room, where fights happen, at a height
+  // that catches an overhead rather than a passer-by.
+  box("low beam", timber, 2.2, 0.16, 0.16, -1.0, 2.5, -2.6);
 
   // --- a waist-high block, good for testing a flat-of-the-blade slap ---
   box("block", stone, 0.55, 0.45, 0.55, 2.4, 0.45, 1.6);

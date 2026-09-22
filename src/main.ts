@@ -1,14 +1,15 @@
 import * as THREE from "three";
 import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
-import { createPhysics, SIDE_A, SIDE_B } from "./core/physics";
+import { createPhysics, makeSides } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input } from "./input/input";
 import { buildArena, SPAWN } from "./game/arena";
 import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
-import { FOE_PALETTE, PLAYER_PALETTE } from "./game/fighter";
 import { Combatant } from "./game/combatant";
+import { PLAYER_PALETTE } from "./game/fighter";
+import { GOBLIN, ORC, SWORDSMAN } from "./game/species";
 import type { Arm } from "./game/arm";
 import type { Fighter } from "./game/fighter";
 import { Ai } from "./game/ai";
@@ -18,18 +19,30 @@ import { Hud } from "./ui/hud";
 import { Panel, loadTuning } from "./ui/panel";
 
 /**
- * Die by the Sword — stage 2.
+ * Die by the Sword.
  *
- * A room, a fighter, and one physically simulated sword arm driven by the
- * mouse. There is no combat here on purpose: the whole point of this stage is
- * to find out whether swinging a sword at a wall feels good. If it doesn't,
- * nothing built on top of it will.
+ * A room, a practice dummy, and two things that want to kill you: an orc with
+ * an axe and a goblin with a spear. Every one of them -- you included -- is the
+ * same Combatant driving the same physical arm under the same force clamp. The
+ * only difference between a player and a monster here is who supplies the
+ * mouse deltas, and how big the animal holding the weapon is.
  */
 
 /** Where the practice dummy hangs — clear of the pillars and the low beam. */
 const DUMMY_AT = new THREE.Vector3(2.6, 0, -3.4);
-/** The opponent starts across the room, out of reach. */
-const FOE_SPAWN = new THREE.Vector3(-1.2, 0.95, -3.6);
+
+/**
+ * The opponents, and where they start.
+ *
+ * Both across the room and well out of reach, and far enough apart that they
+ * do not spend the first second shouldering past each other. Their spawn
+ * heights are their own hulls' centres, so nobody starts the fight sunk into
+ * the floor or dropping into it.
+ */
+const FOES = [
+  { species: ORC, at: new THREE.Vector3(-1.9, ORC.build.hullCentreY + 0.11, -4.2) },
+  { species: GOBLIN, at: new THREE.Vector3(1.1, GOBLIN.build.hullCentreY + 0.11, -4.6) },
+];
 
 const mount = document.getElementById("app")!;
 const veil = document.getElementById("veil")!;
@@ -47,11 +60,19 @@ async function main(): Promise<void> {
   const targets = new Targets();
   buildArena(phys, renderer.scene, targets);
 
-  const player = new Combatant("you", "your", phys, renderer.scene, SPAWN,
-    SIDE_A, PLAYER_PALETTE, tuning, targets);
-  const foe = new Combatant("the swordsman", "his", phys, renderer.scene, FOE_SPAWN,
-    SIDE_B, FOE_PALETTE, tuning, targets);
-  const ai = new Ai();
+  // One side per fighter, all the foes on one team. Deriving them together is
+  // what makes "everyone's weapon but my own, and not my ally's back" a filter
+  // rather than a pile of special cases.
+  const sides = makeSides([0, ...FOES.map(() => 1)]);
+
+  const player = new Combatant(phys, renderer.scene, SPAWN, sides[0], tuning,
+    targets, { ...SWORDSMAN, palette: PLAYER_PALETTE }, "you", "your");
+  const foes = FOES.map((f, i) => ({
+    combatant: new Combatant(phys, renderer.scene, f.at, sides[i + 1], tuning,
+      targets, f.species),
+    ai: new Ai(f.species),
+    spawn: f.at,
+  }));
 
   const fighter = player.fighter;
   const arm = player.arm;
@@ -60,9 +81,11 @@ async function main(): Promise<void> {
   const impacts = new Impacts(phys, renderer.scene, targets);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
 
+  const everyone = [player, ...foes.map((f) => f.combatant)];
+
   const registerBodies = () => {
     interp.clear();
-    for (const c of [player, foe]) {
+    for (const c of everyone) {
       interp.add(c.fighter.body, c.fighter.mesh);
       interp.add(c.arm.upper, c.arm.upperMesh);
       interp.add(c.arm.fore, c.arm.foreMesh);
@@ -74,21 +97,26 @@ async function main(): Promise<void> {
 
   const hud = new Hud(hudEl, impactEl);
   hud.trackDummy(dummy);
-  hud.trackFight(player, foe, ai);
+  hud.trackFight(player, foes);
   dummy.onSever = (e) => hud.showSever(e);
 
-  // The player's blade can cut the dummy or the opponent; the opponent's can
-  // only cut the player. Each blade reports through the same reporter.
+  // The player's weapon can cut the dummy or anything on the other team; theirs
+  // can only cut the player. Each weapon reports through the same reporter.
   impacts.addBlade(arm, (i) => {
-    const landed = dummy.receive(i) || foe.receive(i);
+    const landed = dummy.receive(i)
+      || foes.some((f) => f.combatant.receive(i));
     hud.showImpact(i, landed);
   });
-  impacts.addBlade(foe.arm, (i) => {
-    if (player.receive(i)) hud.showHurt(i);
-  });
+  for (const f of foes) {
+    impacts.addBlade(f.combatant.arm, (i) => {
+      if (player.receive(i)) hud.showHurt(i);
+    });
+    f.combatant.onDisarm = () =>
+      hud.showSever({ label: `${f.combatant.name} is disarmed`, at: new THREE.Vector3() });
+    f.combatant.onDeath = () =>
+      hud.showSever({ label: `${f.combatant.name} is down`, at: new THREE.Vector3() });
+  }
 
-  foe.onDisarm = () => hud.showSever({ label: "the swordsman's sword arm", at: new THREE.Vector3() });
-  foe.onDeath = () => hud.showSever({ label: "the swordsman is down", at: new THREE.Vector3() });
   player.onDisarm = () => hud.showSever({ label: "your sword arm", at: new THREE.Vector3() });
 
   const input = new Input(renderer.webgl.domElement);
@@ -109,13 +137,18 @@ async function main(): Promise<void> {
   input.onTogglePanel = () => panel.toggle();
   input.onReset = () => {
     player.reset(tuning, SPAWN);
-    foe.reset(tuning, FOE_SPAWN);
-    ai.reset();
+    for (const f of foes) {
+      f.combatant.reset(tuning, f.spawn);
+      f.ai.reset();
+    }
     dummy.reset();
     // The dummy's bodies are all new, so the interpolator's entries point at
     // freed handles; rebuild the whole set rather than leaving stale ones.
     registerBodies();
     interp.snap();
+    // Bodies have jumped across the room; a sweep from where they were would
+    // cut everything in between.
+    impacts.resetSweeps();
     trail.clear();
     hud.trackDummy(dummy);
   };
@@ -170,26 +203,26 @@ async function main(): Promise<void> {
       // double-counts input whenever one frame spans two physics steps.
       player.act(input, input.keys, tuning, dt);
 
-      ai.think(foe, player, tuning, dt);
-      foe.act(ai, ai.keys, tuning, dt);
+      for (const f of foes) {
+        f.ai.think(f.combatant, player, tuning, dt);
+        f.combatant.act(f.ai, f.ai.keys, tuning, dt);
+      }
 
       interp.capture();
       phys.step();
       interp.commit();
 
-      arm.updateDerived();
-      foe.arm.updateDerived();
+      for (const c of everyone) c.arm.updateDerived();
       impacts.update(performance.now());
       if (tuning.showTrail) trail.sample(arm);
     },
     render: (alpha, dt) => {
       interp.apply(alpha);
-      player.syncMeshes(tuning);
-      foe.syncMeshes(tuning);
+      for (const c of everyone) c.syncMeshes(tuning);
       dummy.syncMeshes();
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
-      hud.update(arm.state, loop.frameMs, input.rollMode);
+      hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded);
       renderer.draw();
     },
   });

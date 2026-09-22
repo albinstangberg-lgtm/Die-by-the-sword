@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Die by the Sword — arm prototype</title>
+    <title>Die by the Sword — physics melee prototype</title>
     <style>
       :root {
         --ink: #e8e2d6;
@@ -66,8 +66,27 @@
         font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
         color: var(--dim); font-weight: 500; margin: 0 0 0.5rem;
       }
-      #fight .intent { color: var(--dim); margin-top: 0.4rem; }
+      #fight .intent { color: var(--dim); margin-top: 0.2rem; margin-bottom: 0.5rem; }
       #panel:not(.hidden) ~ #fight { display: none; }
+
+      /* The telegraph: what it is about to throw, and what to do about it.
+         The bar underneath runs out as the windup does. */
+      #fight .attack {
+        position: relative; margin: 0.15rem 0 0.6rem;
+        padding: 0.12rem 0.4rem 0.3rem; border-left: 2px solid rgba(232,226,214,0.2);
+      }
+      #fight .attack .move {
+        display: block; text-transform: uppercase; letter-spacing: 0.1em;
+      }
+      #fight .attack .counter { display: block; color: var(--dim); }
+      #fight .attack > i {
+        position: absolute; left: 0; right: auto; bottom: 0; height: 2px;
+        display: block; background: rgba(232,226,214,0.3);
+        transition: width 60ms linear;
+      }
+      #fight .attack.winding { border-left-color: #d8562f; }
+      #fight .attack.winding .move { color: #ffb46a; }
+      #fight .attack.winding > i { background: #d8562f; }
 
       /* A red vignette when the player is cut — the camera is behind the
          fighter, so a hit from the side is otherwise easy to miss. */
@@ -143,9 +162,10 @@
     <div id="veil">
       <div class="inner">
         <h1>Die by the Sword</h1>
-        <p>Stage 2 &mdash; the arm.</p>
         <p>Move the mouse to move your sword arm. It is a physical limb, not an animation: it has weight, it lags, and it will bury itself in the walls.</p>
+        <p><strong>W</strong> and <strong>S</strong> walk. <strong>A</strong> and <strong>D</strong> turn &mdash; the mouse is your arm, not the camera. <strong>Q</strong> and <strong>E</strong> sidestep, <strong>Space</strong> jumps.</p>
         <p>Hold the <strong>right button</strong> and move left or right to roll the cutting edge.</p>
+        <p>An orc with an axe and a goblin with a spear are across the room. Both tell you what they are about to do: their weapon lights up while they wind up, and the panel on the right names the attack and how to beat it. Read it, then be somewhere else.</p>
         <div class="cue">Click to take the blade</div>
       </div>
     </div>
