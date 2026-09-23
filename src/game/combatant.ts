@@ -5,6 +5,7 @@ import { Fighter } from "./fighter";
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
 import { jointScaleFor, maxHealthFor, SWORDSMAN, type Species } from "./species";
 import type { Impact } from "./impacts";
+import type { Blow } from "./balance";
 import type { Wound, WoundEnd } from "./blood";
 import type { Targets } from "./targets";
 import type { Tuning } from "../tuning";
@@ -34,6 +35,10 @@ export interface CombatantState {
   maxHealth: number;
   disarmed: boolean;
   dead: boolean;
+  /** On the floor, or getting up off it -- alive. */
+  knockedDown: boolean;
+  /** On its feet, but its feet are busy keeping it there. */
+  reeling: boolean;
   shoulder: number;
   elbow: number;
 }
@@ -49,6 +54,11 @@ export class Combatant {
 
   health: number;
   dead = false;
+  /**
+   * What the last blow to land did to this body, for the HUD. The fighter
+   * reuses the object, so read it straight after `receive`.
+   */
+  lastBlow: Blow | null = null;
 
   /** Integrity of the two joints holding the weapon arm on. */
   private joints: Record<ArmJoint, number>;
@@ -74,7 +84,8 @@ export class Combatant {
     scene: THREE.Scene,
     private spawn: THREE.Vector3,
     side: Side,
-    tuning: Tuning,
+    /** Kept, and read live: gravity and balance decide what a blow does. */
+    private readonly tuning: Tuning,
     targets: Targets,
     /** What this fighter is. Defaults to a human with a sword: the reference. */
     readonly species: Species = SWORDSMAN,
@@ -130,6 +141,17 @@ export class Combatant {
       this.arm.drive(tuning);          // limp: snapshots motion, applies nothing
       return;
     }
+    if (this.fighter.down) {
+      // Knocked down. Whatever the hand asks for is thrown away rather than
+      // saved up for when it is back on its feet, the arm hangs, and the body
+      // gets itself up on its own. The arm takes the weapon back up once it is.
+      input.consumeMouse();
+      this.arm.limp = true;
+      this.fighter.update(keys, tuning, dt, null);
+      if (!this.fighter.down) this.arm.regain(tuning);
+      this.arm.drive(tuning);
+      return;
+    }
     this.arm.readInput(input, tuning, dt);
     // The body first, from the arm's intent, so the shoulder is where this
     // step's posture has it before the arm solves its ghost from it.
@@ -137,10 +159,19 @@ export class Combatant {
     this.arm.drive(tuning);
   }
 
-  /** Route an impact. Returns true if it landed on this fighter. */
+  /**
+   * Route an impact. Returns true if it landed on this fighter.
+   *
+   * The push comes first and comes regardless: a blow that fails to cut --
+   * too slow, on the flat, on the haft -- still arrives with all its weight.
+   * A slap with the flat of a sword will not open a goblin, but it will put
+   * one on the floor.
+   */
   receive(impact: Impact): boolean {
     const target = this.handles.get(impact.colliderHandle);
     if (target === undefined) return false;
+
+    this.lastBlow = this.fighter.takeBlow(impact, this.mass, this.tuning);
     if (this.dead) return true;
 
     const amount = cutDamage(impact);
@@ -190,9 +221,24 @@ export class Combatant {
     if (this.dead) return;
     this.dead = true;
     this.arm.limp = true;
-    this.fighter.body.setEnabledRotations(true, true, true, true);
-    this.fighter.body.setAngularDamping(0.4);
+    this.fighter.collapse();
     this.onDeath?.();
+  }
+
+  /**
+   * Everything still attached to this body, kg: what a blow has to move.
+   * The hull with its chest and hips, the head and off arm while they are on,
+   * and the sword arm and weapon for as much of them as is left.
+   */
+  get mass(): number {
+    let m = this.fighter.body.mass();
+    for (const part of this.fighter.parts) {
+      if (part.body !== undefined && part.severed !== true) m += part.body.mass();
+    }
+    const arm = this.arm;
+    if (arm.severedAt === null) m += arm.upper.mass() + arm.fore.mass() + arm.liveWeaponMass;
+    else if (arm.severedAt === "elbow") m += arm.upper.mass();
+    return m;
   }
 
   get state(): CombatantState {
@@ -203,6 +249,8 @@ export class Combatant {
       maxHealth: this.maxHealth,
       disarmed: this.arm.disarmed,
       dead: this.dead,
+      knockedDown: !this.dead && this.fighter.down,
+      reeling: !this.dead && this.fighter.reeling,
       shoulder: Math.max(0, this.joints.shoulder / full),
       elbow: Math.max(0, this.joints.elbow / fullElbow),
     };
@@ -230,8 +278,9 @@ export class Combatant {
     this.joints.shoulder = JOINT_INTEGRITY.shoulder * this.jointScale;
     this.joints.elbow = JOINT_INTEGRITY.elbow * this.jointScale;
     this.bodyDamage.clear();
-    this.fighter.body.setEnabledRotations(false, true, false, true);
-    this.fighter.body.setAngularDamping(6);
+    this.lastBlow = null;
+    // Puts the rotation locks back on, too: a body that died or was knocked
+    // down had them off.
     this.fighter.reset(at);
     this.arm.reset(tuning);
   }

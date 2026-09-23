@@ -12,6 +12,8 @@ import type { WoundEnd } from "./blood";
 import { Pose, Posture, type PostureDrive } from "./posture";
 import { wrap, type Capsule } from "./clearance";
 import { smoothstep } from "./motion";
+import { emptyBlow, judgeBlow, type Blow } from "./balance";
+import type { Impact } from "./impacts";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -108,6 +110,52 @@ const STEP_KNEE = 0.5;
 const STEP_HIP = 0.28;
 /** How fast feet that are being replanted anyway catch up with the hips. */
 const FOLLOW_RATE = 12;
+
+// --- being hit ----------------------------------------------------------------
+//
+// balance.ts says what a blow does; these are how the body carries it out. A
+// shove is a velocity on top of the one the feet are asked for, spent at the
+// rate a stumble can spend it. A stagger also takes the feet away from whoever
+// is steering them. A knockdown takes everything: the locks come off, the
+// body goes over, lies there, and is driven back up. Every duration goes with
+// the square root of the body's size, like anything else that moves under
+// gravity -- a goblin is back up sooner than an orc.
+
+/**
+ * How fast stumbling feet catch a knocked body, as a share of gravity. A
+ * person caught by a shove does not skid to a halt, they step back out of it,
+ * and a step or two takes the better part of half a second -- which is also
+ * what makes a stagger something you can see rather than a twitch.
+ */
+const STUMBLE = 0.15;
+/** However small the stagger, the feet are lost for at least this long, seconds. */
+const REEL_MIN = 0.25;
+/** A second part of one swing, going through the same body within this long, is the same blow. */
+const SWING = 0.3;
+/** How fast a blow can throw the chest, rad/s: a kick to the posture's springs. */
+const RECOIL_MAX = 4;
+/**
+ * On the floor, before it starts to get up, seconds -- counted from when it
+ * is lying there, not from the blow, since a fall takes as long as it takes.
+ */
+const LIE_TIME = 0.8;
+/** Lying is the hull's long axis within this cosine of flat: fifty degrees over. */
+const FLOORED = 0.64;
+/** Propped against a wall, it counts as lying after this long anyway. */
+const FALL_MAX = 1.2;
+/** Getting up, seconds. */
+const RISE_TIME = 0.65;
+/** How freely a body on the floor turns: enough that a capsule does not roll about like a log. */
+const DOWN_DAMPING = 1.5;
+/** A rise cannot be dragged anywhere faster than this, m/s and rad/s, whatever it has hit. */
+const RISE_SPEED = 6;
+const RISE_SPIN = 12;
+/** On the floor the legs go slack, one more folded than the other: hip, knee. */
+const SPRAWL_NEAR = [0.35, 0.6] as const;
+const SPRAWL_FAR = [0.12, 0.2] as const;
+const SPRAWL_RATE = 6;
+
+type Stance = "up" | "down" | "rising";
 
 export interface FighterPart {
   name: string;
@@ -225,6 +273,33 @@ export class Fighter {
   private readonly _q = new THREE.Quaternion();
   private readonly _q2 = new THREE.Quaternion();
   private readonly _v = new THREE.Vector3();
+
+  /** On its feet, on the floor, or getting up off it. */
+  private stance: Stance = "up";
+  /** Seconds since the stance last changed. */
+  private stanceTime = 0;
+  /** Seconds it has been lying on the floor, once it gets there. */
+  private lying = 0;
+  /**
+   * What blows have added to the velocity the feet are asked for, world,
+   * m/s: horizontal, and spent at the rate stumbling feet can spend it.
+   */
+  readonly knock = new THREE.Vector3();
+  /** Seconds of lost footing left. The feet go nowhere they are asked meanwhile. */
+  private reel = 0;
+  /**
+   * The swing that last landed here: which weapon, when, and the most it has
+   * done so far. A blade that goes through an arm and then a chest is one
+   * blow, not two, and its momentum only arrives once.
+   */
+  private readonly swing = { blade: -1, time: -Infinity, knock: new THREE.Vector3(), severity: 0 };
+  private readonly _blow = emptyBlow();
+  /** The way up: from where it lay, pivoting about its feet, to standing. */
+  private readonly riseFrom = new THREE.Quaternion();
+  private readonly riseTo = new THREE.Quaternion();
+  private readonly risePivot = new THREE.Vector3();
+  /** 0 on its feet, 1 slack on the floor. Blended, so the legs do not pop. */
+  private sprawl = 0;
 
   constructor(
     private phys: PhysicsWorld,
@@ -651,6 +726,12 @@ export class Fighter {
    * there is no arm to carry, and the trunk relaxes back to square.
    */
   update(keys: Keys, t: Tuning, dt: number, drive: PostureDrive | null = null): void {
+    // On the floor, or on the way up off it: nothing anyone asks reaches it.
+    if (this.stance !== "up") {
+      this.updateDown(t, dt);
+      return;
+    }
+
     let turn = 0;
     if (keys.turnLeft) turn += 1;
     if (keys.turnRight) turn -= 1;
@@ -664,12 +745,17 @@ export class Fighter {
     this.coyote = this.grounded ? COYOTE : Math.max(0, this.coyote - dt);
     this.jumpLock = Math.max(0, this.jumpLock - dt);
 
+    // Staggering, the feet are busy keeping the body up and go nowhere they
+    // are asked. Turning is the upper body's, and survives it.
+    const footed = this.reel <= 0;
     let ix = 0;
     let iz = 0;
-    if (keys.forward) iz -= 1;
-    if (keys.back) iz += 1;
-    if (keys.left) ix -= 1;
-    if (keys.right) ix += 1;
+    if (footed) {
+      if (keys.forward) iz -= 1;
+      if (keys.back) iz += 1;
+      if (keys.left) ix -= 1;
+      if (keys.right) ix += 1;
+    }
 
     const len = Math.hypot(ix, iz);
     const v = this.tmpVec.set(0, 0, 0);
@@ -686,17 +772,19 @@ export class Fighter {
     // The take-off speed that clears `jumpHeight` under the world's gravity,
     // rather than a hand-picked impulse: turning gravity down then floats the
     // same jump instead of firing you into the ceiling.
-    if (keys.jump && this.coyote > 0 && this.jumpLock <= 0) {
+    if (keys.jump && footed && this.coyote > 0 && this.jumpLock <= 0) {
       vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
       this.coyote = 0;
       this.jumpLock = JUMP_LOCK;
       this.grounded = false;
     }
 
+    const knock = this.knock;
     if (this.grounded) {
       // On the ground the fighter simply IS its input velocity, which is what
-      // lets it shove lighter things aside rather than be stopped by them.
-      this.body.setLinvel({ x: v.x, y: vy, z: v.z }, true);
+      // lets it shove lighter things aside rather than be stopped by them --
+      // plus whatever it has been knocked, which the feet have yet to catch.
+      this.body.setLinvel({ x: v.x + knock.x, y: vy, z: v.z + knock.z }, true);
     } else {
       // In the air there is nothing to push against, so intent only nudges the
       // line you left the ground on. This is also why a hard swing in mid-air
@@ -707,19 +795,285 @@ export class Fighter {
         y: vy,
         z: current.z + (v.z - current.z) * a,
       }, true);
+      // A knock taken off the ground is already in the body's momentum, and
+      // there are no feet up here to catch it.
+      knock.set(0, 0, 0);
     }
 
-    // Stride advances with distance covered, so the legs never skate. Airborne
-    // there is no ground to measure against, so it holds and the legs fold up.
+    // Stride advances with distance covered, so the legs never skate -- a
+    // knock included, so a stagger is feet scrambling rather than a slide.
+    // Airborne there is no ground to measure against, so it holds and the
+    // legs fold up.
     const target = this.grounded ? 0 : 1;
     this.tuck += (target - this.tuck) * Math.min(1, TUCK_RATE * dt);
-    if (this.grounded) this.stridePhase += Math.hypot(v.x, v.z) * dt * STRIDE;
-    this.gait = Math.hypot(v.x, v.z);
+    const covered = Math.hypot(v.x + knock.x, v.z + knock.z);
+    if (this.grounded) this.stridePhase += covered * dt * STRIDE;
+    this.gait = covered;
+
+    // Stumbling feet catch the body at the rate stepping can, and find their
+    // footing again once they have.
+    const k = knock.length();
+    if (k > 0) knock.multiplyScalar(Math.max(0, k - STUMBLE * Math.abs(t.gravity) * dt) / k);
+    this.reel = Math.max(0, this.reel - dt);
 
     this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt);
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Being hit
+  // ---------------------------------------------------------------------------
+
+  /** On the floor or getting up: not on its feet. */
+  get down(): boolean {
+    return this.stance !== "up";
+  }
+
+  /** On its feet, but they are busy keeping it there. */
+  get reeling(): boolean {
+    return this.stance === "up" && this.reel > 0;
+  }
+
+  /** Seconds of lost footing left. */
+  get reelLeft(): number {
+    return this.stance === "up" ? this.reel : 0;
+  }
+
+  /**
+   * A blow has landed somewhere on this body. `mass` is everything still
+   * attached to it; `t` supplies gravity and balance.
+   *
+   * Returns what it did, in an object this fighter reuses -- read it before
+   * the next blow lands. A second part of one swing going through the same
+   * body only counts for what it adds to the first: a blade that crosses an
+   * arm and then a chest carries one swing's momentum, not two.
+   */
+  takeBlow(impact: Impact, mass: number, t: Tuning): Blow {
+    const blow = judgeBlow(impact, {
+      mass,
+      build: this.build,
+      soles: this.body.translation().y - this.build.hullCentreY,
+      grounded: this.grounded,
+    }, t.gravity, t.balance, this._blow);
+
+    const swing = this.swing;
+    const since = impact.time - swing.time;
+    const same = impact.blade === swing.blade && since >= 0 && since < SWING * 1000;
+    const worse = !same || blow.severity > swing.severity;
+    const extra = _extra.copy(blow.knock);
+    if (same) {
+      if (blow.knock.lengthSq() > swing.knock.lengthSq()) extra.sub(swing.knock);
+      else extra.set(0, 0, 0);
+    } else {
+      swing.blade = impact.blade;
+      swing.time = impact.time;
+      swing.knock.set(0, 0, 0);
+      swing.severity = 0;
+    }
+    if (blow.knock.lengthSq() > swing.knock.lengthSq()) swing.knock.copy(blow.knock);
+    swing.severity = Math.max(swing.severity, blow.severity);
+
+    if (this.stance === "down") {
+      // Loose on the floor, it is shoved like anything else lying there.
+      if (worse) {
+        const j = blow.speed * this.body.mass();
+        this.body.applyImpulseAtPoint(
+          { x: impact.into.x * j, y: impact.into.y * j, z: impact.into.z * j },
+          { x: impact.at.x, y: impact.at.y, z: impact.at.z }, true);
+      }
+      return blow;
+    }
+    if (this.stance === "rising") {
+      // Halfway up, only something that would floor it anyway puts it back.
+      if (worse && blow.effect === "down") this.knockDown(blow);
+      return blow;
+    }
+
+    if (worse) this.flinch(blow);
+    if (extra.lengthSq() > 0) {
+      if (this.grounded) {
+        this.knock.add(extra);
+      } else {
+        const lv = this.body.linvel();
+        this.body.setLinvel({ x: lv.x + extra.x, y: lv.y, z: lv.z + extra.z }, true);
+      }
+    }
+    if (worse && blow.effect === "down") {
+      this.knockDown(blow);
+    } else if (worse && blow.effect === "stagger") {
+      const catchUp = this.knock.length() / (STUMBLE * Math.abs(t.gravity));
+      this.reel = Math.max(this.reel, REEL_MIN * Math.sqrt(this.build.scale), catchUp);
+    }
+    return blow;
+  }
+
+  /**
+   * The chest thrown away from a blow. It is what the blade meets, and it
+   * moves before the hips it stands on have caught up -- at about twice the
+   * speed the blow gives the body as a whole, turned over the length of the
+   * trunk. A heavy body barely flinches; a light one is jerked round.
+   */
+  private flinch(blow: Blow): void {
+    const rate = Math.min(RECOIL_MAX, (2 * blow.speed) / this.build.segment.torso.length);
+    if (rate <= 0) return;
+    // Into the chest's own frame, which the lean and bend are measured in.
+    const a = this.yaw + this.posture.pose.chestYaw;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    const d = blow.dir;
+    this.posture.recoil(d.x * c - d.z * s, d.x * s + d.z * c, rate);
+  }
+
+  /**
+   * Over it goes. The rotation locks come off and nothing drives the body:
+   * it carries on the way the blow sent it, and it topples -- its top along
+   * the blow if it was hit high, its feet along it if it was hit low.
+   */
+  private knockDown(blow: Blow): void {
+    this.stance = "down";
+    this.stanceTime = 0;
+    this.lying = 0;
+    this.reel = 0;
+    this.knock.set(0, 0, 0);
+    this.body.setEnabledRotations(true, true, true, true);
+    this.body.setAngularDamping(DOWN_DAMPING);
+
+    const lv = this.body.linvel();
+    this.body.setLinvel({ x: lv.x + blow.knock.x, y: lv.y, z: lv.z + blow.knock.z }, true);
+    // Turning about up x dir carries the top of the body along dir.
+    const axis = _spin.crossVectors(UP, blow.dir);
+    const rate = (blow.over * blow.topple) / this.build.hullCentreY;
+    const av = this.body.angvel();
+    this.body.setAngvel(
+      { x: av.x + axis.x * rate, y: av.y, z: av.z + axis.z * rate }, true);
+  }
+
+  /**
+   * Down for good. The same fall as a knockdown with no blow behind it, and no
+   * getting up: nothing will call `update` on this body again.
+   *
+   * Which is also why the head and the off arm have to let go here. They are
+   * held by torques that `holdPose` clears and reapplies every step, and
+   * Rapier keeps a torque until it is cleared: with nothing calling it any
+   * more, the last one would go on twisting a dead head forever.
+   */
+  collapse(): void {
+    this.stance = "down";
+    this.stanceTime = 0;
+    this.lying = 0;
+    this.reel = 0;
+    this.knock.set(0, 0, 0);
+    this.body.setEnabledRotations(true, true, true, true);
+    this.body.setAngularDamping(0.4);
+    for (const part of this.parts) {
+      part.body?.resetTorques(true);
+      part.body?.resetForces(true);
+    }
+  }
+
+  /**
+   * A step on the floor, or on the way up off it.
+   *
+   * The body is not driven at all while it lies there: it is a dynamic body
+   * with its locks off, and wherever the blow and the floor put it is where it
+   * is. The legs, the posture and the held head and off arm carry on, so what
+   * lies there is still a body -- and the legs, being kinematic, have to be
+   * told where it has fallen or they would stay standing without it.
+   */
+  private updateDown(t: Tuning, dt: number): void {
+    this.stanceTime += dt;
+    this.grounded = this.probeGround();
+    this.coyote = 0;
+    this.gait = 0;
+    this.turning = 0;
+    this.tuck += (0 - this.tuck) * Math.min(1, TUCK_RATE * dt);
+
+    const pace = Math.sqrt(this.build.scale);
+    if (this.stance === "down") {
+      // How upright the hull still is: the height of its long axis.
+      const r = this.body.rotation();
+      const upright = 1 - 2 * (r.x * r.x + r.z * r.z);
+      if (upright < FLOORED || this.stanceTime > FALL_MAX * pace) this.lying += dt;
+      if (this.lying >= LIE_TIME * pace) this.beginRise();
+    } else {
+      this.rise(dt, RISE_TIME * pace);
+    }
+
+    this.posture.update(null, null, this.yaw, this.body.translation(), t, dt);
+    this.applyPosture();
+    this.poseLegs(false, dt);
+    this.holdPose(dt);
+  }
+
+  /**
+   * Start getting up: from however it lies, round its feet, to standing and
+   * facing the way it faced before it went over.
+   */
+  private beginRise(): void {
+    this.stance = "rising";
+    this.stanceTime = 0;
+    const r = this.body.rotation();
+    this.riseFrom.set(r.x, r.y, r.z, r.w);
+    this.riseTo.setFromAxisAngle(UP, this.yaw);
+    const p = this.body.translation();
+    this.risePivot.set(0, -this.build.hull.height / 2, 0)
+      .applyQuaternion(this.riseFrom).add(_extra.set(p.x, p.y, p.z));
+  }
+
+  /**
+   * Drive the body back up, a step at a time.
+   *
+   * Driven as it is walked: by setting its velocity every step, never its
+   * position, so the solver still has the last word on anything in the way
+   * and the head and arms are carried up by their joints rather than
+   * teleported with it. It pivots about its feet, which sink from where the
+   * lying hull holds them -- a hull's radius off the floor -- to the floor.
+   */
+  private rise(dt: number, duration: number): void {
+    const s = smoothstep(0, 1, Math.min(1, this.stanceTime / duration));
+    const q = _qRise.slerpQuaternions(this.riseFrom, this.riseTo, s);
+    const target = _pRise.set(0, this.build.hull.height / 2, 0).applyQuaternion(q)
+      .add(this.risePivot);
+    target.y -= this.build.hull.radius * s;
+
+    const p = this.body.translation();
+    const lin = target.set(target.x - p.x, target.y - p.y, target.z - p.z)
+      .multiplyScalar(1 / dt);
+    if (lin.length() > RISE_SPEED) lin.setLength(RISE_SPEED);
+    this.body.setLinvel({ x: lin.x, y: lin.y, z: lin.z }, true);
+
+    const r = this.body.rotation();
+    const turn = _qTurn.set(r.x, r.y, r.z, r.w).invert().premultiply(q);
+    if (turn.w < 0) turn.set(-turn.x, -turn.y, -turn.z, -turn.w);
+    const sinHalf = Math.hypot(turn.x, turn.y, turn.z);
+    const spin = _spin.set(0, 0, 0);
+    if (sinHalf > 1e-6) {
+      spin.set(turn.x, turn.y, turn.z)
+        .multiplyScalar((2 * Math.atan2(sinHalf, turn.w)) / (sinHalf * dt));
+      if (spin.length() > RISE_SPIN) spin.setLength(RISE_SPIN);
+    }
+    this.body.setAngvel({ x: spin.x, y: spin.y, z: spin.z }, true);
+
+    if (this.stanceTime >= duration) this.stand();
+  }
+
+  /** On its feet: upright, locked, facing where it faced, and in charge of its legs again. */
+  private stand(): void {
+    this.stance = "up";
+    this.stanceTime = 0;
+    this.knock.set(0, 0, 0);
+    this.reel = 0;
+    this.body.setRotation(
+      { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.body.setEnabledRotations(false, true, false, true);
+    this.body.setAngularDamping(6);
+    for (const leg of this.legs) {
+      leg.foot = this.yaw;
+      leg.step = -1;
+    }
   }
 
   /**
@@ -892,7 +1246,9 @@ export class Fighter {
    */
   private plantFeet(teleport: boolean, dt: number): void {
     const facing = this.yaw + this.posture.pose.pelvis;
-    const moving = this.gait > 0.05 || this.turning > 0.1 || this.tuck > 0.3;
+    // A body on the floor has nothing to plant: its feet go where its hips do.
+    const moving = this.gait > 0.05 || this.turning > 0.1 || this.tuck > 0.3
+      || this.stance !== "up";
     let busy = false;
 
     for (const leg of this.legs) {
@@ -940,9 +1296,15 @@ export class Fighter {
 
   /** Swing the legs and push the kinematic colliders to match. */
   private poseLegs(teleport = false, dt = 0): void {
+    // The hull as it is, not as it faces: standing that is the same thing,
+    // since `update` has just set it, but on the floor the legs have to lie
+    // where the body has fallen or they would be left standing without it.
     const p = this.body.translation();
+    const r = this.body.rotation();
     this.mesh.position.set(p.x, p.y, p.z);
-    this.mesh.rotation.set(0, this.yaw, 0);
+    this.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+    this.sprawl += ((this.stance === "down" ? 1 : 0) - this.sprawl)
+      * Math.min(1, SPRAWL_RATE * dt);
     // This step's posture, not an interpolated one: the leg colliders are
     // pushed from these matrices, and the hips carry the legs.
     this.placeTrunk(this.posture.pose);
@@ -970,6 +1332,12 @@ export class Fighter {
       leg.prevKnee = leg.knee;
       leg.hip = swing + (tuckHip - swing) * this.tuck + STEP_HIP * lift;
       leg.knee = bend + (tuckKnee - bend) * this.tuck + STEP_KNEE * lift;
+      // Knocked down, the legs go slack -- and straighten again on the way up.
+      if (this.sprawl > 1e-3) {
+        const [hip, knee] = leg.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
+        leg.hip += (hip - leg.hip) * this.sprawl;
+        leg.knee += (knee - leg.knee) * this.sprawl;
+      }
       // A teleport has no previous pose worth easing out of.
       if (teleport) {
         leg.prevHip = leg.hip;
@@ -1230,6 +1598,18 @@ export class Fighter {
       leg.turn = leg.prevTurn = 0;
       leg.step = -1;
     }
+    // On its feet, whatever it was doing on the floor.
+    this.stance = "up";
+    this.stanceTime = 0;
+    this.lying = 0;
+    this.knock.set(0, 0, 0);
+    this.reel = 0;
+    this.sprawl = 0;
+    this.swing.blade = -1;
+    this.swing.time = -Infinity;
+    this.body.setEnabledRotations(false, true, false, true);
+    this.body.setAngularDamping(6);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setTranslation({ x: spawn.x, y: spawn.y, z: spawn.z }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -1307,6 +1687,11 @@ const _s = new THREE.Vector3();
 const _anchor = new THREE.Vector3();
 const _axis = new THREE.Vector3();
 const _end = new THREE.Vector3();
+const _extra = new THREE.Vector3();
+const _spin = new THREE.Vector3();
+const _pRise = new THREE.Vector3();
+const _qRise = new THREE.Quaternion();
+const _qTurn = new THREE.Quaternion();
 
 /** Drive a kinematic body from wherever its mesh has been posed to. */
 function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = false): void {

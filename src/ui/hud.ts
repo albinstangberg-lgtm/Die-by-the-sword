@@ -4,6 +4,7 @@ import type { Dummy, SeverEvent } from "../game/dummy";
 import type { Combatant } from "../game/combatant";
 import type { Ai } from "../game/ai";
 import { cutDamage } from "../game/damage";
+import type { Blow, Knock } from "../game/balance";
 
 /** One opponent and the brain driving it, as the fight panel needs them. */
 export interface TrackedFoe {
@@ -27,6 +28,25 @@ const QUALITY_TEXT: Record<Quality, string> = {
   bite: "bites",
   clean: "clean cut",
 };
+
+/** What a blow did to the body it landed on. */
+const KNOCK_TEXT: Record<Knock, string> = {
+  none: "doesn't budge",
+  shove: "shoved",
+  stagger: "staggered",
+  down: "knocked down",
+};
+
+/**
+ * The push half of a hit, as one line: what it did, and the numbers that
+ * decided it -- how fast the blow moved the whole body, and how much body
+ * there was to move. The same swing reads 1.3 m/s into 38 kg on a goblin and
+ * 0.3 into 173 on an orc, which is the whole story.
+ */
+function knockLine(blow: Blow, said = KNOCK_TEXT[blow.effect]): string {
+  return `<div class="knock ${blow.effect}">${said}
+      <span>&middot; ${blow.speed.toFixed(1)} m/s into ${blow.mass.toFixed(0)} kg</span></div>`;
+}
 
 export class Hud {
   private root: HTMLElement;
@@ -155,10 +175,12 @@ export class Hud {
     const fsig = this.player
       ? [
           Math.round(this.player.health), this.player.state.disarmed, this.player.dead,
+          this.player.state.knockedDown, this.player.state.reeling,
           ...this.foes.flatMap((f) => [
             Math.round(f.combatant.health), f.combatant.state.disarmed,
             f.combatant.dead, f.ai.intent, f.ai.committed?.name ?? "",
             Math.round(f.ai.tell * 8),
+            f.combatant.state.knockedDown, f.combatant.state.reeling,
           ]),
         ].join(",")
       : "";
@@ -168,8 +190,11 @@ export class Hud {
     }
   }
 
-  /** `onDummy` is true when the hit landed on something that can be cut. */
-  showImpact(i: Impact, onDummy: boolean): void {
+  /**
+   * `onDummy` is true when the hit landed on something that can be cut, and
+   * `blow` is what it did to the body it landed on, if that was a fighter.
+   */
+  showImpact(i: Impact, onDummy: boolean, blow: Blow | null = null): void {
     const sweet = i.alongBlade > 0.55 && i.alongBlade < 0.95;
     const dmg = cutDamage(i);
 
@@ -182,6 +207,7 @@ export class Hud {
 
     this.impactEl.innerHTML = `
       <div class="quality">${QUALITY_TEXT[i.quality]} &mdash; ${i.what} ${tally}</div>
+      ${blow ? knockLine(blow) : ""}
       <div class="detail">
         ${i.closingSpeed.toFixed(1)} m/s into it
         &middot; ${i.tangentSpeed.toFixed(1)} m/s along
@@ -209,16 +235,27 @@ export class Hud {
     this.foes = foes;
   }
 
-  /** Flash the screen edge when the player is cut. */
-  showHurt(i: Impact): void {
+  /**
+   * Flash the screen edge when the player is cut, and say so when a blow has
+   * rocked them or put them on the floor -- which a blow can do without
+   * cutting at all.
+   */
+  showHurt(i: Impact, blow: Blow | null = null): void {
     const amount = cutDamage(i);
-    if (amount <= 0) return;
-    document.body.classList.add("hurt");
-    clearTimeout(this.hurtTimer);
-    this.hurtTimer = window.setTimeout(() => document.body.classList.remove("hurt"), 260);
+    const rocked = blow !== null && (blow.effect === "stagger" || blow.effect === "down");
+    if (amount <= 0 && !rocked) return;
+    if (amount > 0) {
+      document.body.classList.add("hurt");
+      clearTimeout(this.hurtTimer);
+      this.hurtTimer = window.setTimeout(() => document.body.classList.remove("hurt"), 260);
+    }
 
-    this.impactEl.innerHTML =
-      `<div class="quality sever">you are cut &mdash; ${amount.toFixed(1)}</div>`;
+    const cut = amount > 0
+      ? `<div class="quality sever">you are cut &mdash; ${amount.toFixed(1)}</div>` : "";
+    const knocked = rocked
+      ? knockLine(blow!, blow!.effect === "down" ? "you are knocked down" : "you stagger")
+      : "";
+    this.impactEl.innerHTML = `${cut}${knocked}`;
     this.impactEl.classList.remove("fade");
     clearTimeout(this.fadeTimer);
     this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1600);
@@ -230,9 +267,13 @@ export class Hud {
       const s = c.state;
       const pct = (s.health / s.maxHealth) * 100;
       const cls = s.dead ? "gone" : pct < 30 ? "bad" : pct < 60 ? "warn" : "";
+      // "dead" rather than "down", now that being down is something you get
+      // up from.
       const tags = [
         s.disarmed ? "disarmed" : "",
-        s.dead ? "down" : "",
+        s.knockedDown ? "knocked down" : "",
+        s.reeling ? "staggered" : "",
+        s.dead ? "dead" : "",
       ].filter(Boolean).join(" · ");
       return `<div class="limb ${cls}">
           <span>${c.name}${tags ? ` — ${tags}` : ""}</span>

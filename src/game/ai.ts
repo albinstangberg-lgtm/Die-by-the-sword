@@ -77,7 +77,7 @@ const NOTICE = 9;
 
 type State =
   | "close" | "windup" | "strike" | "recover" | "backoff" | "free" | "beaten"
-  | "waiting";
+  | "waiting" | "reeling" | "down";
 
 export class Ai implements ArmInput {
   readonly keys: Keys = {
@@ -165,6 +165,19 @@ export class Ai implements ArmInput {
       return;
     }
 
+    // On the floor. There is nothing to decide: the body gets itself up, and
+    // whatever it was winding up when it went over is gone.
+    if (self.fighter.down) {
+      if (this.state !== "down") this.begin("down", 0);
+      this.idle();
+      this.showTell(self);
+      self.fighter.focus = null;
+      self.position(this._was);
+      this.snag = 0;
+      return;
+    }
+    if (this.state === "down") this.begin("close", 0);
+
     self.position(this._self);
     foe.position(this._foe);
     const toFoe = this._foe.clone().sub(this._self);
@@ -212,6 +225,16 @@ export class Ai implements ArmInput {
       this.steerArm(self, t, dt);
       this.showTell(self);
       return;
+    }
+
+    // Rocked back on its heels. Its feet are busy keeping it up, and whatever
+    // it was doing -- a windup, a strike half thrown -- it is not doing now.
+    // This is the only way to take an attack off something once it has
+    // started, and it only works on something light enough to rock: nothing
+    // you can swing moves the orc that far, which is what "committed to
+    // everything it starts" means.
+    if (self.fighter.reeling && this.state !== "reeling") {
+      this.begin("reeling", self.fighter.reelLeft);
     }
 
     this.measure(self, foe, t);
@@ -293,6 +316,14 @@ export class Ai implements ArmInput {
         if (this.timer <= 0) this.begin("close", 0);
         break;
 
+      case "reeling":
+        // Guard up, feet under it. It carries on only once they are.
+        this.guard();
+        this.keys.forward = false;
+        this.keys.back = false;
+        if (this.timer <= 0 && !self.fighter.reeling) this.begin("close", 0);
+        break;
+
       case "free":
         // Caught on something. Pull the hand in and low and give ground --
         // which is exactly what a player does with a blade planted in a wall,
@@ -308,6 +339,7 @@ export class Ai implements ArmInput {
 
       case "beaten":
       case "waiting":
+      case "down":
         this.idle();
         break;
     }
@@ -328,7 +360,7 @@ export class Ai implements ArmInput {
     const moved = this._self.distanceTo(this._was);
     this._was.copy(this._self);
     if (this.state === "free" || this.state === "beaten"
-      || this.state === "waiting") { this.snag = 0; return; }
+      || this.state === "waiting" || this.state === "reeling") { this.snag = 0; return; }
 
     const trying = this.keys.forward || this.keys.back;
     const expected = t.moveSpeed * this.species.build.scale * dt;

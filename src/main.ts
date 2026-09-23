@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   const arm = player.arm;
 
   const trail = new Trail(renderer.scene);
-  const impacts = new Impacts(phys, renderer.scene, targets);
+  const impacts = new Impacts(phys, renderer.scene, targets, tuning);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
@@ -115,15 +115,16 @@ async function main(): Promise<void> {
   };
 
   // The player's weapon can cut the dummy or anything on the other team; theirs
-  // can only cut the player. Each weapon reports through the same reporter.
+  // can only cut the player. Each weapon reports through the same reporter,
+  // and a fighter it lands on says what the blow did to it.
   impacts.addBlade(arm, (i) => {
-    const landed = dummy.receive(i)
-      || foes.some((f) => f.combatant.receive(i));
-    hud.showImpact(i, landed);
+    if (dummy.receive(i)) { hud.showImpact(i, true); return; }
+    const struck = foes.find((f) => f.combatant.receive(i));
+    hud.showImpact(i, struck !== undefined, struck?.combatant.lastBlow ?? null);
   });
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
-      if (player.receive(i)) hud.showHurt(i);
+      if (player.receive(i)) hud.showHurt(i, player.lastBlow);
     });
     f.combatant.onDisarm = (_where, wound) => {
       hud.showSever({ label: `${f.combatant.name} is disarmed`, at: wound.at });

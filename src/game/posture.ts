@@ -349,6 +349,23 @@ export class Posture {
   }
 
   /**
+   * A blow landing: the chest is thrown away from it, and the same lean and
+   * bend springs that carry a swing's follow-through bring it back -- a
+   * little past, as they do everything.
+   *
+   * `x` and `z` are the way the blow drives, in the chest's own frame, and
+   * `rate` how fast it throws the top of the chest, rad/s. A kick to the
+   * springs' velocity rather than to where they are, so the flinch is
+   * motion like everything else here and never a pose snapped into place.
+   */
+  recoil(x: number, z: number, rate: number): void {
+    // Forward is -Z and a positive lean is forward; a positive bend is to the
+    // left, which is -X.
+    this.leanS.v -= z * rate;
+    this.bendS.v -= x * rate;
+  }
+
+  /**
    * Turn the head toward something worth watching.
    *
    * The target is taken into the chest's own frame, so the neck does only
