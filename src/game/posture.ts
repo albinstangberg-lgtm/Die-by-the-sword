@@ -16,10 +16,16 @@ import { Spring, clamp, smoothstep, soft } from "./motion";
  *
  * Three rules keep it from costing the arm anything:
  *
- *  1. It reads INTENT -- the followed aim the ghost hand is built from -- and
- *     never the physical arm. The intent is always ahead of the arm, so a body
- *     driven by it leads the swing rather than trailing it, and nothing here
- *     can feed back into what the mouse asked for.
+ *  1. What makes room for the arm -- the chest's turn, the hips, the shoulder
+ *     sliding round the ribs -- reads INTENT, the followed aim the ghost hand
+ *     is built from, and never the physical arm. The intent is always ahead
+ *     of the arm, so a body driven by it leads the swing rather than trailing
+ *     it. Only the secondary motion also reads the real arm: lean, bend and
+ *     shrug react to the hand's measured acceleration and to how hard the
+ *     drive is straining. Those terms are clamped (under ten degrees of lean
+ *     or bend, a few centimetres of shrug) and pass through springs, so they
+ *     can only nudge the shoulder, and nothing here writes back into what the
+ *     mouse asked for.
  *
  *  2. The mouse's aim stays in the hull's frame. Turning the chest moves the
  *     SHOULDER the arm hangs from, and nothing else: the hand still goes where

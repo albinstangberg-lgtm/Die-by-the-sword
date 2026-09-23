@@ -136,12 +136,15 @@ instead.
   the hips turn over them — until they are wound up too far, and then the
   leading foot steps, then the other.
 
-Three rules keep all of it from costing the arm anything. The body reads
-*intent*, never the physical arm, so nothing in it can feed back into what you
-asked for. Your aim stays in the hull's frame, so turning the chest moves the
-shoulder and nothing else: the hand still goes where you pointed. And every
-posture is a function of the aim, so the probes an opponent aims with solve
-against the body it will actually have. Set `torso lead`, `secondary motion`
+Three rules keep all of it from costing the arm anything. What makes room for
+the arm — the chest's turn, the hips, the shoulder sliding round the ribs —
+reads *intent*, never the physical arm, so the body leads a swing instead of
+trailing it; only the lean, bend and shrug also react to the real hand's
+acceleration and the drive's strain, and those are clamped small and sprung, so
+they can nudge the shoulder but never steer your aim. Your aim stays in the
+hull's frame, so turning the chest moves the shoulder and nothing else: the
+hand still goes where you pointed. And a held aim settles into one posture, so
+the probes an opponent aims with solve against the body it will actually have. Set `torso lead`, `secondary motion`
 and `clearance` to 0 in the panel to get the old rigid block back and see what
 it was doing.
 
