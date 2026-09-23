@@ -86,6 +86,20 @@ interface Rig {
   /** Advance with the AI driving the opponent. */
   fight(n?: number, keys?: Keys): void;
   /**
+   * Advance with the opponent standing its ground and doing nothing: a target
+   * whose body still reacts to what hits it -- a knock, a fall, getting up --
+   * but which never fights back. Without this it is not stepped at all, and a
+   * body that is not stepped cannot be knocked anywhere.
+   */
+  hold(n?: number): void;
+  /**
+   * From now on the opponent stands its ground through every step, the aiming
+   * helpers' included, not only in `hold`. An opponent nobody steps has no
+   * feet: its velocity is never reset, and your arm -- which is solid to it --
+   * shoves it about the room while you line up a swing.
+   */
+  holdFoe(): void;
+  /**
    * Hold the player at a fixed spot.
    *
    * Driving the sword arm pushes the fighter around — a 420N drive against an
@@ -129,7 +143,7 @@ async function buildRig(
 
   const fighter = player.fighter;
   const arm = player.arm;
-  const impacts = new Impacts(phys, scene, targets);
+  const impacts = new Impacts(phys, scene, targets, tuning);
   const dummy = new Dummy(phys, scene, targets, DUMMY_AT);
   const input = new FakeInput();
 
@@ -138,15 +152,19 @@ async function buildRig(
 
   let now = 0;
   let pinned: THREE.Vector3 | null = null;
-  const advance = (keys: Keys, withAi: boolean) => {
+  let holding = false;
+  const still: ArmInput = { consumeMouse: () => ({ dx: 0, dy: 0, wheel: 0, rollDx: 0 }) };
+  const advance = (keys: Keys, foeMode: "idle" | "ai" | "hold") => {
     if (pinned) {
       fighter.body.setTranslation({ x: pinned.x, y: pinned.y, z: pinned.z }, true);
       fighter.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     }
     player.act(input, keys, tuning, STEP);
-    if (withAi) {
+    if (foeMode === "ai") {
       ai.think(foe, player, tuning, STEP);
       foe.act(ai, ai.keys, tuning, STEP);
+    } else if (foeMode === "hold") {
+      foe.act(still, NO_KEYS, tuning, STEP);
     }
     phys.step();
     arm.updateDerived();
@@ -158,11 +176,15 @@ async function buildRig(
   return {
     arm, fighter, input, impacts, dummy, player, foe, ai, tuning,
     step(n = 1, keys: Keys = NO_KEYS) {
-      for (let i = 0; i < n; i++) advance(keys, false);
+      for (let i = 0; i < n; i++) advance(keys, holding ? "hold" : "idle");
     },
     fight(n = 1, keys: Keys = NO_KEYS) {
-      for (let i = 0; i < n; i++) advance(keys, true);
+      for (let i = 0; i < n; i++) advance(keys, "ai");
     },
+    hold(n = 1) {
+      for (let i = 0; i < n; i++) advance(NO_KEYS, "hold");
+    },
+    holdFoe() { holding = true; },
     pin(at: THREE.Vector3 | null) { pinned = at; },
     place(at: THREE.Vector3) {
       player.reset(tuning, at);
@@ -487,14 +509,21 @@ async function damageCurveIsHonest(): Promise<void> {
     `strong ${sweetSpot(0.3).toFixed(2)} | sweet ${sweetSpot(0.72).toFixed(2)} | tip ${sweetSpot(1.0).toFixed(2)}`);
 }
 
-/** Build an Impact by hand, to test the damage -> sever plumbing in isolation. */
+/**
+ * Build an Impact by hand, to test the damage -> sever plumbing in isolation.
+ *
+ * Weightless unless a test says otherwise: these check what a cut does, and a
+ * push would move the very thing they are measuring.
+ */
 function fakeImpact(handle: number, over: Partial<Impact> = {}): Impact {
   return {
     quality: "clean", what: "test", closingSpeed: 9, tangentSpeed: 2,
     edgeAlign: 0.95, alongBlade: 0.72, force: 400,
     at: new THREE.Vector3(), colliderHandle: handle,
     bladeVelocity: new THREE.Vector3(3, 0, 0),
-    weapon: SWORD, massKg: SWORD.mass, ...over,
+    weapon: SWORD, massKg: SWORD.mass,
+    into: new THREE.Vector3(1, 0, 0), blowMass: 0, blade: -1, time: 0,
+    ...over,
   };
 }
 
@@ -1864,6 +1893,367 @@ async function noGripSpinsUnderAbuse(): Promise<void> {
   }
 }
 
+// --- impact: what a blow does to a body that has to stay up -------------------
+
+/** How far a body is tipped off upright, degrees. */
+function tiltOf(body: { rotation(): { x: number; y: number; z: number; w: number } }): number {
+  const r = body.rotation();
+  return Math.acos(Math.max(-1, Math.min(1, 1 - 2 * (r.x * r.x + r.z * r.z)))) * 180 / Math.PI;
+}
+
+/** A new swing every call unless a test says otherwise: each gets its own time. */
+let blowClock = 1e6;
+
+/**
+ * A blow with real weight behind it -- your own sword and arm, as the solver
+ * has them -- driving along -Z into a fighter's chest collider at a given
+ * fraction of its height. On the flat unless a test says otherwise, so it
+ * pushes without cutting: what these measure is the push.
+ */
+function blowOn(rig: Rig, target: Combatant, closing: number, height: number,
+  over: Partial<Impact> = {}): Impact {
+  const p = target.position(new THREE.Vector3());
+  const b = target.fighter.build;
+  blowClock += 1000;
+  return fakeImpact(target.fighter.collider.handle, {
+    closingSpeed: closing, edgeAlign: 0,
+    at: new THREE.Vector3(p.x, p.y - b.hullCentreY + b.standing.crown * height, p.z),
+    into: new THREE.Vector3(0, 0, -1),
+    bladeVelocity: new THREE.Vector3(0, 0, -closing),
+    blowMass: rig.arm.liveWeaponMass + rig.arm.armBehind,
+    blade: rig.arm.bladeCollider.handle,
+    time: blowClock,
+    ...over,
+  });
+}
+
+/** How far the top of a fighter's sword arm is from the shoulder it hangs off, metres. */
+function shoulderGap(c: Combatant): number {
+  const shoulder = c.fighter.shoulderWorld(new THREE.Vector3());
+  const r = c.arm.upper.rotation();
+  const p = c.arm.upper.translation();
+  const top = new THREE.Vector3(0, -c.fighter.build.segment.upperArm.length / 2, 0)
+    .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w))
+    .add(new THREE.Vector3(p.x, p.y, p.z));
+  return shoulder.distanceTo(top);
+}
+
+async function oneBlowThreeBodies(): Promise<void> {
+  console.log("\nthe same blow on three bodies: a goblin goes over, a man is shoved, an orc stands");
+  // One swing -- your sword, 8 m/s into the upper chest, on the flat so that
+  // nothing is cut -- on each of the three, and what each body then does.
+  const seen = new Map<string, {
+    effect: string; speed: number; mass: number; moved: number; tilt: number;
+  }>();
+  for (const species of [GOBLIN, SWORDSMAN, ORC]) {
+    const rig = await buildRig({}, species, foeSpawn(species));
+    rig.hold(60);
+    const start = rig.foe.position(new THREE.Vector3());
+    rig.foe.receive(blowOn(rig, rig.foe, 8, 0.75));
+    const { effect, speed, mass } = rig.foe.lastBlow!;
+    let moved = 0;
+    let tilt = 0;
+    for (let i = 0; i < 90; i++) {
+      rig.hold(1);
+      const p = rig.foe.position(new THREE.Vector3());
+      moved = Math.max(moved, Math.hypot(p.x - start.x, p.z - start.z));
+      tilt = Math.max(tilt, tiltOf(rig.foe.fighter.body));
+    }
+    seen.set(species.key, { effect, speed, mass, moved, tilt });
+  }
+  const g = seen.get("goblin")!;
+  const m = seen.get("swordsman")!;
+  const o = seen.get("orc")!;
+  const said = (s: typeof g) =>
+    `${s.speed.toFixed(2)} m/s into ${s.mass.toFixed(0)} kg: ${s.effect}`;
+
+  check("the heavier the body, the less of the blow it takes",
+    g.speed > m.speed * 2 && m.speed > o.speed * 1.5,
+    `goblin ${g.speed.toFixed(2)}, man ${m.speed.toFixed(2)}, orc ${o.speed.toFixed(2)} m/s`);
+  check("a goblin goes over", g.effect === "down" && g.tilt > 60,
+    `${said(g)}, tipped ${g.tilt.toFixed(0)}deg in 1.5s`);
+  check("a man is shoved, and keeps his feet",
+    m.effect === "shove" && m.tilt < 1 && m.moved > 0.005 && m.moved < 0.2,
+    `${said(m)}, slid ${(m.moved * 100).toFixed(1)} cm`);
+  check("an orc does not move", o.moved < 0.01 && o.tilt < 1 && o.effect === "none",
+    `${said(o)}, moved ${(o.moved * 1000).toFixed(1)} mm`);
+}
+
+async function aKnockedDownFighterGetsUp(): Promise<void> {
+  console.log("\nknocked down, it lies there, then gets up whole and fights on");
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  const gap = () => {
+    const a = rig.player.position(new THREE.Vector3());
+    const b = rig.foe.position(new THREE.Vector3());
+    return Math.hypot(a.x - b.x, a.z - b.z);
+  };
+  // Let it come for you first, so there is someone to fight when it is up.
+  for (let i = 0; i < 60 * 10 && gap() > 1.8; i++) rig.fight(1);
+  rig.fight(20);
+  const standing = rig.foe.position(new THREE.Vector3()).y;
+
+  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  const effect = rig.foe.lastBlow!.effect;
+  const head = rig.foe.fighter.parts.find((p) => p.name === "head")!.body!;
+  let tilt = 0;
+  let lowestHead = 99;
+  let limp = true;
+  let lying = true;
+  let upAfter = -1;
+  for (let i = 0; i < 60 * 4 && upAfter < 0; i++) {
+    rig.fight(1);
+    if (!rig.foe.fighter.down) { upAfter = i; break; }
+    tilt = Math.max(tilt, tiltOf(rig.foe.fighter.body));
+    lowestHead = Math.min(lowestHead, head.translation().y);
+    if (!rig.foe.arm.limp) limp = false;
+    if (rig.ai.intent !== "down") lying = false;
+  }
+  check("a hard blow high up puts a goblin on the floor",
+    effect === "down" && tilt > 70 && lowestHead < 0.45,
+    `${effect}: tipped ${tilt.toFixed(0)}deg, head down to ${lowestHead.toFixed(2)} m`);
+  check("and nothing drives it while it is there", limp && lying,
+    `arm ${limp ? "hangs" : "was driven"}, intent ${lying ? "down throughout" : "changed"}`);
+  check("it gets back up on its own", upAfter > 30 && upAfter < 60 * 3,
+    upAfter < 0 ? "still down after 4s" : `up after ${(upAfter / 60).toFixed(2)}s`);
+
+  rig.fight(30);
+  const p = rig.foe.position(new THREE.Vector3());
+  check("upright and on its feet again",
+    tiltOf(rig.foe.fighter.body) < 2 && Math.abs(p.y - standing) < 0.04,
+    `tilt ${tiltOf(rig.foe.fighter.body).toFixed(1)}deg, hull at ${p.y.toFixed(3)} m ` +
+    `against ${standing.toFixed(3)} standing`);
+  check("with its sword arm still on its shoulder", shoulderGap(rig.foe) < 0.03,
+    `top of the upper arm ${(shoulderGap(rig.foe) * 1000).toFixed(0)} mm from its anchor`);
+
+  let windup = false;
+  for (let i = 0; i < 60 * 6 && !windup; i++) {
+    rig.fight(1);
+    windup = rig.ai.intent === "windup";
+  }
+  check("and it comes at you again", windup,
+    windup ? "wound up an attack" : `intent "${rig.ai.intent}" after 6s`);
+}
+
+async function aStaggerTakesTheAttackOffIt(): Promise<void> {
+  console.log("\na stagger takes an attack off something light enough to rock");
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  rig.ai.attackOverride = GOBLIN.attacks.find((a) => a.name === "lunge")!;
+  let wound = false;
+  for (let i = 0; i < 60 * 15 && !wound; i++) {
+    rig.fight(1);
+    wound = rig.ai.intent === "windup";
+  }
+  rig.fight(8);
+  const winding = rig.ai.intent === "windup" && rig.ai.tell > 0;
+
+  rig.foe.receive(blowOn(rig, rig.foe, 6, 0.6));
+  const effect = rig.foe.lastBlow!.effect;
+  rig.fight(1);
+  const after = { intent: rig.ai.intent, committed: rig.ai.committed, tell: rig.ai.tell };
+
+  let back = false;
+  for (let i = 0; i < 60 * 3 && !back; i++) {
+    rig.fight(1);
+    back = rig.ai.intent === "close" || rig.ai.intent === "windup";
+  }
+  check("a middling blow staggers a goblin mid-windup", winding && effect === "stagger",
+    `${winding ? "winding up" : "not winding"}, blow ${effect}`);
+  check("and its attack is gone",
+    after.intent === "reeling" && after.committed === null && after.tell === 0,
+    `intent "${after.intent}", committed ${after.committed?.name ?? "nothing"}, ` +
+    `tell ${after.tell.toFixed(2)}`);
+  check("until it has its feet back", back, back ? "back at it" : "still reeling after 3s");
+}
+
+async function realBlowsAreWeighed(): Promise<void> {
+  console.log("\nreal blows, weighed: an orc's axe rocks you, a goblin's spear cannot");
+  const tally = new Map<string, Record<string, number>>();
+  for (const species of [ORC, GOBLIN]) {
+    const rig = await buildRig({}, species, foeSpawn(species));
+    const effects: Record<string, number> = { none: 0, shove: 0, stagger: 0, down: 0 };
+    rig.impacts.addBlade(rig.foe.arm, (i) => {
+      if (rig.player.dead || !rig.player.receive(i)) return;
+      if (i.closingSpeed > 1.2) effects[rig.player.lastBlow!.effect]++;
+    });
+    // Forty seconds of it, however many lives that takes: the AI picks its
+    // attacks at random, and an orc that happens to take your head in the
+    // first few blows would leave too few to count.
+    for (let i = 0; i < 60 * 40; i++) {
+      rig.fight(1);
+      if (rig.player.dead) rig.place(SPAWN);
+    }
+    tally.set(species.key, effects);
+  }
+  const orc = tally.get("orc")!;
+  const goblin = tally.get("goblin")!;
+  const line = (e: Record<string, number>) =>
+    `${e.none} none, ${e.shove} shoved, ${e.stagger} staggered, ${e.down} down`;
+  check("the orc's axe rocks you", orc.stagger + orc.down > 0, line(orc));
+  check("the goblin's spear never moves you",
+    goblin.shove + goblin.stagger + goblin.down === 0 && goblin.none > 5, line(goblin));
+
+  // And the other way round: real swings of your own at an orc that stands
+  // there and takes them.
+  const at = spawnFor(ORC, 0, SPAWN.z - 1.1);
+  const rig = await buildRig({}, ORC, at);
+  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  rig.holdFoe();
+  rig.pin(standAt);
+  rig.hold(90);
+  let hits = 0;
+  let rocked = 0;
+  let moved = 0;
+  rig.impacts.addBlade(rig.arm, (i) => {
+    if (!rig.foe.receive(i) || i.closingSpeed < 1.2) return;
+    hits++;
+    const e = rig.foe.lastBlow!.effect;
+    if (e === "stagger" || e === "down") rocked++;
+  });
+  const target = new THREE.Vector3(0, ORC.build.standing.crown * 0.7, at.z);
+  const sweepRate = 0.2 / rig.tuning.sensitivity;
+  for (let swings = 0; swings < 16; swings++) {
+    if (swings % 4 === 0) {
+      aimBladeAt(rig, target, 2);
+    }
+    const dir = swings % 2 === 0 ? 1 : -1;
+    aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
+    for (let i = 0; i < 14; i++) {
+      rig.input.dx = dir * sweepRate;
+      rig.hold(1);
+      const p = rig.foe.position(new THREE.Vector3());
+      moved = Math.max(moved, Math.hypot(p.x - at.x, p.z - at.z));
+    }
+    rig.hold(10);
+  }
+  check("and nothing you swing moves an orc", hits > 10 && rocked === 0 && moved < 0.03,
+    `${hits} hits, ${rocked} rocked it, furthest it moved ${(moved * 100).toFixed(1)} cm`);
+}
+
+async function theDummySwingsWhenStruck(): Promise<void> {
+  console.log("\nthe practice dummy swings on its rope when it is hit");
+  const rig = await buildRig();
+  rig.step(90);
+  const torso = rig.dummy.limbs.get("torso")!;
+  const hand = rig.dummy.limbs.get("foreArmR")!;
+  const where = (l: typeof torso) => {
+    const p = l.body.translation();
+    return new THREE.Vector3(p.x, p.y, p.z);
+  };
+  const rest = where(torso);
+  const hit = (limb: typeof torso) => fakeImpact(limb.collider.handle, {
+    closingSpeed: 9, edgeAlign: 0, at: where(limb), into: new THREE.Vector3(0, 0, -1),
+    blowMass: rig.arm.liveWeaponMass + rig.arm.armBehind, blade: 1, time: (blowClock += 1000),
+  });
+
+  rig.dummy.receive(hit(torso));
+  let swung = 0;
+  for (let i = 0; i < 40; i++) {
+    rig.step(1);
+    swung = Math.max(swung, where(torso).distanceTo(rest));
+  }
+  rig.step(50);
+  const settled = where(torso).distanceTo(rest);
+  check("a blow to the chest swings the whole dummy", swung > 0.02,
+    `chest swung ${(swung * 100).toFixed(1)} cm off its rest`);
+  // A free pin let it swing for five seconds, and the limb you were cutting
+  // was somewhere else by the next cut. Its mount drags.
+  check("and its mount settles it before the next cut", settled < 0.01,
+    `${(settled * 100).toFixed(1)} cm off a second and a half later`);
+
+  // The same blow on a hand. Given to the hand alone it flung the forearm
+  // most of a metre, and a dummy whose arm leaps away from every cut is no
+  // use for practising cuts: the whole dummy takes it, and swings.
+  const handRest = where(hand);
+  const chestRest = where(torso);
+  rig.dummy.receive(hit(hand));
+  let handMoved = 0;
+  let chestMoved = 0;
+  for (let i = 0; i < 30; i++) {
+    rig.step(1);
+    handMoved = Math.max(handMoved, where(hand).distanceTo(handRest));
+    chestMoved = Math.max(chestMoved, where(torso).distanceTo(chestRest));
+  }
+  check("a blow to a hand swings the dummy, and does not fling the hand",
+    handMoved < 0.3 && chestMoved > 0.005 && rig.dummy.severedCount === 0,
+    `hand ${(handMoved * 100).toFixed(0)} cm, chest ${(chestMoved * 100).toFixed(1)} cm, nothing cut`);
+}
+
+async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
+  console.log("\nfloored three times over, a body is still in one piece");
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  rig.hold(60);
+  const standing = rig.foe.position(new THREE.Vector3()).y;
+  let floored = 0;
+  let finite = true;
+  for (let round = 0; round < 3; round++) {
+    rig.foe.receive(blowOn(rig, rig.foe, 11, 0.8));
+    if (rig.foe.fighter.down) floored++;
+    for (let i = 0; i < 60 * 4 && rig.foe.fighter.down; i++) {
+      rig.hold(1);
+      const p = rig.foe.fighter.body.translation();
+      if (!Number.isFinite(p.x + p.y + p.z)) finite = false;
+    }
+    rig.hold(30);
+  }
+  rig.hold(60);
+  const p = rig.foe.position(new THREE.Vector3());
+  const head = rig.foe.fighter.parts.find((q) => q.name === "head")!;
+  const hp = head.body!.translation();
+  check("three blows, three falls", floored === 3, `${floored} of 3 floored it`);
+  check("and it is standing whole at the end of it",
+    finite && !rig.foe.fighter.down && tiltOf(rig.foe.fighter.body) < 2
+      && Math.abs(p.y - standing) < 0.04 && head.severed !== true
+      && new THREE.Vector3(hp.x, hp.y, hp.z).distanceTo(p) < 1.0
+      && shoulderGap(rig.foe) < 0.03,
+    `tilt ${tiltOf(rig.foe.fighter.body).toFixed(1)}deg, hull ${p.y.toFixed(3)} m, ` +
+    `head ${new THREE.Vector3(hp.x, hp.y, hp.z).distanceTo(p).toFixed(2)} m off, ` +
+    `shoulder gap ${(shoulderGap(rig.foe) * 1000).toFixed(0)} mm`);
+}
+
+async function oneSwingIsOneBlow(): Promise<void> {
+  console.log("\na blade through two parts of a body is one blow, not two");
+  const rig = await buildRig({}, SWORDSMAN, foeSpawn(SWORDSMAN));
+  rig.hold(60);
+  const offArm = rig.foe.fighter.parts.find((p) => p.name === "offShoulder")!;
+  const first = blowOn(rig, rig.foe, 12, 0.6);
+  rig.foe.receive(first);
+  const once = rig.foe.fighter.knock.length();
+  // The same swing, a tenth of a second on, through the arm as well.
+  rig.foe.receive({ ...first, colliderHandle: offArm.collider.handle, time: first.time + 100 });
+  const twice = rig.foe.fighter.knock.length();
+  // Someone else's swing is its own blow.
+  rig.foe.receive({ ...first, blade: first.blade + 1, time: first.time + 150 });
+  const other = rig.foe.fighter.knock.length();
+  check("the second part of one swing adds nothing", once > 0.1 && Math.abs(twice - once) < 1e-9,
+    `${once.toFixed(3)} m/s after one part, ${twice.toFixed(3)} after two`);
+  check("but a second weapon's blow is its own", other > once * 1.5,
+    `${other.toFixed(3)} m/s once a second blade lands`);
+}
+
+async function aCorpseLiesStill(): Promise<void> {
+  console.log("\nnothing drives a corpse, not even the last thing that drove it");
+  // Rapier keeps a user force until it is cleared. A fighter that died with
+  // its arm driving hard used to keep that drive forever: the corpse crawled
+  // six metres across the floor in ten seconds and was thrown into the air.
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  rig.fight(150);
+  rig.foe.health = 0.1;
+  rig.foe.receive(fakeImpact(rig.foe.fighter.collider.handle));
+  const died = rig.foe.position(new THREE.Vector3());
+  rig.fight(60 * 5);
+  let fastest = 0;
+  for (let i = 0; i < 60; i++) {
+    rig.fight(1);
+    const v = rig.foe.fighter.body.linvel();
+    fastest = Math.max(fastest, Math.hypot(v.x, v.y, v.z));
+  }
+  const p = rig.foe.position(new THREE.Vector3());
+  const drift = Math.hypot(p.x - died.x, p.z - died.z);
+  check("a corpse comes to rest where it fell",
+    rig.foe.dead && drift < 1.5 && fastest < 0.3,
+    `${drift.toFixed(2)} m from where it died, ${fastest.toFixed(2)} m/s in its sixth second`);
+}
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
   await freeArmTracks();
@@ -1914,6 +2304,15 @@ async function run(): Promise<void> {
   await theGripKeepsTheEdge();
   await theWristKeepsTheLine();
   await noGripSpinsUnderAbuse();
+
+  await oneBlowThreeBodies();
+  await aKnockedDownFighterGetsUp();
+  await aStaggerTakesTheAttackOffIt();
+  await realBlowsAreWeighed();
+  await theDummySwingsWhenStruck();
+  await knockdownsDoNotWearTheBodyOut();
+  await oneSwingIsOneBlow();
+  await aCorpseLiesStill();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

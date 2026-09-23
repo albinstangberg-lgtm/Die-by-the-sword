@@ -7,6 +7,7 @@ import { Cutter, type SweptHit } from "./cutting";
 import { Blood } from "./blood";
 import { cutDamage } from "./damage";
 import type { Weapon } from "./weapons";
+import type { Tuning } from "../tuning";
 
 /**
  * Impact quality.
@@ -60,6 +61,23 @@ export interface Impact {
   weapon: Weapon;
   /** What that weapon weighs right now, in kg. */
   massKg: number;
+  /**
+   * The line the blow drives along, into the surface: a unit vector, world.
+   * The contact normal, turned to point the way the blade was going.
+   */
+  into: THREE.Vector3;
+  /**
+   * The mass behind the blow, kg: the weapon, and as much of the arm swinging
+   * it as lands with it. Its momentum is what shoves -- see balance.ts.
+   */
+  blowMass: number;
+  /**
+   * Which weapon landed it, as its business end's collider handle, and when,
+   * in ms on the clock `Impacts.update` is given -- so a body can tell a
+   * second part of one swing going through it from a new swing.
+   */
+  blade: number;
+  time: number;
 }
 
 interface BladeEntry {
@@ -106,6 +124,8 @@ export class Impacts {
     private phys: PhysicsWorld,
     scene: THREE.Scene,
     private targets: Targets,
+    /** Read live, for how much of an arm lands behind its weapon. */
+    private tuning: Tuning,
   ) {
     this.sparks = new Sparks(scene);
     this.blood = new Blood(scene);
@@ -146,7 +166,7 @@ export class Impacts {
         const last = this.lastAt.get(hit.collider.handle);
         if (last !== undefined && now - last < COOLDOWN_MS) continue;
 
-        const impact = this.describeSwept(entry.arm, hit);
+        const impact = this.describeSwept(entry.arm, hit, now);
         if (!impact || impact.closingSpeed < RESTING_SPEED) continue;
 
         this.lastAt.set(hit.collider.handle, now);
@@ -162,7 +182,7 @@ export class Impacts {
   private readonly _swept: SweptHit[] = [];
 
   /** Same measurements as a solver contact, taken from a swept intersection. */
-  private describeSwept(arm: Arm, hit: SweptHit): Impact | null {
+  private describeSwept(arm: Arm, hit: SweptHit, now: number): Impact | null {
     this._n.copy(hit.normal).normalize();
     this._p.copy(hit.point);
 
@@ -187,6 +207,22 @@ export class Impacts {
       bladeVelocity: this._v.clone(),
       weapon: arm.weapon,
       massKg: arm.liveWeaponMass,
+      ...this.blowOf(arm, normalComponent, now),
+    };
+  }
+
+  /**
+   * The push half of a hit: which way it drives into the surface, and how
+   * much mass arrives with it. From `_n`, the contact normal just measured.
+   */
+  private blowOf(
+    arm: Arm, normalComponent: number, now: number,
+  ): Pick<Impact, "into" | "blowMass" | "blade" | "time"> {
+    return {
+      into: this._n.clone().multiplyScalar(Math.sign(normalComponent)),
+      blowMass: arm.liveWeaponMass + this.tuning.armBehindBlow * arm.armBehind,
+      blade: arm.bladeCollider.handle,
+      time: now,
     };
   }
 
@@ -232,7 +268,7 @@ export class Impacts {
       if (!other || !blade) return;
 
       const force = e.totalForceMagnitude();
-      const impact = this.describe(entry.arm, blade, other, force);
+      const impact = this.describe(entry.arm, blade, other, force, now);
       if (!impact) return;
 
       // A resting blade is not a hit, and must not start a cooldown either —
@@ -257,7 +293,7 @@ export class Impacts {
   }
 
   private describe(
-    arm: Arm, blade: RAPIER.Collider, other: RAPIER.Collider, force: number,
+    arm: Arm, blade: RAPIER.Collider, other: RAPIER.Collider, force: number, now: number,
   ): Impact | null {
     let got = false;
     this._n.set(0, 1, 0);
@@ -309,6 +345,7 @@ export class Impacts {
       bladeVelocity: this._v.clone(),
       weapon: arm.weapon,
       massKg: arm.liveWeaponMass,
+      ...this.blowOf(arm, normalComponent, now),
     };
   }
 }

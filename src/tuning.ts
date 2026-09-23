@@ -94,6 +94,22 @@ export interface Tuning {
   // --- world ---
   gravity: number;     // m/s^2, negative
 
+  // --- impact: what a blow does to a body that has to stay up (see balance.ts) ---
+  /**
+   * How much of the swinging arm's own mass lands with the weapon, 0..1.
+   * A driven arm is stiffened to swing and arrives as one piece with what it
+   * holds, the way a boxer's half-kilo fist lands like three. At 0 only the
+   * weapon arrives, and nothing knocks anybody over -- which is the truth
+   * about a sword on its own.
+   */
+  armBehindBlow: number;
+  /**
+   * How big a shove any body can step out of, as a Froude number: speed over
+   * the square root of gravity times leg length. The same for every creature;
+   * what differs is how much each one weighs.
+   */
+  balance: number;
+
   // --- locomotion ---
   moveSpeed: number;   // m/s
   turnSpeed: number;   // rad/s
@@ -145,6 +161,9 @@ export const DEFAULTS: Tuning = {
   armMass: 4.2,
 
   gravity: -9.81,
+
+  armBehindBlow: 1,
+  balance: 0.4,
 
   moveSpeed: 3.1,
   turnSpeed: 2.5,
@@ -204,6 +223,11 @@ export const CONTROLS: Control[] = [
   { group: "Mass & world", key: "bladeMass", label: "blade mass  (kg)", min: 0.2, max: 8, step: 0.1 },
   { group: "Mass & world", key: "armMass", label: "arm mass  (kg)", min: 0.5, max: 20, step: 0.1 },
   { group: "Mass & world", key: "gravity", label: "gravity  (m/s²)", min: -25, max: 0, step: 0.1 },
+
+  { group: "Impact", key: "armBehindBlow", label: "arm behind the blow", min: 0, max: 1, step: 0.05,
+    hint: "How much of the swinging arm's weight lands with the weapon. At 0 only the steel arrives, and a sword knocks nobody over. Applies to every blow, yours and theirs." },
+  { group: "Impact", key: "balance", label: "balance  (Froude no.)", min: 0.15, max: 1, step: 0.01,
+    hint: "How big a shove a body can step out of: speed over √(gravity × leg length). Lower, and everything goes over more easily — but the orc still takes five times the goblin, because it weighs five times as much." },
 
   { group: "Movement", key: "moveSpeed", label: "move speed  (m/s)", min: 0, max: 8, step: 0.1 },
   { group: "Movement", key: "turnSpeed", label: "turn speed  (rad/s)", min: 0, max: 6, step: 0.1 },

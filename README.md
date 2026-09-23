@@ -16,11 +16,13 @@ the chest turns ahead of a swing, the shoulder slides round the ribs, the head
 watches the blade, the feet step under a turn, the arm no longer goes straight
 through the chest to get across it, the forearm twists to keep the edge where
 you put it, and the wrist bends to keep the blade pointing where you aimed.
+And a blow now lands with its weight: the swing that puts a goblin on the
+floor does not move an orc.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 148 checks, no browser needed
+npm run smoke    # headless physics harness — 172 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -206,6 +208,73 @@ arrived, which is the number the whole damage model is built on. It also means
 you can swing from inside your own reach, where the arc crosses a target's
 centre rather than skidding off its near surface.
 
+### Weight
+
+Damage asks how well a blow was thrown. [`balance.ts`](src/game/balance.ts)
+asks how *hard* it was, and the answer depends as much on what it lands on as on
+what threw it. There is no poise bar and no stagger resistance: it is momentum
+going into a body of a given weight, and whether that body can step out of what
+it was given.
+
+```
+body's change of speed = closing speed × m_blow / (m_blow + M)
+```
+
+- **the blow** — the weapon, and the arm swinging it. A driven arm is stiffened
+  to swing and arrives as one piece with what it holds, the way a boxer's
+  half-kilo fist lands like three. Your sword lands with 5.6kg behind it, the
+  orc's axe with 11.2, the goblin's spear with 2.7. A limp or severed arm puts
+  nothing behind its weapon.
+- **the body** — everything still attached to it: 38kg of goblin, 96 of you,
+  173 of orc. The blow meets it the way two masses meet when they stick, so no
+  body is ever sent faster than the blow that hit it.
+- **footing** — planted feet soak up the first of it. Friction holds μ·M·g for
+  the thirty-odd milliseconds a blade takes to cross a body, which comes out as
+  a speed, about a quarter of a metre per second, the same for anything that
+  stands — and more than most blows leave an orc with.
+- **leverage** — a blow off the middle of a body turns it as well as pushing it.
+  High, it goes over its feet; low, the feet go out from under it.
+- **balance** — what is left is set against the speed that body can step out of,
+  which goes as √(g × leg length): the Froude number every walking animal
+  shares. A goblin cannot simply be sturdier for its size.
+
+Past two fifths of its balance a body **staggers**: its feet scramble, it
+steps back while they catch it, and whatever it was winding up is gone. Past
+all of it, it **goes down**. The rotation locks come off, nothing drives it,
+and it falls the way the blow sent it — over its feet if it was hit high, onto
+its back if its legs were taken. It lies there most of a second, then is driven
+back up round its feet, the way it is walked — by its velocity, never placed —
+and takes its weapon back up to the guard. Only the sideways part of a blow
+counts: one straight down drives a body into the floor, and the floor pushes
+back.
+
+The same swing — your sword, 8 m/s into the upper chest:
+
+| | | |
+|---|---|---|
+| **the goblin** | 1.03 m/s into 38kg | goes over |
+| **a swordsman** | 0.44 m/s into 96kg | shoved a centimetre |
+| **the orc** | 0.25 m/s into 173kg | doesn't budge: its feet take nearly all of it |
+
+The orc does not have a stagger resistance. It has 173 kilos. It is also why
+*committed to everything it starts* is literal: a stagger is the only way to
+take an attack off something once it has begun, nothing you can swing moves an
+orc that far, and a goblin's lunge you can knock clean out of it. The other way
+round, the orc's axe staggers you about one blow in three and now and then puts
+you on the floor, and the goblin's spear, with under three kilos behind it, has
+never moved anyone.
+
+A blow that fails to cut still arrives with all its weight. The flat of your
+sword will not open a goblin, but it will put one on the floor. And a blow that
+moves nothing is still felt: the chest is thrown away from it and the
+posture's lean and bend springs bring it back — the goblin is jerked round, the
+orc barely flinches. The impact readout says what each blow did, and how many
+kilos it went into.
+
+The practice dummy takes a blow like a punching bag, through its middle
+wherever it lands, and its mount drags, so it rocks and settles inside half a
+second.
+
 ### What a cut looks like
 
 Underneath, a fighter is what it always was: an invisible capsule that walks,
@@ -334,6 +403,10 @@ them is the whole strategy against a big enemy:
 
 So you do not out-damage an orc. You take its arm off.
 
+Nor do you knock one over. The same mass is what a blow has to move, and
+nothing you can swing moves 173 kilos (see [Weight](#weight)). A goblin, you
+can put on the floor.
+
 The one number a species declares that its size does not explain is `grit`, a
 strength multiplier, and exactly one creature needs it. A goblin's spear is a
 metre of lever; at the strength its shoulders imply, the arm's torque budget
@@ -442,7 +515,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Twenty-three things the physics taught us
+## Twenty-five things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -651,6 +724,28 @@ servo on a proper bend error instead. And a bent weapon's share of the drive
 turns the forearm about its length too, so the forearm's own roll drive steps
 back as the wrist bends, or the two together over-drive it.
 
+**Stopping a drive does not remove its force.** Rapier keeps a user force until
+it is cleared, and the arm clears its drive at the top of every step it runs —
+so the step a fighter died on, its drive stopped running and its last push
+stayed: a few hundred newtons at the hand and the gravity feed-forward, forever,
+and the head and off arm held by their last torques the same way. A dead
+goblin's arm dragged its own corpse six metres across the floor in ten seconds
+and threw it into the air. Nobody noticed while a corpse was the end of the
+fight; a knockdown makes an arm limp and then needs it back, and a body on the
+floor was crawling away. A limp arm now clears its forces every step, and a
+body that dies lets go of its head and off arm. *Nothing must drive a corpse*,
+including the last thing that did.
+
+**A practice dummy is for practising cuts.** The dummy used to ignore blows —
+a blade passes through it, so nothing pushed. Given the struck limb's share of
+a blow, a slap flung a forearm most of a metre. Given the whole dummy's share
+at the point it landed, a blow to a hand spun the slender body round its rope.
+Given it through the middle, it swung for five seconds on a free pin. All three
+were honest physics, and in all three the limb you were cutting was somewhere
+else by the next cut: the scripted swing that takes an arm off needed
+twenty-one tries instead of nine. It takes a blow like a punching bag now, and
+its mount drags, and the arm comes off in nine again.
+
 And two about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -696,13 +791,20 @@ you aimed along. The wrist is far stiffer than a real one on purpose, and its
 range starts above where the resting arm begins to shake. Input adds `flick speed cap` and `flick accel cap`: anything
 slower reaches the arm untouched.
 
+Impact adds two, and they apply to every blow, yours and theirs: `arm behind the
+blow`, how much of the swinging arm's weight lands with the weapon — at 0 only
+the steel arrives and nobody is knocked over, which is the truth about a sword
+on its own — and `balance`, the Froude number, how big a shove anything can
+step out of. Lower it and everything goes over more easily, but the orc still
+takes five times what the goblin does: it weighs five times as much.
+
 Movement adds `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
 to lift it). Try `rigid` for ten seconds to hear what the mechanic sounds like
 when you take the clamp away.
 
-The panel drives your arm only. An orc's force budget is its own, scaled from
-its size.
+The arm's knobs drive your arm only. An orc's force budget is its own, scaled
+from its size. The world's — gravity, and the two impact knobs — are everyone's.
 
 ## Deliberate behaviours
 
@@ -751,6 +853,15 @@ Some things look like bugs and are not:
 - **The ghost hand can wait for your arm.** With *show ghost hand* on, a flick
   shows the ghost sweeping round rather than jumping, and slowing when a heavy
   blade falls far behind it. The mouse's aim itself is never touched.
+- **The orc does not move when you hit it.** It is not resisting. It weighs
+  173 kilograms, and its feet soak up what your sword gives it. The same swing
+  puts a goblin on its back.
+- **You get knocked down too.** The rules are the same for everyone: the orc's
+  axe staggers you, and a hard enough blow floors you for the best part of two
+  seconds while it keeps coming. Your arm hangs while you are down; the mouse
+  does nothing until you are up and the sword is back at the guard.
+- **A stagger costs your feet, not your arm.** While you reel you cannot walk,
+  sidestep or jump, but you can still swing.
 - **Standing still gets you killed in well under a minute** by whichever of
   them you have walked in on, and much faster by both, if you manage to bring
   them together.
@@ -772,16 +883,18 @@ src/
     weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
     species.ts       the bestiary — a size, a weapon, a list of attacks
     anatomy.ts       one set of proportions, scaled to any body
-    fighter.ts       torso, locomotion, the jump, and feet that stay planted
+    fighter.ts       torso, locomotion, the jump, feet that stay planted, and
+                     a body that can be knocked over and get back up
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
     arena.ts         three rooms built to be hit, and the doors between them
-    combatant.ts     a fighter, their arm, and what a cut does to them
+    combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas, nothing more
     cutting.ts       swept-segment hit detection: how a weapon finds flesh
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
+    balance.ts       what a blow does to a body that has to stay on its feet
     skin.ts          the visible body: tapered shells over the capsules
     blood.ts         droplets, and the two faces a cut leaves behind
     impacts.ts       contact events -> impact quality
@@ -792,7 +905,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 148 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 172 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -831,6 +944,17 @@ that an elbow moved out of the ribs no longer takes the edge with it; that the
 wrist is straight at the guard and, across the body, holds the blade on the
 line the elbow lost; and that ten seconds of the worst input there is never
 spins a weapon in anyone's hand or bends a wrist past its stop.
+
+And it weighs blows: that one swing floors a goblin, shoves a man a centimetre
+and leaves an orc where it stood; that a floored fighter lies there with
+nothing driving it, gets up by itself, upright, at standing height, with its
+sword arm on its shoulder, and comes at you again — three times over, and still
+whole; that a stagger takes a goblin's lunge off it mid-windup until its feet
+are back; that forty seconds of the orc's axe rock you and forty of the
+goblin's spear never move you at all; that your own real swings never move an
+orc; that the dummy swings from a blow and settles before the next; that a
+blade through two parts of a body carries one swing's weight; and that a corpse
+comes to rest where it fell.
 
 ## Stack
 

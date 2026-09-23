@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physics";
 import { cutDamage, JOINT_INTEGRITY } from "./damage";
+import { blowSpeed } from "./balance";
 import type { Impact } from "./impacts";
 import type { Targets } from "./targets";
 import { disposeTree, jointBall, shellMesh, stumpCap } from "./skin";
@@ -40,6 +41,25 @@ const MAT = {
  * practice dummy rather than a punchbag.
  */
 const ANCHOR_Y = 1.75;
+
+/**
+ * How hard the mount drags against the dummy swinging on it, N·m·s/rad.
+ *
+ * A blow swings the dummy now, and a free pin let it swing for the best part
+ * of five seconds -- the limb you were cutting was somewhere else by the next
+ * cut, and the scripted swing that takes an arm off needed twenty-one tries
+ * instead of nine. A rope and a mount that drag settle it in about half a
+ * second, and it still visibly takes every blow.
+ */
+const MOUNT_DRAG = 60;
+/** Rapier's angular axes, by the numbers its raw joint calls take them as. */
+const ANGULAR_AXES = [3, 4, 5] as const;
+
+/** The slice of Rapier's raw joint set the mount's drag is configured through. */
+interface MountRaw {
+  jointConfigureMotorModel(handle: number, axis: number, model: number): void;
+  jointConfigureMotorVelocity(handle: number, axis: number, vel: number, factor: number): void;
+}
 
 interface LimbSpec {
   name: string;
@@ -265,13 +285,22 @@ export class Dummy {
 
       if (spec.parent === null) {
         // Pinned at the chest: free to swing and spin, unable to wander off.
-        this.ropeJoint = this.phys.world.createImpulseJoint(
+        const rope = this.phys.world.createImpulseJoint(
           this.phys.rapier.JointData.spherical(
             { x: 0, y: 0, z: 0 },
             this.localOf(limb.body, from),
           ),
           this.anchor, limb.body, true,
         );
+        // And dragging while it does: a velocity motor asked for no motion
+        // at all is a damper. Rapier's typed ball joint hides its motors, but
+        // the joint underneath has one per axis, as the wrist's does.
+        const raw = (rope as unknown as { rawSet: MountRaw }).rawSet;
+        for (const axis of ANGULAR_AXES) {
+          raw.jointConfigureMotorModel(rope.handle, axis, this.phys.rapier.MotorModel.ForceBased);
+          raw.jointConfigureMotorVelocity(rope.handle, axis, 0, MOUNT_DRAG);
+        }
+        this.ropeJoint = rope;
         continue;
       }
 
@@ -337,21 +366,56 @@ export class Dummy {
     if (!limb) return false;
 
     const amount = cutDamage(impact);
-    if (amount <= 0) return true;          // landed, but a slap or a shove
-
     // The torso hangs from a rope rather than a joint, so there is nothing to
     // cut it off at. Damage still registers -- it just cannot sever.
-    if (limb.joint === null || limb.severed) {
+    if (amount > 0 && (limb.joint === null || limb.severed)) {
       this.onDamage?.(limb, amount);
-      return true;
+    } else if (amount > 0) {
+      limb.integrity -= amount;
+      this.onDamage?.(limb, amount);
+      this.tint(limb);
+      if (limb.integrity <= 0) {
+        // The cut throws the piece off itself; see `sever`.
+        this.sever(limb, impact);
+        return true;
+      }
     }
 
-    limb.integrity -= amount;
-    this.onDamage?.(limb, amount);
-    this.tint(limb);
-
-    if (limb.integrity <= 0) this.sever(limb, impact);
+    // Cut or not, the blow arrives, and the dummy swings on its rope like a
+    // punching bag: whatever part is struck, the whole of what it still
+    // hangs from takes the blow, through its middle.
+    //
+    // Both halves of that were learned. Given to the struck limb on its own,
+    // a slap flung a forearm most of a metre; given to the whole dummy at the
+    // point it landed, a blow to a hand spun a slender body round its rope.
+    // Either way the limb you were cutting leapt out of the way of the next
+    // cut, and a practice dummy is for practising cuts.
+    const root = this.rootOf(limb);
+    const mass = this.massFrom(root);
+    const push = blowSpeed(impact.blowMass, mass, impact.closingSpeed) * mass;
+    if (push > 0) {
+      root.body.applyImpulse(
+        { x: impact.into.x * push, y: impact.into.y * push, z: impact.into.z * push },
+        true,
+      );
+    }
     return true;
+  }
+
+  /** The top of whatever piece this limb is still part of: the torso, or a severed limb. */
+  private rootOf(limb: Limb): Limb {
+    let root = limb;
+    while (root.parent !== null && root.joint !== null) root = root.parent;
+    return root;
+  }
+
+  /** Everything still hanging from a limb, itself included, kg. */
+  private massFrom(limb: Limb): number {
+    let mass = limb.spec.mass;
+    for (const child of limb.children) {
+      if (child.joint !== null) mass += this.massFrom(child);
+    }
+    return mass;
   }
 
   /** Cut a limb free. Everything hanging off it goes with it. */

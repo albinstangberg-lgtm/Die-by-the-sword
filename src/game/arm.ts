@@ -1024,7 +1024,17 @@ export class Arm {
     // A detached arm is meat. Continuing to run the PD on it would have the
     // controller flying a severed limb around the room by itself -- and the
     // grip's motor, left running, would go on turning the weapon in its hand.
+    //
+    // Not running it is not enough, either: Rapier keeps a user force until
+    // it is cleared, so the last step's drive -- a few hundred newtons at the
+    // hand, and the gravity feed-forward -- went on pushing forever. A dead
+    // goblin's arm dragged its own corpse six metres across the floor in ten
+    // seconds and threw it into the air. Limp has to mean nothing at all.
     if (this.severedAt !== null || this.limp) {
+      for (const b of [this.upper, this.fore, this.blade]) {
+        b.resetForces(false);
+        b.resetTorques(false);
+      }
       this.slackenGrip();
       this.updateDerived();
       this.snapshotBlade();
@@ -1845,6 +1855,49 @@ export class Arm {
   }
 
   /**
+   * Take the weapon back up after the body has been on the floor.
+   *
+   * The limb has hung wherever it fell, and putting the ghost straight back
+   * at the guard would have the drive haul it there along the chord -- the
+   * snap all over again. So the followed intent is re-seated where the hand
+   * actually is, and carried back to the guard from there at an arm's speed,
+   * exactly as a flick is.
+   */
+  regain(t: Tuning): void {
+    this.limp = false;
+    if (this.severedAt !== null) return;
+
+    this.fighter.shoulderWorld(this._shoulder);
+    const fq = this.fore.rotation();
+    const fp = this.fore.translation();
+    const d = this._v.set(0, this.foreHalf, 0)
+      .applyQuaternion(this._q.set(fq.x, fq.y, fq.z, fq.w))
+      .add(this._v2.set(fp.x, fp.y, fp.z))
+      .sub(this._shoulder);
+    const len = d.length();
+    if (len > 1e-6) {
+      const pitch = Math.asin(clamp(d.y / len, -1, 1));
+      const yaw = wrapPi(Math.atan2(-d.x, -d.z) - this.fighter.yaw);
+      this.aimTrack.snap([clamp(yaw, YAW_MIN, YAW_MAX), clamp(pitch, PITCH_MIN, PITCH_MAX)]);
+    }
+    this.rollTrack.snap([0]);
+    this.swivelTrack.snap([0]);
+    this._swivelWant[0] = 0;
+
+    this.armYaw = REST_YAW;
+    this.armPitch = REST_PITCH;
+    this.roll = 0;
+    this.reach = clamp(this.build.armLength * 0.793, this.minReach, this.maxReach);
+    this.twistTarget = 0;
+    this._wristTarget.identity();
+    this._handAccel.set(0, 0, 0);
+    this._accelPrimed = false;
+    // Stale from before it went down: it would hold the ghost on its leash.
+    this.state.trackingError = 0;
+    this.computeGhost(t);
+  }
+
+  /**
    * Cut the arm off. `shoulder` takes the whole limb, `elbow` takes the
    * forearm and the sword with it; either way the fighter is disarmed, because
    * the blade is held in the hand and the hand is no longer attached to
@@ -1931,6 +1984,16 @@ export class Arm {
    */
   get liveWeaponMass(): number {
     return this.weaponMass;
+  }
+
+  /**
+   * What the arm itself puts behind its weapon, kg: both segments while it is
+   * driving the weapon, nothing once it hangs limp or has been cut off. A
+   * loose weapon arrives on its own.
+   */
+  get armBehind(): number {
+    if (this.limp || this.severedAt !== null) return 0;
+    return this.upper.mass() + this.fore.mass();
   }
 
   /**

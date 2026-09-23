@@ -116,6 +116,11 @@
       #impact .dmg { color: #e6c15a; }
       #impact .dmg.none { color: var(--dim); }
       #impact .quality.sever { color: #d8562f; }
+      /* What the blow did to the body, and the weight that decided it. */
+      #impact .knock { letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
+      #impact .knock > span { text-transform: none; letter-spacing: 0; }
+      #impact .knock.stagger { color: #e0a33c; }
+      #impact .knock.down { color: #d8562f; }
 
       #impact {
         bottom: 0; left: 0; padding: 0.9rem 1.1rem; z-index: 10;
