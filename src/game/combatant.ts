@@ -26,7 +26,7 @@ const SEVERABLE: Record<string, keyof typeof JOINT_INTEGRITY> = {
   offElbow: "elbow",
 };
 
-/** Cutting either of these disarms the fighter — the sword is welded to the hand. */
+/** Cutting either of these disarms the fighter — the sword goes with the hand. */
 type ArmJoint = "shoulder" | "elbow";
 
 export interface CombatantState {
@@ -130,8 +130,10 @@ export class Combatant {
       this.arm.drive(tuning);          // limp: snapshots motion, applies nothing
       return;
     }
-    this.arm.readInput(input, tuning);
-    this.fighter.update(keys, tuning, dt);
+    this.arm.readInput(input, tuning, dt);
+    // The body first, from the arm's intent, so the shoulder is where this
+    // step's posture has it before the arm solves its ghost from it.
+    this.fighter.update(keys, tuning, dt, this.arm.postureDrive());
     this.arm.drive(tuning);
   }
 

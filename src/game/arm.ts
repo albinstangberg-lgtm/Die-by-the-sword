@@ -7,7 +7,12 @@ import type { WoundEnd } from "./blood";
 import type { Tuning } from "../tuning";
 import type { Build } from "./anatomy";
 import type { Fighter } from "./fighter";
-import { SWORD, type Weapon } from "./weapons";
+import { SWORD, weaponMassProperties, type Weapon } from "./weapons";
+import { smoothstep, Tracker } from "./motion";
+import { GUARD, Pose, type PostureDrive } from "./posture";
+import {
+  pushOut, repulsion, SwivelSearch, wrap, type Capsule, type ChainRadii,
+} from "./clearance";
 
 /**
  * THE MECHANIC.
@@ -19,8 +24,9 @@ import { SWORD, type Weapon } from "./weapons";
  *     intent.
  *
  *  2. The REAL ARM is a chain of dynamic bodies — upper arm on a spherical
- *     shoulder, forearm on a hinged elbow, blade welded to the hand. It is
- *     subject to gravity, collision and its own inertia.
+ *     shoulder, forearm on a hinged elbow, weapon in a grip that turns about
+ *     the forearm's length and nothing else. It is subject to gravity,
+ *     collision and its own inertia.
  *
  *  3. A FORCE-LIMITED PD CONTROLLER drags the real hand toward the ghost hand.
  *     `maxForce` and `maxTorque` clamp what the arm is allowed to exert.
@@ -37,13 +43,11 @@ import { SWORD, type Weapon } from "./weapons";
  * reach is the point.
  */
 
-const UP = new THREE.Vector3(0, 1, 0);
-
 /**
  * Where the elbow hangs relative to the shoulder-to-hand line.
  *
  * This decides how steeply the sword sits in the hand, and it matters far more
- * than it looks. The blade is welded pointing along the forearm, so wherever
+ * than it looks. The blade is held pointing along the forearm, so wherever
  * the elbow sits, the blade points away from it: an elbow directly BELOW the
  * line throws the blade upward, an elbow BEHIND the hand lays it forward.
  *
@@ -112,6 +116,98 @@ const YAW_MIN = -2.5, YAW_MAX = 1.9;
 const PITCH_MIN = -1.35, PITCH_MAX = 1.5;
 
 /**
+ * Where the arm is held at rest: see the note on `armYaw` below. The body's
+ * posture is measured from the same guard, so at rest it stands square.
+ */
+const REST_YAW: number = GUARD.yaw, REST_PITCH: number = GUARD.pitch;
+
+/** The hand's acceleration is smoothed over a few steps before the body sees it. */
+const ACCEL_SMOOTHING = 0.3;
+/** And capped: a blade stopping dead on stone is not a reason to fling the torso. */
+const ACCEL_CAP = 150;
+
+/**
+ * How fast the clearance swivel may turn the elbow round the arm, rad/s and
+ * rad/s^2. Quick enough to keep pace with a full-speed sweep of the aim --
+ * slower, and the elbow's target spent the first few steps of every hard
+ * cross-body swing inside the ribs, waiting for its correction to arrive.
+ */
+const SWIVEL_SPEED = 18;
+const SWIVEL_ACCEL = 400;
+
+/**
+ * The leash on the followed intent, in metres of lag at human scale.
+ *
+ * Past `LEASH_FROM` of distance between hand and ghost the ghost slows, down
+ * to `LEASH_MIN` of its speed by `LEASH_TO`, and waits for the arm. The
+ * intent tracker keeps the TARGET on the arc round the shoulder, but an arm
+ * that cannot keep up -- an orc hauling an axe through a flick trailed its
+ * ghost by three quarters of a metre -- catches up along a straight line,
+ * and that line runs through the chest. Held on a leash it catches up along
+ * the arc. A free arm at a human pace never lags this far, so nothing about
+ * ordinary play is slowed.
+ */
+const LEASH_FROM = 0.12;
+const LEASH_TO = 0.4;
+const LEASH_MIN = 0.25;
+
+// --- the forearm twist -----------------------------------------------------
+//
+// Pronation and supination: the weapon turns in the grip, about the forearm's
+// own length. Without it the edge could only be turned by swinging the whole
+// elbow round the shoulder-to-hand line -- so an elbow the body had to move
+// out of the ribs took the edge with it, and a roll toward the body stopped
+// dead the moment the elbow met the ribs. The twist keeps the edge where the
+// aim and the roll put it while the elbow goes wherever the body lets it.
+
+/** How far the grip turns either way, radians. A symmetric edge needs 90°. */
+const TWIST_LIMIT = 1.6;
+/** The most the grip is ever asked for: inside the limit, so it never leans on it. */
+const TWIST_REACH = 1.5;
+/** Twist speed wanted per radian still to go: about 40ms to close most of a gap. */
+const TWIST_RATE = 25;
+/**
+ * A quick forearm, not an instant one, rad/s. Also what caps the grip's
+ * torque: the motor pushes in proportion to how far short of this speed the
+ * weapon turns, so a weapon that cannot turn at all gets `twistTorque` and
+ * no more.
+ */
+const TWIST_SPEED = 20;
+/** A dead or severed hand holds the grip loosely: damping, no drive, N·m·s/rad. */
+const SLACK_GRIP = 0.01;
+
+/**
+ * Below this bend of the elbow, radians, the arm's angular drives let go of
+ * its roll about its own length, fading in fully by `ROLL_FADE_TO`.
+ *
+ * With the elbow straight, which way the elbow points means nothing -- any
+ * swivel is the same pose -- and the arm's inertia about its own length is
+ * almost nothing either: the upper arm and forearm roll together like one
+ * thin rod. An explicit drive on a mode that light over-corrects every step
+ * and spins it up; this is the singularity behind the original snap. It
+ * used to be masked by the weapon welded on and by Rapier's phantom inertia
+ * about the spear's and the axe's shafts. With the grip free to turn and the
+ * inertia right, a freshly spawned -- straight -- goblin arm spun at 900
+ * rad/s. The reach limits hold the elbow at sixty degrees or more in play,
+ * so nothing ordinary is touched.
+ */
+const ROLL_FADE_FROM = 0.15;
+const ROLL_FADE_TO = 0.6;
+
+/**
+ * And however bent the elbow, the drives' push about each bone's own length
+ * is held inside what that roll can take: damping and stiffness no larger
+ * than an explicit step on its inertia stays stable with. The inertia is a
+ * lower bound -- both bones' own roll, plus as much of the other bone as the
+ * elbow's bend swings round with it -- so the limit can only be cautious.
+ * A human's or an orc's arm is heavy enough that nothing changes; a goblin's
+ * is not, and with the spear's phantom inertia gone its drive had been
+ * spinning it up against anything the spear touched.
+ */
+const ROLL_DAMPING_LIMIT = 1.5;
+const ROLL_STIFFNESS_LIMIT = 0.7;
+
+/**
  * The minimum the arm needs from an input source. Kept structural so the
  * headless harness can drive the real controller without a browser.
  */
@@ -128,10 +224,17 @@ export interface ArmState {
   tipSpeed: number;
   /** Elbow flexion, radians. */
   elbow: number;
-  /** Outstanding blade orientation error, radians. */
+  /**
+   * How far the weapon is off the orientation it was asked for, radians:
+   * where it points and which way its edge faces, together.
+   */
   roll: number;
   /** How saturated the angular drive is, 0..1. */
   torqueSaturation: number;
+  /** How far the weapon is turned in the grip, radians. */
+  twist: number;
+  /** How far the real limb is into its own trunk, metres. 0 is clear. */
+  clearance: number;
 }
 
 export class Arm {
@@ -173,6 +276,23 @@ export class Arm {
 
   private shoulderJoint: RAPIER.ImpulseJoint | null = null;
   private elbowJoint: RAPIER.ImpulseJoint | null = null;
+  /** The weapon in the hand: free to turn about the forearm's length, nothing else. */
+  private readonly wristJoint: RAPIER.RevoluteImpulseJoint;
+  /**
+   * What the arm's roll about each bone's length has to turn, kg·m²: each
+   * bone's own inertia about its length, and each bone's mass at half its
+   * length -- what the other one swings round when the elbow is bent.
+   */
+  private foreRoll = 0;
+  private upperRoll = 0;
+  private foreSwing = 0;
+  private upperSwing = 0;
+  /** The weapon's target: the forearm's, turned in the grip by `twistTarget`. */
+  private readonly _bladeQuat = new THREE.Quaternion();
+  /** The turn of the grip asked for this step, radians. */
+  private twistTarget = 0;
+  /** The edge the aim and the roll asked for, before any clearance moved the elbow. */
+  private readonly _askedEdge = new THREE.Vector3();
 
   /** Once the arm is cut, nothing drives it and the sword is gone for good. */
   severedAt: "shoulder" | "elbow" | null = null;
@@ -191,17 +311,47 @@ export class Arm {
    * Mouse-driven intent, in torso-local spherical coordinates.
    *
    * The rest pitch sits below the shoulder because the elbow hangs under the
-   * shoulder-to-hand line, so the forearm — and the blade welded to it —
+   * shoulder-to-hand line, so the forearm — and the blade held along it —
    * angles UP out of the hand. Level with the shoulder the tip rides around
    * 2.1m, over the head of anything worth hitting; dropping the hand brings
    * the blade back toward the height a standing opponent occupies.
    */
-  private armYaw = 0.30;
-  private armPitch = -0.30;
+  private armYaw = REST_YAW;
+  private armPitch = REST_PITCH;
   private reach = 0.46;
   private roll = 0;
 
-  readonly state: ArmState = { trackingError: 0, saturation: 0, tipSpeed: 0, elbow: 0, roll: 0, torqueSaturation: 0 };
+  /**
+   * The same intent, as the ghost is actually allowed to follow it.
+   *
+   * `armYaw` and friends are what the hand ASKED for, and stay exact: the AI
+   * steers by them, the limits clamp them, and the probes solve with them.
+   * The ghost follows these trackers instead, which pass anything a hand does
+   * at a human speed straight through and spread only a flick across the few
+   * steps an arm would need -- see `Tracker` for why that matters.
+   */
+  private readonly aimTrack = new Tracker([REST_YAW, REST_PITCH]);
+  private readonly rollTrack = new Tracker([0]);
+  private readonly _aimWant = [REST_YAW, REST_PITCH];
+  private readonly _rollWant = [0];
+
+  /**
+   * How far the elbow is swivelled off its designed pole to keep it out of
+   * the trunk. Followed, like the aim, so a clearance that switches sides
+   * swings the elbow round rather than teleporting its target.
+   */
+  private readonly swivelTrack = new Tracker([0]);
+  private readonly _swivelWant = [0];
+  private readonly swivelSearch = new SwivelSearch();
+  private readonly radii: ChainRadii;
+  private readonly handRadius: number;
+  /** Where on the limb the trunk can push: a body, how far along it, how fat. */
+  private readonly contactPoints: { body: RAPIER.RigidBody; along: number; radius: number }[];
+
+  readonly state: ArmState = {
+    trackingError: 0, saturation: 0, tipSpeed: 0, elbow: 0, roll: 0,
+    torqueSaturation: 0, twist: 0, clearance: 0,
+  };
 
   // Scratch — this runs 60x/s, so nothing here allocates.
   private readonly _ghostPos = new THREE.Vector3();
@@ -232,6 +382,28 @@ export class Arm {
   private readonly _tipVel = new THREE.Vector3();
   private readonly _probeHand = new THREE.Vector3();
   private readonly _probeDir = new THREE.Vector3();
+  private readonly _steadyPose = new Pose();
+  private readonly _ta = new THREE.Vector3();
+  private readonly _tb = new THREE.Vector3();
+  private readonly _tc = new THREE.Vector3();
+  private readonly _qa = new THREE.Quaternion();
+  private readonly _qb = new THREE.Quaternion();
+  private readonly _qc = new THREE.Quaternion();
+  /** `elbowBend`'s own, so it can be asked mid-drive without clobbering anything. */
+  private readonly _bendA = new THREE.Vector3();
+  private readonly _bendB = new THREE.Vector3();
+  private readonly _bendQ = new THREE.Quaternion();
+
+  /** The hand's velocity last step and its smoothed acceleration, world. */
+  private readonly _prevHandVel = new THREE.Vector3();
+  private readonly _handAccel = new THREE.Vector3();
+  private _accelPrimed = false;
+  /** Where the ghost's percussion point is: what the body's eyes follow. */
+  private readonly _look = new THREE.Vector3();
+  private readonly _drive: PostureDrive = {
+    yaw: REST_YAW, pitch: REST_PITCH, yawRate: 0, pitchRate: 0,
+    accel: new THREE.Vector3(), strain: 0, look: null,
+  };
 
   constructor(
     private phys: PhysicsWorld,
@@ -253,6 +425,15 @@ export class Arm {
     const foreHalf = this.foreHalf = foreLen / 2;
     const upperRadius = build.segment.upperArm.radius;
     const foreRadius = build.segment.foreArm.radius;
+
+    this.radii = {
+      upper: upperRadius,
+      // The meshes a clearance is judged against: the elbow's ball is drawn
+      // fatter than the forearm, the hand fatter still.
+      elbow: foreRadius * 1.15,
+      fore: foreRadius,
+    };
+    this.handRadius = foreRadius * 1.22;
 
     this.minReach = build.armLength * MIN_REACH_FRACTION;
     this.maxReach = build.armLength - REACH_MARGIN * build.scale;
@@ -325,7 +506,9 @@ export class Arm {
       const collider = world.createCollider(
         desc
           .setTranslation(0, part.at, part.atZ ?? 0)
-          .setMass(part.mass)
+          // No mass of its own: the weapon's is set on the body, whole -- see
+          // `weaponMassProperties` for why Rapier cannot be left to add it up.
+          .setDensity(0)
           .setFriction(0.25)      // low: steel skids off stone rather than gripping
           .setRestitution(0.12)   // a little — a hard parry should kick back
           .setCollisionGroups(this.side.bladeFilter)
@@ -338,20 +521,39 @@ export class Arm {
     // The last part is the business end, and the one a solver contact is
     // reported against when the weapon meets stone.
     this.bladeCollider = this.weaponColliders[this.weaponColliders.length - 1];
+    this.setWeaponMass(weapon.mass);
+    this.measureLimbs();
+
+    // Where the trunk can push the limb: the elbow end of the upper arm and
+    // the elbow itself, the middle of the forearm and the hand. Not the upper
+    // arm's root, which hangs against the ribs by construction -- the same
+    // stretch the kinematic search leaves out, for the same reason: pushing
+    // there would be a standing force on an arm at rest.
+    this.contactPoints = [
+      { body: this.upper, along: upperHalf * 0.6, radius: this.radii.upper },
+      { body: this.upper, along: upperHalf, radius: this.radii.elbow },
+      { body: this.fore, along: 0, radius: this.radii.fore },
+      { body: this.fore, along: foreHalf, radius: this.handRadius },
+    ];
 
     // --- joints ---
     this.shoulderJoint = this.makeShoulderJoint();
     this.elbowJoint = this.makeElbowJoint();
 
-    // Hand: the weapon is welded rigidly. Identity frames mean the weapon's +Y
-    // (its length) continues the forearm's +Y, and its +Z is the cutting edge.
-    world.createImpulseJoint(
-      rapier.JointData.fixed(
-        { x: 0, y: foreHalf, z: 0 }, { x: 0, y: 0, z: 0, w: 1 },
-        { x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0, w: 1 },
+    // Hand: the weapon's +Y (its length) continues the forearm's +Y and its
+    // +Z is the cutting edge, as when it was welded -- but it can now turn
+    // about that shared length, and only about that: the forearm twist.
+    this.wristJoint = world.createImpulseJoint(
+      rapier.JointData.revolute(
+        { x: 0, y: foreHalf, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 },
       ),
       this.fore, this.blade, true,
-    );
+    ) as RAPIER.RevoluteImpulseJoint;
+    this.wristJoint.setLimits(-TWIST_LIMIT, TWIST_LIMIT);
+    // Driven through the joint's own motor, as a force-based velocity servo:
+    // see `applyTwist` for why that and not a torque of our own.
+    this.wristJoint.configureMotorModel(rapier.MotorModel.ForceBased);
+    this.slackenGrip();
 
     this.buildMeshes(fighter.palette.skin);
     scene.add(this.group);
@@ -368,10 +570,11 @@ export class Arm {
    */
   private makeShoulderJoint(): RAPIER.ImpulseJoint {
     const { rapier, world } = this.phys;
-    const l = this.build.shoulderLocal;
+    const l = this.fighter.shoulderAnchor;
     // Spherical, 3 DOF, anchored at the torso's shoulder point. Must match
     // Fighter.shoulderWorld, or the ghost hand is computed from one shoulder
-    // while the arm hangs off another.
+    // while the arm hangs off another -- which is why both read the same
+    // anchor, and why `drive` moves this one every step the posture moves it.
     return world.createImpulseJoint(
       rapier.JointData.spherical(
         { x: l.x, y: l.y, z: l.z },
@@ -405,7 +608,7 @@ export class Arm {
   // -------------------------------------------------------------------------
 
   /** Fold this step's mouse travel into the arm's intent. */
-  readInput(input: ArmInput, t: Tuning): void {
+  readInput(input: ArmInput, t: Tuning, dt: number = this.phys.world.timestep): void {
     const { dx, dy, wheel, rollDx } = input.consumeMouse();
 
     this.armYaw = clamp(this.armYaw - dx * t.sensitivity, YAW_MIN, YAW_MAX);
@@ -418,6 +621,41 @@ export class Arm {
     // no shoulder does. The blade is symmetric anyway, so every distinct edge
     // orientation is already reachable well inside this.
     this.roll = clamp(this.roll + rollDx * t.rollSensitivity, ROLL_MIN, ROLL_MAX);
+
+    this.shapeIntent(t, dt);
+  }
+
+  /**
+   * Let the ghost follow the intent, at no more than an arm's speed.
+   *
+   * One tracker for yaw and pitch together, so a diagonal flick is limited by
+   * the distance it covers rather than by each axis on its own, and one for
+   * roll, which is the elbow swivel and can wrench the arm round just as hard.
+   */
+  private shapeIntent(t: Tuning, dt: number): void {
+    const s = this.build.scale;
+    const lag = smoothstep(LEASH_FROM * s, LEASH_TO * s, this.state.trackingError);
+    const speed = t.flickSpeed * (1 - lag * (1 - LEASH_MIN));
+
+    this._aimWant[0] = this.armYaw;
+    this._aimWant[1] = this.armPitch;
+    this.aimTrack.step(this._aimWant, speed, t.flickAccel, dt);
+    this._rollWant[0] = this.roll;
+    this.rollTrack.step(this._rollWant, speed, t.flickAccel, dt);
+
+    // It cannot overshoot a still target, but a reversal carries some of the
+    // old velocity for a step, and the limits are anatomy: pin it inside them.
+    pin(this.aimTrack, 0, YAW_MIN, YAW_MAX);
+    pin(this.aimTrack, 1, PITCH_MIN, PITCH_MAX);
+    pin(this.rollTrack, 0, ROLL_MIN, ROLL_MAX);
+  }
+
+  /** Put the followed intent exactly on the commanded one, with no motion. */
+  private snapIntent(): void {
+    this.aimTrack.snap([this.armYaw, this.armPitch]);
+    this.rollTrack.snap([this.roll]);
+    this.swivelTrack.snap([0]);
+    this._swivelWant[0] = 0;
   }
 
   /**
@@ -437,19 +675,42 @@ export class Arm {
    * frequently cannot, which is the entire point. Nothing here ever moves a
    * body directly.
    */
-  private computeGhost(_t: Tuning): void {
-    this.fighter.shoulderWorld(this._shoulder);
-    const yaw = this.fighter.yaw + this.armYaw;
-    const pitch = this.armPitch;
+  private computeGhost(t: Tuning, steady = false, advance = false): void {
+    // `steady` solves for the commanded aim as it will be once arrived, body
+    // and all -- what a probe asks about. Otherwise the ghost is wherever the
+    // followed intent has got to this step, hung from wherever the posture
+    // has carried the shoulder.
+    const pose = steady
+      ? this.fighter.posture.steady(this.armYaw, this.armPitch, t, this._steadyPose)
+      : this.fighter.posture.pose;
+    if (steady) this.fighter.shoulderWorldFor(pose, this._shoulder);
+    else this.fighter.shoulderWorld(this._shoulder);
+
+    const yaw = this.fighter.yaw + (steady ? this.armYaw : this.aimTrack.pos[0]);
+    const pitch = steady ? this.armPitch : this.aimTrack.pos[1];
+    const roll = steady ? this.roll : this.rollTrack.pos[0];
 
     // Torso-forward is -Z, so the arm sweeps around that.
     const cp = Math.cos(pitch);
     this._v.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
     this._ghostPos.copy(this._shoulder).addScaledVector(this._v, this.reach);
+
+    // A hand asked to be inside the body goes on its surface instead. Rare --
+    // the posture has usually carried the shoulder far enough round that the
+    // hand clears -- but a low hand pulled in and across can still ask for it.
+    const margin = t.clearance * this.build.scale;
+    const caps = margin > 0 ? this.fighter.trunkCapsules(pose) : null;
+    let reach = this.reach;
+    if (caps && pushOut(this._ghostPos, this.handRadius, caps, margin)) {
+      this._v.copy(this._ghostPos).sub(this._shoulder);
+      reach = clamp(this._v.length(), this.minReach, this.maxReach);
+      this._v.normalize();
+      this._ghostPos.copy(this._shoulder).addScaledVector(this._v, reach);
+    }
     this._armDir.copy(this._v).normalize();
 
     // --- solve the elbow ---
-    const d = clamp(this.reach, Math.abs(this.upperLen - this.foreLen) + 0.01, this.upperLen + this.foreLen - 0.01);
+    const d = clamp(reach, Math.abs(this.upperLen - this.foreLen) + 0.01, this.upperLen + this.foreLen - 0.01);
     const cosA = (this.upperLen * this.upperLen + d * d - this.foreLen * this.foreLen) / (2 * this.upperLen * d);
     const shoulderAngle = Math.acos(clamp(cosA, -1, 1));
 
@@ -463,6 +724,13 @@ export class Arm {
     // them as two separate controls (a fixed pole plus a roll torque) had them
     // fighting each other for the same joint, which is what left 45 degrees of
     // standing orientation error. Q/E turns the whole arm, and the edge follows.
+    //
+    // The pole stays on the HULL even when the chest has turned. Swivel and
+    // edge roll are one degree of freedom here, so the pole is what decides
+    // which way the edge faces through a swing, and it was tuned against the
+    // hull: hung off a turning chest instead it presented the flat, and cut
+    // quality in a real sweep fell by half. The posture moves the shoulder;
+    // the clearance pass below keeps the elbow out of the ribs.
     const torsoYaw = this.fighter.yaw;
     const right = this._refA.set(Math.cos(torsoYaw), 0, -Math.sin(torsoYaw));
     const back = this._refC.set(Math.sin(torsoYaw), 0, Math.cos(torsoYaw));
@@ -470,7 +738,20 @@ export class Arm {
       .addScaledVector(right, POLE.right)
       .addScaledVector(back, POLE.back)
       .normalize()
-      .applyQuaternion(this._q2.setFromAxisAngle(this._armDir, this.roll));
+      .applyQuaternion(this._q2.setFromAxisAngle(this._armDir, roll));
+
+    // The edge this pose presents is what the aim and the roll asked for.
+    // Remember it before the body gets a say: the twist will hold it there.
+    this.edgeOf(pole, shoulderAngle, this._askedEdge);
+
+    // Then swivel the elbow out of the ribs, if the pose put it there. The
+    // roll is inside this now -- roll the elbow toward your own chest and it
+    // stops at the ribs, and the forearm twist turns the rest of the way, as
+    // a real one does when the shoulder has run out of room.
+    const swivel = caps
+      ? this.clearanceSwivel(pole, shoulderAngle, caps, margin, steady, advance)
+      : this.relaxSwivel(steady, advance);
+    if (swivel !== 0) pole.applyQuaternion(this._q2.setFromAxisAngle(this._armDir, swivel));
 
     // Swing the arm direction toward the pole by the shoulder angle.
     const axis = this._refC.crossVectors(this._armDir, pole);
@@ -498,6 +779,119 @@ export class Arm {
     // arm -- where an edge has to be to lead a cut rather than slap with the flat.
     this._m.makeBasis(hinge, foreDir, this._refC.crossVectors(hinge, foreDir));
     this._ghostQuat.setFromRotationMatrix(this._m);
+
+    // --- the weapon: the forearm's orientation, turned in the grip ---
+    const twist = this.twistFor(foreDir, hinge, steady, advance);
+    this._bladeQuat.copy(this._ghostQuat)
+      .multiply(this._qa.setFromAxisAngle(this._ta.set(0, 1, 0), twist));
+    if (!steady) this.twistTarget = twist;
+
+    // The percussion point of the pose asked for, which is what a fighter
+    // watching its own blade watches. Not for probes: they are hypothetical.
+    if (!steady) {
+      this._look.copy(foreDir)
+        .multiplyScalar(this.weapon.grip + this.weapon.span * this.strikePoint)
+        .add(this._ghostPos);
+    }
+  }
+
+  /**
+   * The edge a pole would present with the grip untwisted: the elbow solved
+   * from it, and the cutting edge -- which lies in the plane of the arm,
+   * square to the forearm -- read off the result.
+   */
+  private edgeOf(pole: THREE.Vector3, shoulderAngle: number, out: THREE.Vector3): THREE.Vector3 {
+    const axis = this._ta.crossVectors(this._armDir, pole);
+    if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0); else axis.normalize();
+    const elbowDir = this._tb.copy(this._armDir)
+      .applyQuaternion(this._qa.setFromAxisAngle(axis, shoulderAngle));
+    const fore = this._tc.copy(this._shoulder).addScaledVector(elbowDir, this.upperLen)
+      .negate().add(this._ghostPos).normalize();
+    const hinge = axis.crossVectors(fore, elbowDir);
+    if (hinge.lengthSq() < 1e-8) hinge.set(1, 0, 0); else hinge.normalize();
+    return out.crossVectors(hinge, fore);
+  }
+
+  /**
+   * How far to turn the grip so the edge faces where it was asked, as nearly
+   * as the forearm's actual direction allows: the asked-for edge laid square
+   * to this forearm, measured round it from the edge an untwisted grip gives.
+   *
+   * Zero whenever the clearance has not moved the elbow, which is nearly
+   * always -- the weapon is then exactly where it was welded.
+   *
+   * The edge is symmetric, so an edge half a turn round is the same edge;
+   * of the three ways to present it, the one nearest the last is kept, so the
+   * grip does not flick between them. Only when that one would run past what
+   * a forearm can turn is it given up for the nearest to square -- a regrip,
+   * swung through at the twist's own speed. A point has no edge to present,
+   * and is held square.
+   */
+  private twistFor(
+    foreDir: THREE.Vector3, hinge: THREE.Vector3, steady: boolean, advance: boolean,
+  ): number {
+    const last = steady ? 0 : this.twistTarget;
+    if (this.weapon.bite === "point") return 0;
+
+    const neutral = this._ta.crossVectors(hinge, foreDir);
+    const asked = this._tb.copy(this._askedEdge)
+      .addScaledVector(foreDir, -this._askedEdge.dot(foreDir));
+    if (asked.lengthSq() < 1e-6) return last;
+    asked.normalize();
+    const raw = Math.atan2(this._tc.crossVectors(neutral, asked).dot(foreDir), neutral.dot(asked));
+
+    let pick = raw;
+    for (const c of [raw - Math.PI, raw + Math.PI]) {
+      if (Math.abs(c - last) < Math.abs(pick - last)) pick = c;
+    }
+    if (Math.abs(pick) > TWIST_REACH) {
+      for (const c of [raw, raw - Math.PI, raw + Math.PI]) {
+        if (Math.abs(c) < Math.abs(pick)) pick = c;
+      }
+    }
+    // A probe restoring the ghost must not move the grip's memory on.
+    return steady || advance ? pick : this.twistTarget;
+  }
+
+  /**
+   * The swivel that keeps the elbow and both bones clear of the trunk: the
+   * least departure from the designed pole that does it, since the pole is
+   * also the edge.
+   *
+   * A probe takes the answer as it stands. The live ghost follows it through
+   * a tracker, and only `drive` advances that -- a probe restoring the ghost
+   * afterwards must not also move it on.
+   */
+  private clearanceSwivel(
+    pole: THREE.Vector3, shoulderAngle: number, caps: readonly Capsule[],
+    margin: number, steady: boolean, advance: boolean,
+  ): number {
+    // A probe asks where a held aim would settle. The live arm asks where the
+    // elbow can get to from where it is, and the answer comes back already
+    // unwrapped for the way round it chose.
+    const want = this.swivelSearch.solve(
+      this._shoulder, this._armDir, pole, shoulderAngle, this.upperLen,
+      this._ghostPos, this.radii, caps, margin,
+      steady ? null : this.swivelTrack.pos[0]);
+    if (steady) return want;
+    this._swivelWant[0] = want;
+    return this.followSwivel(advance);
+  }
+
+  /** With clearance off, any swivel still in hand unwinds back to the design. */
+  private relaxSwivel(steady: boolean, advance: boolean): number {
+    if (steady) return 0;
+    const at = this.swivelTrack.pos[0];
+    this._swivelWant[0] = at - wrap(at);
+    return this.followSwivel(advance);
+  }
+
+  private followSwivel(advance: boolean): number {
+    if (advance) {
+      this.swivelTrack.step(this._swivelWant, SWIVEL_SPEED, SWIVEL_ACCEL,
+        this.phys.world.timestep);
+    }
+    return this.swivelTrack.pos[0];
   }
 
   // -------------------------------------------------------------------------
@@ -506,16 +900,25 @@ export class Arm {
 
   /** Call once per fixed step, immediately before `world.step()`. */
   drive(t: Tuning): void {
+    // The posture has moved the shoulder since last step: take the joint with
+    // it before anything is solved from it, so the arm hangs from the point
+    // its ghost is measured from. Before the early return below, too -- a
+    // forearm cut off at the elbow still leaves an upper arm on this joint,
+    // and it has to hang from where the shoulder is drawn.
+    this.shoulderJoint?.setAnchor1(this.fighter.shoulderAnchor);
+
     // A detached arm is meat. Continuing to run the PD on it would have the
-    // controller flying a severed limb around the room by itself.
+    // controller flying a severed limb around the room by itself -- and the
+    // grip's motor, left running, would go on turning the weapon in its hand.
     if (this.severedAt !== null || this.limp) {
+      this.slackenGrip();
       this.updateDerived();
       this.snapshotBlade();
       this.sampleTip();
       return;
     }
 
-    this.computeGhost(t);
+    this.computeGhost(t, false, true);
 
     // Rapier keeps user forces until they're cleared, so a missed reset would
     // make the arm accelerate without bound.
@@ -550,6 +953,7 @@ export class Arm {
       lv.y + (av.z * offset.x - av.x * offset.z),
       lv.z + (av.x * offset.y - av.y * offset.x),
     );
+    this.measureAccel(this.phys.world.timestep);
 
     // --- linear: F = kp*e - kd*v, clamped ---
     const err = this._v2.copy(this._ghostPos).sub(this._handPos);
@@ -570,30 +974,44 @@ export class Arm {
 
     // --- angular: bring the blade onto the target orientation ---
     //
-    // A blade is symmetric: presenting either edge cuts equally well, so the
-    // error is folded into the nearer half-turn. Without that the sword rolls
-    // the long way round on a reversal, which looks absurd and wastes the whole
-    // torque budget doing it.
+    // The error is NOT folded into the nearer half-turn, although the blade is
+    // symmetric and either edge would cut. It used to be, and that was the
+    // snap. Turning the forearm half a turn about its own length negates the
+    // elbow's hinge axis, and with the hand and the forearm's direction fixed
+    // the elbow point is fixed too -- so the only arm that matches the folded
+    // target is one bent backwards, which the joint limit forbids. Whenever a
+    // swing left the swivel more than a quarter turn behind, the fold picked
+    // that impossible target; at exactly a quarter turn the two tied and the
+    // torque reversed from step to step, pinning the arm there, saturated,
+    // while the elbow drifted straight. At straight the arm's inertia about
+    // its own length is nearly nothing, the chain flipped over, and the forearm
+    // spun at 150-170 rad/s. Without the fold the arm swivels round the way a
+    // shoulder actually can, and arrives.
     this._q2.copy(this._q).invert().premultiply(this._ghostQuat);
-    const flip = this._q3.setFromAxisAngle(UP, Math.PI).premultiply(this._ghostQuat)
-      .multiply(this._q4.copy(this._q).invert());
-    if (Math.abs(flip.w) > Math.abs(this._q2.w)) this._q2.copy(flip);
     if (this._q2.w < 0) this._q2.set(-this._q2.x, -this._q2.y, -this._q2.z, -this._q2.w);
 
     const sinHalf = Math.sqrt(this._q2.x ** 2 + this._q2.y ** 2 + this._q2.z ** 2);
-    const torque = this._v.set(0, 0, 0);
-    let angle = 0;
+    const error = this._tb.set(0, 0, 0);
     if (sinHalf > 1e-6) {
-      angle = 2 * Math.atan2(sinHalf, this._q2.w);
-      torque.set(this._q2.x, this._q2.y, this._q2.z)
-        .multiplyScalar((angle / sinHalf) * t.armKpRot * this.power);
+      const angle = 2 * Math.atan2(sinHalf, this._q2.w);
+      error.set(this._q2.x, this._q2.y, this._q2.z).multiplyScalar(angle / sinHalf);
     }
-    this.state.roll = angle;
 
+    const kpRot = t.armKpRot * this.power;
     const kdRot = t.armKdRot * this.power;
+    const torque = this._v.copy(error).multiplyScalar(kpRot);
     torque.x -= av.x * kdRot;
     torque.y -= av.y * kdRot;
     torque.z -= av.z * kdRot;
+
+    // The roll about the forearm's own length: let go of it near a straight
+    // elbow, and keep it inside what its inertia can take everywhere else.
+    const bend = this.elbowBend();
+    const rollGain = smoothstep(ROLL_FADE_FROM, ROLL_FADE_TO, bend);
+    const sin2 = Math.sin(bend) ** 2;
+    this.boundRoll(
+      torque, this._ta.set(0, 1, 0).applyQuaternion(this._q), error, av,
+      kpRot, kdRot, this.foreRoll + this.upperRoll + this.upperSwing * sin2, rollGain);
 
     const maxTorque = t.maxTorque * this.power;
     const tmag = torque.length();
@@ -605,10 +1023,138 @@ export class Arm {
     // the elbow swivel is left to gravity, the physical forearm ends up pointing
     // somewhere the target never predicted, and the angular drive spends itself
     // fighting the hand instead of aiming the blade.
-    this.applyUpperArmTorque(t);
+    this.applyUpperArmTorque(t, rollGain, sin2);
+
+    // The weapon turned in the grip, toward the edge that was asked for.
+    this.applyTwist(t);
+
+    // And the body pushing back, for whatever the target could not prevent.
+    this.applyClearance(t);
 
     this.snapshotBlade();
     this.sampleTip();
+  }
+
+  /**
+   * The forearm twist: turn the weapon in the grip toward `twistTarget`.
+   *
+   * Through the joint's motor, as a velocity servo: it is asked to turn the
+   * grip at a speed that closes the gap, and pushes in proportion to how far
+   * short of that it is. Two reasons it is the motor and not a torque of our
+   * own, as every other drive here is.
+   *
+   * A weapon's inertia about its own length is tiny -- 0.0002 kg·m² for the
+   * sword -- and an explicit servo on something that light can only be
+   * stable by being soft. Soft, the grip could not hold against a shaft
+   * dragged along the floor: friction at a 1.7cm radius rolled the goblin's
+   * spear up to 880 rad/s. The motor is solved implicitly, stiff and stable
+   * at any inertia.
+   *
+   * And its authority is still bounded, which Rapier's motors otherwise do
+   * not offer: with the wanted speed capped at `TWIST_SPEED`, a weapon that
+   * cannot turn at all -- wedged in stone -- gets `twistTorque` and no more.
+   */
+  private applyTwist(t: Tuning): void {
+    const fq = this.fore.rotation();
+    const bq = this.blade.rotation();
+    const qf = this._qa.set(fq.x, fq.y, fq.z, fq.w);
+    const qb = this._qb.set(bq.x, bq.y, bq.z, bq.w);
+
+    // How far off the whole weapon is, edge included: the HUD's roll readout.
+    this.state.roll = 2 * Math.acos(Math.min(1, Math.abs(qb.dot(this._bladeQuat))));
+
+    // The grip's turn: the weapon seen from the forearm, about its length.
+    const rel = this._qc.copy(qf).invert().multiply(qb);
+    const turn = wrapPi(2 * Math.atan2(rel.y, rel.w));
+    this.state.twist = turn;
+
+    const want = clamp(TWIST_RATE * wrapPi(this.twistTarget - turn), -TWIST_SPEED, TWIST_SPEED);
+    this.wristJoint.configureMotorVelocity(want, (t.twistTorque * this.power) / TWIST_SPEED);
+  }
+
+  /** Let go of the grip: a hand nothing is driving holds its weapon loosely. */
+  private slackenGrip(): void {
+    this.wristJoint.configureMotorVelocity(0, SLACK_GRIP);
+  }
+
+  /**
+   * The trunk's repulsion on the real limb: the elbow and the stretch of
+   * upper arm above it push the upper arm out, the middle of the forearm and
+   * the hand push the forearm out.
+   *
+   * Applied at the point itself, so a push on the elbow turns the upper arm
+   * about the shoulder rather than shoving it bodily. Scaled by the fighter's
+   * power: a bigger animal's arm is heavier and its body pushes harder.
+   */
+  private applyClearance(t: Tuning): void {
+    this.state.clearance = 0;
+    if (t.clearance <= 0) return;
+    const caps = this.fighter.trunkCapsules(this.fighter.posture.pose);
+
+    let deepest = 0;
+    for (const { body, along, radius } of this.contactPoints) {
+      const bq = body.rotation();
+      const r = this._refA.set(0, along, 0).applyQuaternion(this._q3.set(bq.x, bq.y, bq.z, bq.w));
+      const c = body.translation();
+      const point = this._refB.set(c.x + r.x, c.y + r.y, c.z + r.z);
+      const lv = body.linvel();
+      const av = body.angvel();
+      const vel = this._refC.set(
+        lv.x + (av.y * r.z - av.z * r.y),
+        lv.y + (av.z * r.x - av.x * r.z),
+        lv.z + (av.x * r.y - av.y * r.x),
+      );
+      const depth = repulsion(point, radius, vel, caps, this.power, this._refD);
+      if (depth <= 0) continue;
+      deepest = Math.max(deepest, depth);
+      body.addForceAtPoint(
+        { x: this._refD.x, y: this._refD.y, z: this._refD.z },
+        { x: point.x, y: point.y, z: point.z },
+        true,
+      );
+    }
+    this.state.clearance = deepest;
+  }
+
+  /**
+   * The hand's acceleration, smoothed and capped, for the body to react to.
+   *
+   * Differenced from the hand's velocity rather than read off the drive
+   * force, so it is the acceleration the arm actually managed -- including
+   * the lurch of a blade that has just been stopped, which the cap keeps
+   * from turning into a full-body spasm.
+   */
+  private measureAccel(dt: number): void {
+    if (this._accelPrimed) {
+      const raw = this._v2.copy(this._handVel).sub(this._prevHandVel).multiplyScalar(1 / dt);
+      const len = raw.length();
+      if (len > ACCEL_CAP) raw.multiplyScalar(ACCEL_CAP / len);
+      this._handAccel.lerp(raw, ACCEL_SMOOTHING);
+    }
+    this._prevHandVel.copy(this._handVel);
+    this._accelPrimed = true;
+  }
+
+  /**
+   * What this arm asks of the body this step: the followed intent and how
+   * fast it is moving, how hard the hand is accelerating, how hard the drive
+   * is straining, and where the blade is meant to be.
+   *
+   * Null once there is no arm to carry. Read BEFORE `drive`, so the body is
+   * placed for this step before the ghost is solved from its shoulder.
+   */
+  postureDrive(): PostureDrive | null {
+    if (this.severedAt !== null || this.limp) return null;
+    const d = this._drive;
+    d.yaw = this.aimTrack.pos[0];
+    d.pitch = this.aimTrack.pos[1];
+    d.yawRate = this.aimTrack.vel[0];
+    d.pitchRate = this.aimTrack.vel[1];
+    // The body wants it in its own frame: +X is the sword side, -Z forward.
+    d.accel.copy(this._handAccel).applyAxisAngle(this._v.set(0, 1, 0), -this.fighter.yaw);
+    d.strain = this.state.saturation;
+    d.look = this._look;
+    return d;
   }
 
   /** Cancels `gravityComp` of each limb segment's weight at its own centre of mass. */
@@ -620,8 +1166,12 @@ export class Arm {
     }
   }
 
-  /** Angular PD holding the upper arm on the solved shoulder->elbow direction. */
-  private applyUpperArmTorque(t: Tuning): void {
+  /**
+   * Angular PD holding the upper arm on the solved shoulder->elbow direction.
+   * `rollGain` and `sin2` (the squared sine of the elbow's bend) bound its
+   * roll about its own length, as for the forearm.
+   */
+  private applyUpperArmTorque(t: Tuning, rollGain: number, sin2: number): void {
     const uq = this.upper.rotation();
     this._q3.set(uq.x, uq.y, uq.z, uq.w);
     this._q4.copy(this._q3).invert().premultiply(this._upperQuat);
@@ -630,17 +1180,22 @@ export class Arm {
     }
 
     const sinHalf = Math.sqrt(this._q4.x ** 2 + this._q4.y ** 2 + this._q4.z ** 2);
-    const torque = this._v.set(0, 0, 0);
+    const error = this._tb.set(0, 0, 0);
     if (sinHalf > 1e-6) {
       const angle = 2 * Math.atan2(sinHalf, this._q4.w);
-      torque.set(this._q4.x, this._q4.y, this._q4.z)
-        .multiplyScalar((angle / sinHalf) * t.armKpRot * UPPER_TORQUE_SCALE * this.power);
+      error.set(this._q4.x, this._q4.y, this._q4.z).multiplyScalar(angle / sinHalf);
     }
-    const av = this.upper.angvel();
+    const kp = t.armKpRot * UPPER_TORQUE_SCALE * this.power;
     const kd = t.armKdRot * UPPER_TORQUE_SCALE * this.power;
+    const av = this.upper.angvel();
+    const torque = this._v.copy(error).multiplyScalar(kp);
     torque.x -= av.x * kd;
     torque.y -= av.y * kd;
     torque.z -= av.z * kd;
+
+    this.boundRoll(
+      torque, this._ta.set(0, 1, 0).applyQuaternion(this._q3), error, av,
+      kp, kd, this.upperRoll + this.foreRoll + this.foreSwing * sin2, rollGain);
 
     const cap = t.maxTorque * UPPER_TORQUE_SCALE * this.power;
     const tmag = torque.length();
@@ -761,18 +1316,19 @@ export class Arm {
     elbow.position.y = this.upperHalf;
     this.upperMesh.add(elbow);
 
-    // A hand around the grip. The weapon is welded to the forearm rather than
-    // held, so without one the sword grows out of a tapered stump.
-    const hand = handMesh(fore.radius * 1.22, skin);
-    hand.position.y = this.foreHalf;
-    this.foreMesh.add(hand);
-
     this.group.add(this.upperMesh, this.foreMesh);
 
     const built = this.weapon.build();
     this.bladeMesh = built.group;
     this.glow = built.glow;
     this.group.add(this.bladeMesh);
+
+    // A hand around the grip, or the weapon grows out of a tapered stump. It
+    // rides the weapon rather than the forearm, so a turn of the grip turns
+    // the hand with it: the forearm is drawn round, and its own twist along
+    // its length would not show anyway.
+    const hand = handMesh(fore.radius * 1.22, skin);
+    this.bladeMesh.add(hand);
 
     this.ghostMesh = buildGhostMesh(this.build.scale);
     this.group.add(this.ghostMesh);
@@ -834,7 +1390,7 @@ export class Arm {
     this.ghostMesh.visible = t.showGhost;
     if (t.showGhost) {
       this.ghostMesh.position.copy(this._ghostPos);
-      this.ghostMesh.quaternion.copy(this._ghostQuat);
+      this.ghostMesh.quaternion.copy(this._bladeQuat);
     }
   }
 
@@ -867,7 +1423,7 @@ export class Arm {
     this.armPitch = clamp(pitch, PITCH_MIN, PITCH_MAX);
     this.reach = this.reachAt(reachFraction);
     this.roll = clamp(roll, ROLL_MIN, ROLL_MAX);
-    this.computeGhost(t);
+    this.computeGhost(t, true);
 
     this._probeHand.copy(this._ghostPos);
     // The weapon continues the forearm's +Y, so the target forearm orientation
@@ -1039,10 +1595,15 @@ export class Arm {
     }
     this.caps.length = 0;
     this.limp = false;
-    this.armYaw = 0.30;
-    this.armPitch = -0.30;
+    this.armYaw = REST_YAW;
+    this.armPitch = REST_PITCH;
     this.reach = clamp(this.build.armLength * 0.793, this.minReach, this.maxReach);
     this.roll = 0;
+    this.snapIntent();
+    this.twistTarget = 0;
+    this.slackenGrip();
+    this._handAccel.set(0, 0, 0);
+    this._accelPrimed = false;
     this.setTell(0);
     this.computeGhost(t);
 
@@ -1078,7 +1639,7 @@ export class Arm {
   /**
    * Cut the arm off. `shoulder` takes the whole limb, `elbow` takes the
    * forearm and the sword with it; either way the fighter is disarmed, because
-   * the blade is welded to the hand and the hand is no longer attached to
+   * the blade is held in the hand and the hand is no longer attached to
    * anything that can be driven.
    */
   sever(where: "shoulder" | "elbow"): WoundEnd[] {
@@ -1103,7 +1664,7 @@ export class Arm {
     // The face it came off: the shoulder on the body, or the elbow on what is
     // left of the arm.
     const socket: WoundEnd = where === "shoulder"
-      ? { object: this.fighter.mesh, local: this.build.shoulderLocal.clone() }
+      ? { object: this.fighter.shoulderBall, local: new THREE.Vector3() }
       : { object: this.upperMesh, local: new THREE.Vector3(0, this.upperHalf, 0) };
 
     // Clear the accumulated drive forces, or they keep pushing after the cut.
@@ -1130,10 +1691,24 @@ export class Arm {
     const limb = (t.armMass / 2) * this.build.massScale;
     this.upper.collider(0)?.setMass(limb);
     this.fore.collider(0)?.setMass(limb);
+    this.measureLimbs();
+    this.setWeaponMass(t.bladeMass);
+  }
 
-    const ratio = t.bladeMass / this.weapon.mass;
-    this.weaponColliders.forEach((c, i) => c.setMass(this.weapon.parts[i].mass * ratio));
-    this.weaponMass = t.bladeMass;
+  /**
+   * Give the weapon body its mass, whole: every part's, distributed as the
+   * weapon declares, rescaled to `total`. See `weaponMassProperties`.
+   */
+  private setWeaponMass(total: number): void {
+    const mp = weaponMassProperties(this.weapon, total);
+    this.blade.setAdditionalMassProperties(
+      total,
+      { x: mp.com.x, y: mp.com.y, z: mp.com.z },
+      { x: mp.principal.x, y: mp.principal.y, z: mp.principal.z },
+      { x: mp.frame.x, y: mp.frame.y, z: mp.frame.z, w: mp.frame.w },
+      true,
+    );
+    this.weaponMass = total;
   }
 
   /**
@@ -1143,6 +1718,46 @@ export class Arm {
    */
   get liveWeaponMass(): number {
     return this.weaponMass;
+  }
+
+  /**
+   * Rewrite a drive's push about one bone's own length.
+   *
+   * `torque` is the drive as computed, `kp·error − kd·ω`. Its component along
+   * `axis` is replaced by the same law with gains no larger than an explicit
+   * step on `inertia` stays stable under, scaled by `gain`.
+   */
+  private boundRoll(
+    torque: THREE.Vector3, axis: THREE.Vector3, error: THREE.Vector3,
+    spin: { x: number; y: number; z: number },
+    kp: number, kd: number, inertia: number, gain: number,
+  ): void {
+    const dt = this.phys.world.timestep;
+    const kpRoll = gain * Math.min(kp, (ROLL_STIFFNESS_LIMIT * inertia) / (dt * dt));
+    const kdRoll = gain * Math.min(kd, (ROLL_DAMPING_LIMIT * inertia) / dt);
+    const e = error.dot(axis);
+    const w = spin.x * axis.x + spin.y * axis.y + spin.z * axis.z;
+    torque.addScaledVector(axis, (kpRoll - kp) * e - (kdRoll - kd) * w);
+  }
+
+  /** The limb's own roll inertias and swings, which `boundRoll` sizes itself from. */
+  private measureLimbs(): void {
+    this.fore.recomputeMassPropertiesFromColliders();
+    this.upper.recomputeMassPropertiesFromColliders();
+    // A single capsule each, which Rapier gets right.
+    this.foreRoll = this.fore.principalInertia().y;
+    this.upperRoll = this.upper.principalInertia().y;
+    this.foreSwing = this.fore.mass() * (this.foreLen / 2) ** 2;
+    this.upperSwing = this.upper.mass() * (this.upperLen / 2) ** 2;
+  }
+
+  /** The angle between the upper arm and the forearm, radians: 0 is straight. */
+  private elbowBend(): number {
+    const uq = this.upper.rotation();
+    const fq = this.fore.rotation();
+    const a = this._bendA.set(0, 1, 0).applyQuaternion(this._bendQ.set(uq.x, uq.y, uq.z, uq.w));
+    const b = this._bendB.set(0, 1, 0).applyQuaternion(this._bendQ.set(fq.x, fq.y, fq.z, fq.w));
+    return a.angleTo(b);
   }
 
   /** Elbow flexion, for the HUD. */
@@ -1186,6 +1801,15 @@ function buildGhostMesh(scale: number): THREE.Group {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Hold one axis of a tracker inside a range, killing any motion out of it. */
+function pin(track: Tracker, i: number, lo: number, hi: number): void {
+  const v = track.pos[i];
+  if (v < lo || v > hi) {
+    track.pos[i] = clamp(v, lo, hi);
+    track.vel[i] = 0;
+  }
 }
 
 /** Fold an angle into (-pi, pi]. */

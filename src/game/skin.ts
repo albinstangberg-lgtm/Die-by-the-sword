@@ -105,8 +105,8 @@ export function jointBall(
 /**
  * A hand: a flattened blob at the wrist.
  *
- * Small, because it is scenery -- the weapon is welded to the forearm and the
- * hand is not a body in the simulation at all. Without one the sword grows
+ * Small, because it is scenery -- the weapon turns in a grip at the end of the
+ * forearm and the hand is not a body in the simulation at all. Without one the sword grows
  * straight out of a tapered stump, which is the single thing that most gave
  * away that this was a pile of capsules.
  */

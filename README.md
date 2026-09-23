@@ -11,12 +11,16 @@ swings back. Stage 5 gave you something to fight that is not a copy of you: an
 orc with an axe and a goblin with a spear, both bound by the same physics, both
 telling you what they are about to do before they do it. Stage 6 stops them
 sharing a room — there are three now, with doors between them — and makes a cut
-look like one.
+look like one. Since then the body has learned to get out of its own arm's way:
+the chest turns ahead of a swing, the shoulder slides round the ribs, the head
+watches the blade, the feet step under a turn, the arm no longer goes straight
+through the chest to get across it, and the forearm twists to keep the edge
+where you put it.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 114 checks, no browser needed
+npm run smoke    # headless physics harness — 143 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -59,8 +63,8 @@ goes exactly where you point. Turn on *show ghost hand* in the panel and it is
 the cyan wireframe.
 
 **2. A physical arm.** Upper arm on a spherical shoulder, forearm on a hinged
-elbow, weapon welded to the hand. Dynamic bodies with real mass, subject to
-gravity, inertia and collision.
+elbow, weapon in a grip that turns about the forearm's length. Dynamic bodies
+with real mass, subject to gravity, inertia and collision.
 
 **3. A force-limited PD controller** dragging the real hand toward the ghost:
 
@@ -84,6 +88,65 @@ IK is used here, but only to compute the *target pose* — never to place the ar
 The physical limb still has to get there under a clamped force and frequently
 cannot. That failure is the mechanic. An IK-driven arm would put the hand on
 target every frame and the blade would pass through the wall.
+
+### The body around the arm
+
+The arm is simulated; the trunk it hangs from used to be a rigid block locked to
+your facing. The arm cannot collide with its own body — it would snag on its own
+shoulder every step — so nothing stopped a cross-body cut going straight through
+the chest: measured against the body you can see, twenty centimetres in. [`posture.ts`](src/game/posture.ts) and
+[`clearance.ts`](src/game/clearance.ts) are the layer that moves the body
+instead.
+
+- **The chest leads.** It turns toward the swing from the *intent* — the ghost's
+  aim plus seventy milliseconds of its velocity — so it is most of the way round
+  before the physical hand, which always lags the ghost, crosses in front of it.
+- **The shoulder girdle makes room.** Reaching across, the shoulder slides
+  forward and round the ribs; raised, it lifts; straining against a bind, it
+  shrugs. Moving the shoulder is done by moving the joint's *anchor*, never the
+  limb: the solver carries the arm after it like any other constraint.
+- **Secondary motion.** The chest leans into a chop and a thrust, bends with a
+  sweep, and bends *against* the hand's acceleration for a moment as a swing
+  gets going and after it as the swing is stopped — the arm's reaction on the
+  body, which is most of what separates a swung sword from a posed one. The head
+  follows your blade; an opponent's follows you.
+- **Clearance, in two layers that agree.** The ghost is solved clear of the
+  trunk: the elbow is swivelled round the shoulder-to-hand line the least it has
+  to be, only when it has to be, by a search that asks where the elbow can get
+  *from where it is* without passing through the ribs. A soft repulsion on the
+  real limb catches what the target cannot foresee — a lagging flick, a shove.
+  It starts at the body's surface, the target keeps a buffer off it, so an arm
+  that has arrived is touching nothing.
+- **The forearm twists.** The weapon turns in the grip about the forearm's
+  length — pronation and supination — toward the edge your aim and your roll
+  asked for. So when the clearance has to move the elbow, the edge no longer
+  goes with it, and a roll toward your own chest no longer stops dead at the
+  ribs: the elbow stops there and the forearm turns the rest of the way, as a
+  real one does. It turns where the edge faces, not where the blade points;
+  that would take a wrist. The grip is the joint's own motor, pushed only as
+  hard as `grip twist` allows.
+- **Flicks travel the arc.** A flick used to teleport the ghost two radians round
+  the shoulder, and the drive dragged the hand along the straight chord to it —
+  which runs inside the arm's reach. The followed intent now passes anything a
+  hand does at a human speed straight through, rounds off only what no arm could
+  do, and waits for an arm that has fallen far behind rather than running away
+  from it.
+- **The hips take their time, the feet stay put.** The spine takes a turn fast,
+  the hips take their share slowly underneath, and the feet stay planted while
+  the hips turn over them — until they are wound up too far, and then the
+  leading foot steps, then the other.
+
+Three rules keep all of it from costing the arm anything. What makes room for
+the arm — the chest's turn, the hips, the shoulder sliding round the ribs —
+reads *intent*, never the physical arm, so the body leads a swing instead of
+trailing it; only the lean, bend and shrug also react to the real hand's
+acceleration and the drive's strain, and those are clamped small and sprung, so
+they can nudge the shoulder but never steer your aim. Your aim stays in the
+hull's frame, so turning the chest moves the shoulder and nothing else: the
+hand still goes where you pointed. And a held aim settles into one posture, so
+the probes an opponent aims with solve against the body it will actually have. Set `torso lead`, `secondary motion`
+and `clearance` to 0 in the panel to get the old rigid block back and see what
+it was doing.
 
 ### Damage
 
@@ -372,7 +435,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Fifteen things the physics taught us
+## Twenty-two things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -445,7 +508,7 @@ in twenty-five seconds for one and a half points of damage. Take the sweep out
 and the same 7 m/s runs down the shaft instead of across it.
 
 **Aiming one end of a thrust is aiming none of it.** Even with the sweep gone,
-extending the arm swings the elbow through a large angle and the weapon welded to
+extending the arm swings the elbow through a large angle and the weapon held along
 the forearm swings with it — so a thrust that only aims its *end* pose arrives
 rotating about the hand, and the point's whole velocity is again at right angles
 to the shaft. Solving the aim at both the wound-up reach *and* the extended one
@@ -498,7 +561,73 @@ off at once. Sight decides whether it can *keep* coming; a separate, short
 notice range decides whether it starts. Two numbers, because they are two
 questions.
 
-And one about the harness rather than the game:
+**A symmetric blade is not a symmetric arm.** Either edge cuts, so the angular
+drive used to take whichever of the target orientation and its half-turn was
+nearer. For a hinged elbow the half-turn is a backwards-bent arm — with the hand
+and the forearm's direction fixed, the elbow point is fixed too — so whenever a
+swing left the swivel a quarter turn behind, the drive chose a pose the joint
+limit forbids. At exactly a quarter turn the two tied and the torque reversed
+every step, pinning the arm there, saturated, while the elbow drifted straight;
+at straight the arm's inertia about its own length is almost nothing, the chain
+flipped over, and the forearm spun at 150-170 rad/s. That was the snap on a
+flick, and it was also why the orc's and the goblin's arms trailed even a slow
+sweep by fifteen to forty centimetres. Without the fold the arm swivels round
+the way a shoulder can, and arrives.
+
+**A target that teleports is chased along the chord.** The drive pulls the hand
+in a straight line to wherever the ghost is. Two radians round the shoulder,
+that line runs inside the arm's own reach: the elbow folds shut on the way and
+has to be hauled out straight at the far end. Moving the target along the arc
+fixes the target; an orc hauling an axe still trailed it by three quarters of a
+metre and caught up in a straight line through its own chest, which is why the
+followed intent also waits for an arm that has fallen that far behind.
+
+**The collider is not the body you can see.** Clearance was first measured
+against the round torso collider plus a buffer. The chest is drawn 13cm deep
+and the collider is 17cm all round, and near the shoulder the collider is
+fatter still — so the guard itself, with the elbow resting against the side of
+the ribs where elbows live, counted as buried. The search swivelled it out, and
+since swivel is edge roll, a right-drag toward the body turned the edge by one
+degree. The clearance is now measured against the drawn body, flattened front to
+back — and since the forearm can twist, it no longer has to choose between the
+ribs and the edge: the elbow goes where the body lets it, and the grip turns the
+edge back to where it was asked.
+
+**Nearest is not reachable.** The swivel search first answered "which clear
+swivel is nearest the design" every step. When the clear arc on the elbow's side
+of the chest closed up mid-swing it chose the one on the far side, and the
+elbow's target swung straight through the ribs to get there. The live search
+scores where the elbow could go by how much deeper than it already is it would
+have to pass on the way, and by how far it is from the design and how long the
+trip; probes, which ask about a held aim with no "on the way", still take the
+nearest.
+
+**Rapier adds up a body's inertia the wrong way round.** Combining several
+colliders on one body, it moves each part's inertia to the shared centre of mass
+with m(|d|² + d dᵀ) where the parallel-axis theorem says m(|d|² − d dᵀ). Two
+parts offset *along* a weapon therefore gave it inertia *about* its own length
+that no rod has: the spear came out at 0.265 kg·m² against a true 0.00016, as
+hard to roll in the hand as to swing end over end, and the axe much the same. A
+one-part sword was untouched, and with the weapon welded to the forearm nothing
+could tell — the phantom mass just sat in the arm's roll and steadied it. It
+surfaced only when the weapon could turn in the grip. The weapons now carry
+mass properties worked out in `weapons.ts`, which agree with Rapier to the
+fifth decimal wherever Rapier was right. Taking the phantom away exposed what it
+had been hiding: an arm's roll about its own length is nearly weightless with
+the elbow straight, and a freshly spawned goblin spun its spear at 900 rad/s.
+The angular drives now let go of that roll near straight and keep it within what
+its inertia can take everywhere else.
+
+**Something light enough can only be held by an implicit drive.** A sword weighs
+0.0002 kg·m² about its own length. An explicit servo on that is stable only if
+it is soft, and soft, the grip could not hold against a spear shaft dragged
+along the floor — friction at a 1.7cm radius rolled it up to 880 rad/s. Every
+other drive here is an explicit, clamped torque; the grip is the joint's own
+motor, which Rapier solves implicitly. Its motors take no force limit, but a
+velocity servo is limited anyway: asked for no more than 20 rad/s, a weapon that
+cannot turn at all — wedged in stone — gets `grip twist` of torque and no more.
+
+And two about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
 aim by the whole measured error, on both axes, including the part of the error
@@ -512,6 +641,15 @@ a limb off while aiming at the *chest* — the one part of the dummy with no joi
 to cut it off at — and passed only because the drifting aim kept taking the head
 off by accident.
 
+**A test can lean on a bug.** "A spear held by the butt cannot be steered" asked
+for a fifth less swing than one held choked up, measured as the weapon's whole
+change of orientation — spin about its own shaft included. That spin was
+Rapier's phantom inertia, and it grew with how far out the mass sat, so it did
+much of the test's work. Measured on where the spear *points*, on the same
+physics, the butt-held spear lagged by 0.81: never a fifth. The test now
+measures the direction and asks for a tenth; the claim was true, just smaller
+than the number that proved it.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -522,6 +660,15 @@ Everything in the panel is live and saves to your browser. The four that matter:
 | `arm strength` | How much of the limb's own weight the fighter holds up. At 0 the sword drags the arm down. |
 | `max torque` | The angular budget. Keep it modest — a torque the swing can exhaust is what makes the blade trail. |
 | `blade mass` | Inertia. Affects how hard the sword is to start and stop, not how hard it is to hold. It is a TOTAL: the weapon's own mass distribution is preserved and rescaled to it. |
+
+The body adds four: `torso lead` (how far the chest turns ahead of a swing and
+the shoulder slides to make room; 0 is the old rigid block), `secondary motion`
+(lean, bend, shrug and head-tracking), `hips' share of a turn`, and `clearance
+from body` (how far the target pose keeps off your own chest and hips; 0 turns
+off both clearance layers). The angular drive adds `grip twist`: how hard the
+forearm turns the weapon in the hand — weak, and a blow on the flat knocks the
+edge off line. Input adds `flick speed cap` and `flick accel cap`: anything
+slower reaches the arm untouched.
 
 Movement adds `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
@@ -549,7 +696,7 @@ Some things look like bugs and are not:
   setting its velocity each step, so it shoves lighter things aside rather than
   being stopped by them. Fighters do collide with each other.
 - **The blade hangs angled up out of the hand.** The elbow sits below the
-  shoulder-to-hand line, so the forearm — and the weapon welded to it — points
+  shoulder-to-hand line, so the forearm — and the weapon held along it — points
   upward. From a 1.51m shoulder the tip rests around 2.1m. Rolling the edge over
   with a right-drag swings the arm's plane and brings it down; it is the single
   biggest thing to learn.
@@ -564,6 +711,21 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **At the far end of a cross-body cut the blade points back over your left
+  shoulder.** The weapon continues the forearm, so with the elbow kept out of
+  the ribs, that is where the forearm — and the blade — point. The forearm's
+  twist keeps the *edge* where you asked, but where the blade *points* would
+  take a wrist, and there is not one yet. The alternative was the elbow in the
+  ribs.
+- **The weapon turns in your hand when you have not rolled it.** That is the
+  forearm keeping your edge while the body moves your elbow. Watch `grip twist`
+  in the HUD: at the guard it reads zero.
+- **Hold a big turn and you step.** The hips come round under the chest, and
+  when they have turned far enough over planted feet, the feet follow — the
+  leading one first.
+- **The ghost hand can wait for your arm.** With *show ghost hand* on, a flick
+  shows the ghost sweeping round rather than jumping, and slowing when a heavy
+  blade falls far behind it. The mouse's aim itself is never touched.
 - **Standing still gets you killed in well under a minute** by whichever of
   them you have walked in on, and much faster by both, if you manage to bring
   them together.
@@ -582,10 +744,13 @@ src/
   input/input.ts     pointer lock, accumulated deltas
   game/
     arm.ts           THE MECHANIC — read this one first
-    weapons.ts       sword, axe, spear: masses, leverage, what bites
+    weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
     species.ts       the bestiary — a size, a weapon, a list of attacks
     anatomy.ts       one set of proportions, scaled to any body
-    fighter.ts       torso, locomotion and the jump
+    fighter.ts       torso, locomotion, the jump, and feet that stay planted
+    posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze
+    clearance.ts     keeping the arm out of its own chest and hips
+    motion.ts        the two filters: intent that must not lag, bodies that should
     arena.ts         three rooms built to be hit, and the doors between them
     combatant.ts     a fighter, their arm, and what a cut does to them
     ai.ts            the opponent's brain — mouse deltas, nothing more
@@ -602,8 +767,8 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 114 checks in under a
-minute. It asserts the claim the design rests on: that the arm tracks the mouse
+and `Ai` against Rapier in Node — no WebGL, no browser, 143 checks in a few
+minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
 
@@ -611,8 +776,8 @@ It also drives a real scripted swing all the way through to a severed limb,
 takes a fighter apart and checks that a reset puts it back together — measuring
 the joint anchor rather than the limb, because an arm attached to nothing still
 hovers roughly where it belongs — jumps a fighter and measures where it lands, checks that an axe really does come
-round slower than a sword on the same arm and the same command, proves that a
-spear held by the butt cannot be steered where a choked-up one can, and runs
+round slower than a sword on the same arm and the same command, shows that a
+spear held by the butt swings markedly less far than a choked-up one, and runs
 half a minute of live fight against each species to check it closes, swings,
 lands cuts, and never exceeds the reach of its own arm.
 
@@ -622,6 +787,23 @@ which cannot see you neither moves nor swings — and that walking into its room
 starts a fight. And it takes a joint apart to check that the cut reports two
 faces to bleed from, that both are attached to something that is placed every
 frame, and that the droplets fall, land and go.
+
+And it holds the body to its claims: that the same cross-body sweep that went
+twenty centimetres into the old rigid chest now stays out of it at three
+heights, and a flick only grazes it; that nothing pushes on an arm at rest; that
+the original flick no longer spins the forearm; that a drag reaches the ghost
+with no lag at all and a flick arrives within a few frames; that the chest is
+more than half turned before the hand crosses it while the hips lag behind;
+that planted feet do not skate, step one at a time, and end up under the hips;
+and that the shoulder a held aim settles to is exactly the one the opponent's
+probes predicted.
+
+And the grip: that each weapon's inertia is where its iron is — a one-part
+sword exactly as Rapier had it, a spear that rolls like a shaft rather than a
+pole; that the grip sits square when nothing needs it; that a roll toward the
+chest turns the edge all the way without the body pushing or the hand moving;
+that an elbow moved out of the ribs no longer takes the edge with it; and that
+ten seconds of the worst input there is never spins a weapon in anyone's hand.
 
 ## Stack
 

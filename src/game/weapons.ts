@@ -100,6 +100,99 @@ export function heft(massKg: number): number {
   return Math.sqrt(Math.max(0.05, massKg) / REFERENCE_MASS);
 }
 
+/** A weapon's mass properties: centre of mass, and inertia along its principal axes. */
+export interface MassProperties {
+  com: THREE.Vector3;
+  /** Principal moments, kg·m², along the axes of `frame`. */
+  principal: THREE.Vector3;
+  /** Rotation from the weapon's own axes to its principal ones. */
+  frame: THREE.Quaternion;
+  /** Moment about the weapon's own length: what twisting it in the hand has to turn. */
+  twist: number;
+}
+
+/**
+ * A weapon's mass properties, worked out here rather than left to Rapier.
+ *
+ * Rapier combines a body's colliders with the parallel-axis term the wrong
+ * way round: it adds m(|d|² + d dᵀ) where the theorem says m(|d|² − d dᵀ),
+ * so two parts offset ALONG an axis give the body inertia ABOUT that axis
+ * that no rod has. Measured, the spear -- a shaft and a head, both on its
+ * centre line -- came out 0.265 kg·m² about its own length against a true
+ * 0.00015: as hard to roll in the hand as it is to swing end over end. The
+ * axe, shaft and offset head, the same. A single-part sword is untouched,
+ * which is why nothing noticed until the weapon could turn in the grip.
+ *
+ * So the weapon's colliders carry no mass of their own, and the body is given
+ * this: each part's own inertia from its shape, moved to the common centre of
+ * mass the right way, and diagonalised. Parts sit on the weapon's Y-Z plane,
+ * so X is always a principal axis and only the Y-Z block needs turning.
+ * `total` rescales the declared part masses, preserving their distribution.
+ */
+export function weaponMassProperties(weapon: Weapon, total = weapon.mass): MassProperties {
+  const scale = total / weapon.mass;
+  const com = new THREE.Vector3();
+  for (const p of weapon.parts) com.add(new THREE.Vector3(0, p.at, p.atZ ?? 0).multiplyScalar(p.mass * scale));
+  com.multiplyScalar(1 / total);
+
+  let xx = 0, yy = 0, zz = 0, yz = 0;
+  for (const p of weapon.parts) {
+    const m = p.mass * scale;
+    const own = partInertia(p, m);
+    const dy = p.at - com.y;
+    const dz = (p.atZ ?? 0) - com.z;
+    // Parallel axis: m(|d|² E − d dᵀ), for d = (0, dy, dz).
+    xx += own.x + m * (dy * dy + dz * dz);
+    yy += own.y + m * dz * dz;
+    zz += own.z + m * dy * dy;
+    yz += -m * dy * dz;
+  }
+
+  // Turn the Y-Z block onto its principal axes: a rotation about X, kept
+  // within an eighth of a turn so the weapon's length stays the Y axis --
+  // any order of moments is valid, but this is the one that reads.
+  const phi = Math.abs(yy - zz) < 1e-12
+    ? Math.sign(yz) * Math.PI / 4
+    : 0.5 * Math.atan((2 * yz) / (yy - zz));
+  const c = Math.cos(phi), s = Math.sin(phi);
+  const y1 = yy * c * c + 2 * yz * s * c + zz * s * s;
+  const z1 = yy * s * s - 2 * yz * s * c + zz * c * c;
+  return {
+    com,
+    principal: new THREE.Vector3(xx, y1, z1),
+    frame: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), phi),
+    // A twist turns the weapon about the line through the HAND, not through
+    // its own centre, and an axe's head holds that centre off the line.
+    twist: yy + total * (com.x * com.x + com.z * com.z),
+  };
+}
+
+/**
+ * One part's inertia about its own centre, along the weapon's axes -- the
+ * same shapes the colliders are: a box of these half-extents, or a capsule of
+ * this radius whose cylinder is as long as the collider built from it.
+ */
+function partInertia(p: WeaponPart, m: number): THREE.Vector3 {
+  if (p.shape === "box") {
+    const x = p.halfThick, y = p.halfLen, z = p.halfWidth;
+    return new THREE.Vector3(m * (y * y + z * z) / 3, m * (x * x + z * z) / 3, m * (x * x + y * y) / 3);
+  }
+  // A cylinder and two hemispherical caps, sharing the mass by volume.
+  const r = p.halfThick;
+  const h = Math.max(0.005, p.halfLen - p.halfThick);
+  const cyl = Math.PI * r * r * 2 * h;
+  const caps = (4 / 3) * Math.PI * r * r * r;
+  const mc = (m * cyl) / (cyl + caps);
+  const ms = m - mc;
+  const axial = mc * r * r / 2 + ms * 2 * r * r / 5;
+  // Each cap's own moment across the axis is 83/320 m r², and its centre sits
+  // 3r/8 beyond the end of the cylinder.
+  const across = mc * (3 * r * r + 4 * h * h) / 12
+    + ms * (83 * r * r) / 320
+    + ms * (h + 3 * r / 8) ** 2;
+  return new THREE.Vector3(across, axial, across);
+}
+
 // -----------------------------------------------------------------------------
 
 const STEEL = () => new THREE.MeshStandardMaterial({

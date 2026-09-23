@@ -9,6 +9,9 @@ import {
   stumpCap,
 } from "./skin";
 import type { WoundEnd } from "./blood";
+import { Pose, Posture, type PostureDrive } from "./posture";
+import { wrap, type Capsule } from "./clearance";
+import { smoothstep } from "./motion";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -17,7 +20,8 @@ import type { WoundEnd } from "./blood";
  * thing that walks, bumps into walls and holds the figure up, and blades pass
  * straight through it. Everything you can see or cut hangs off it:
  *
- *   torso, pelvis   colliders on the hull itself — they move with it rigidly
+ *   torso, pelvis   colliders on the hull itself, posed by the posture layer:
+ *                   the hips turn and the chest turns, leans and bends on top
  *   head, off-arm   real jointed bodies, held in place by weak PD controllers,
  *                   severable exactly as the practice dummy's limbs are
  *   legs            kinematic: posed by a walk cycle, hittable, never simulated
@@ -49,6 +53,20 @@ const OFF_ARM_KP = 9, OFF_ARM_KD = 1.4;
 /** Clamped like the sword arm's drive: no controller here gets unbounded authority. */
 const POSE_MAX_TORQUE = 40;
 
+/**
+ * The trunk as the sword arm keeps out of it: the body you can see, not the
+ * rounder collider a blade hits.
+ *
+ * The drawn chest is an oval shell a little inside the collider -- its top
+ * cap is 14cm where the collider's is 17 -- and shallower front to back than
+ * it is wide. Fitted by eye against the shells in skin.ts, erring toward
+ * letting an elbow brush the ribs rather than toward holding it off them.
+ */
+const TRUNK_FIT = 0.92;
+const CHEST_FLAT = 1.2;
+const HIPS_FLAT = 1.1 / 0.92;
+const UP = new THREE.Vector3(0, 1, 0);
+
 /** Stride timing: radians of hip swing per metre travelled. */
 const STRIDE = 2.6;
 const STRIDE_SWING = 0.55;
@@ -67,6 +85,29 @@ const JUMP_LOCK = 0.14;
 const GROUND_PROBE = 0.1;
 /** How fast the legs fold up once there is nothing to stand on. */
 const TUCK_RATE = 9;
+
+// --- planted feet -------------------------------------------------------------
+//
+// Standing still, the feet stay where they are while the hips turn over them
+// -- the thighs rotating in their sockets, as they do -- and only when the
+// hips have wound too far round does a foot pick up and step. Walking,
+// turning on the spot or in the air, every stride replants them anyway and
+// they simply follow the hips. None of this is physical and none of it is on
+// the arm's side of anything: the feet can never hold the body back.
+
+/** How far the hips may turn over a planted foot before it has to step. */
+const PLANT_SLACK = 0.18;
+/** Beyond this the foot slides rather than let the leg wind up any further. */
+const PLANT_MAX = 0.7;
+/** How long one step takes, seconds. */
+const STEP_TIME = 0.22;
+/** A stepping foot lands a little past square: the feet lead a turn. */
+const STEP_LEAD = 0.25;
+/** A step's knee lift and hip flex at its height, radians. */
+const STEP_KNEE = 0.5;
+const STEP_HIP = 0.28;
+/** How fast feet that are being replanted anyway catch up with the hips. */
+const FOLLOW_RATE = 12;
 
 export interface FighterPart {
   name: string;
@@ -90,6 +131,42 @@ export class Fighter {
 
   readonly parts: FighterPart[] = [];
 
+  /**
+   * How the trunk is carried around the sword arm: see posture.ts.
+   *
+   * The hull stays the one thing that faces, walks and collides. The posture
+   * turns what hangs on it -- hips, then chest -- and moves the anchors the
+   * shoulder, the neck and the off arm are jointed to.
+   */
+  readonly posture: Posture;
+  /** Everything that turns with the hips: pelvis, belt, legs. */
+  readonly pelvis = new THREE.Object3D();
+  /** Everything above the waist: chest, shoulders, neck. A child of the hips. */
+  readonly chest = new THREE.Object3D();
+  /**
+   * The sword shoulder this step, hull-local. The sword arm's joint anchor
+   * and the root its ghost hand is solved from -- the two must be one point.
+   */
+  readonly shoulderAnchor = new THREE.Vector3();
+  /**
+   * A world point to look at instead of the blade, or null. An opponent
+   * watches the one it is fighting; the player watches their own sword.
+   */
+  focus: THREE.Vector3 | null = null;
+  /** The ball the sword arm hangs from, carried by the shoulder girdle. */
+  shoulderBall!: THREE.Object3D;
+  private readonly swordShoulderRest = new THREE.Vector3();
+  private offShoulderBall!: THREE.Object3D;
+  /** The torso collider's centre at rest, hull-local height. */
+  private torsoY = 0;
+  private pelvisY = 0;
+  private readonly renderPose = new Pose();
+  /** Chest and hips as capsules, world space, rebuilt on request. */
+  private readonly trunk: Capsule[] = [
+    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0, forward: new THREE.Vector3(), flat: 1 },
+    { a: new THREE.Vector3(), b: new THREE.Vector3(), radius: 0, forward: new THREE.Vector3(), flat: 1 },
+  ];
+
   private head!: RAPIER.RigidBody;
   private offUpper!: RAPIER.RigidBody;
   private offFore!: RAPIER.RigidBody;
@@ -109,7 +186,17 @@ export class Fighter {
     sign: number;
     hip: number; knee: number;
     prevHip: number; prevKnee: number;
+    /** Which way the foot points, WORLD yaw: planted means this holds still. */
+    foot: number;
+    /** The leg's turn in the hip socket, relative to the pelvis, and last step's. */
+    turn: number; prevTurn: number;
+    /** Progress through a step, 0..1, or -1 when the foot is planted. */
+    step: number;
+    stepFrom: number; stepTo: number;
   }[] = [];
+  /** Commanded ground speed and turn rate, for whether the feet are planted. */
+  private gait = 0;
+  private turning = 0;
 
   private stridePhase = 0;
   private headMesh!: THREE.Object3D;
@@ -158,6 +245,11 @@ export class Fighter {
     this.groundReach = HULL.height / 2 + GROUND_PROBE * build.scale;
     this.sightRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
 
+    this.posture = new Posture(build);
+    this.mesh.add(this.pelvis);
+    this.pelvis.add(this.chest);
+    this.chest.position.y = this.posture.waistY;
+
     this.clothMat = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.85 });
     this.skinMat = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.68 });
     this.markMat = new THREE.MeshStandardMaterial({ color: palette.mark, roughness: 0.6 });
@@ -195,8 +287,9 @@ export class Fighter {
       belly: 1.12,
     });
     chest.scale.set(1.16, 1, 0.86);
+    this.torsoY = local((STANDING.waist + STANDING.neck) / 2);
     this.collider = this.rigidPart("torso", "body", SEGMENT.torso,
-      local((STANDING.waist + STANDING.neck) / 2), 0, chest);
+      this.torsoY, 0, chest, this.chest, this.posture.waistY);
 
     const hips = shellMesh(this.clothMat, {
       from: SEGMENT.pelvis.radius * 0.98,
@@ -205,8 +298,9 @@ export class Fighter {
       belly: 1.06,
     });
     hips.scale.set(1.1, 1, 0.92);
+    this.pelvisY = local((STANDING.hip + STANDING.waist) / 2);
     this.rigidPart("pelvis", "hips", SEGMENT.pelvis,
-      local((STANDING.hip + STANDING.waist) / 2), 0, hips);
+      this.pelvisY, 0, hips, this.pelvis, 0);
 
     this.buildTrunkFill();
     this.buildHead();
@@ -214,6 +308,8 @@ export class Fighter {
     this.buildLegs();
 
     this.scene.add(this.mesh);
+    // The anchors the arm is about to be jointed to have to exist first.
+    this.applyPosture();
     // Kinematic bodies are born at the origin. Reaching their real position
     // through setNextKinematicTranslation would imply crossing the room in one
     // step, at a couple of hundred metres per second.
@@ -224,10 +320,17 @@ export class Fighter {
   // Construction
   // ---------------------------------------------------------------------------
 
-  /** A collider mounted straight onto the hull — moves with it, cannot come off. */
+  /**
+   * A collider mounted straight onto the hull — moves with it, cannot come off.
+   *
+   * `y` is hull-local, where the collider goes. The mesh goes on `parent`,
+   * which sits `parentY` up the hull, so it rides whatever that part of the
+   * body is doing.
+   */
   private rigidPart(
     name: string, label: string, seg: { radius: number; length: number; mass: number },
     y: number, x: number, mesh: THREE.Object3D,
+    parent: THREE.Object3D, parentY: number,
   ): RAPIER.Collider {
     const { rapier, world } = this.phys;
     const half = Math.max(0.01, seg.length / 2 - seg.radius);
@@ -241,8 +344,8 @@ export class Fighter {
       this.body,
     );
 
-    mesh.position.set(x, y, 0);
-    this.mesh.add(mesh);
+    mesh.position.set(x, y - parentY, 0);
+    parent.add(mesh);
 
     this.parts.push({ name, label, collider, mesh });
     return collider;
@@ -251,22 +354,30 @@ export class Fighter {
   /**
    * The lumps that make a trunk continuous: shoulders, hips, a neck, a belt.
    *
-   * They hang off the body group rather than off the torso mesh, because that
-   * mesh is scaled to an oval cross-section and a ball inherited into that
-   * scale comes out an egg.
+   * They hang off the chest and hip groups rather than off the torso mesh,
+   * because that mesh is scaled to an oval cross-section and a ball inherited
+   * into that scale comes out an egg.
    */
   private buildTrunkFill(): void {
     const { segment: SEGMENT, standing: STANDING } = this.build;
     const local = this.build.local;
+    const waist = this.posture.waistY;
 
     for (const sx of [-1, 1]) {
       const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.clothMat, 0.8);
-      shoulder.position.set(sx * STANDING.shoulderX, local(STANDING.shoulder), 0);
-      this.mesh.add(shoulder);
+      shoulder.position.set(sx * STANDING.shoulderX, local(STANDING.shoulder) - waist, 0);
+      this.chest.add(shoulder);
+      // The sword side is +X: it is the one the shoulder girdle carries about.
+      if (sx > 0) {
+        this.shoulderBall = shoulder;
+        this.swordShoulderRest.copy(shoulder.position);
+      } else {
+        this.offShoulderBall = shoulder;
+      }
 
       const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.clothMat, 0.92);
       hip.position.set(sx * STANDING.hipX, local(STANDING.hip), 0);
-      this.mesh.add(hip);
+      this.pelvis.add(hip);
     }
 
     // A neck, and it has to be long enough to see: shoulders sit a hand's
@@ -277,8 +388,8 @@ export class Fighter {
       to: SEGMENT.head.radius * 0.56,
       length: SEGMENT.head.radius * 2.0,
     });
-    neck.position.y = local(STANDING.neck) - SEGMENT.head.radius * 0.35;
-    this.mesh.add(neck);
+    neck.position.y = local(STANDING.neck) - SEGMENT.head.radius * 0.35 - waist;
+    this.chest.add(neck);
 
     const belt = new THREE.Mesh(
       new THREE.CylinderGeometry(
@@ -289,7 +400,7 @@ export class Fighter {
     belt.scale.set(1.1, 1, 0.92);
     belt.position.y = local(STANDING.waist);
     belt.castShadow = true;
-    this.mesh.add(belt);
+    this.pelvis.add(belt);
   }
 
   private buildHead(): void {
@@ -336,19 +447,23 @@ export class Fighter {
     const { segment: SEGMENT, standing: STANDING } = this.build;
     const local = this.build.local;
 
+    // Both of these ride on the chest, so they are built where the posture
+    // has the chest right now; `applyPosture` keeps them there after.
     if (name === "head") {
+      const a = this.onChest(0, local(STANDING.neck), _anchor);
       return world.createImpulseJoint(
         rapier.JointData.spherical(
-          { x: 0, y: local(STANDING.neck), z: 0 },
+          { x: a.x, y: a.y, z: a.z },
           { x: 0, y: -SEGMENT.head.length / 2, z: 0 },
         ),
         this.body, this.head, true,
       );
     }
     if (name === "offShoulder") {
+      const a = this.onChest(-STANDING.shoulderX, local(STANDING.shoulder), _anchor);
       return world.createImpulseJoint(
         rapier.JointData.spherical(
-          { x: -STANDING.shoulderX, y: local(STANDING.shoulder), z: 0 },
+          { x: a.x, y: a.y, z: a.z },
           { x: 0, y: -SEGMENT.upperArm.length / 2, z: 0 },
         ),
         this.body, this.offUpper, true,
@@ -457,7 +572,7 @@ export class Fighter {
     for (const sign of [-1, 1]) {
       const hipPivot = new THREE.Object3D();
       hipPivot.position.set(sign * STANDING.hipX, local(STANDING.hip), 0);
-      this.mesh.add(hipPivot);
+      this.pelvis.add(hipPivot);
 
       // A leg hangs off its pivot, so here +Y is the joint end and -Y the far
       // one -- the opposite way round from an arm, and worth stating twice.
@@ -510,11 +625,17 @@ export class Fighter {
       };
 
       const side = sign < 0 ? "left" : "right";
+      // Turn in the socket first, then swing: the leg bends along the way
+      // its foot points, not the way the hips do.
+      hipPivot.rotation.order = "YXZ";
+
       this.legs.push({
         thigh: kinematic(SEGMENT.thigh, `${side} thigh`, thighMesh),
         shin: kinematic(SEGMENT.shin, `${side} shin`, shinMesh),
         hipPivot, kneePivot, thighMesh, shinMesh, sign,
         hip: 0, knee: 0, prevHip: 0, prevKnee: 0,
+        foot: this.yaw, turn: 0, prevTurn: 0,
+        step: -1, stepFrom: 0, stepTo: 0,
       });
     }
   }
@@ -523,12 +644,18 @@ export class Fighter {
   // Per-step
   // ---------------------------------------------------------------------------
 
-  /** Called once per fixed step, before the physics step. */
-  update(keys: Keys, t: Tuning, dt: number): void {
+  /**
+   * Called once per fixed step, before the physics step.
+   *
+   * `drive` is what the sword arm wants of the body this step -- null when
+   * there is no arm to carry, and the trunk relaxes back to square.
+   */
+  update(keys: Keys, t: Tuning, dt: number, drive: PostureDrive | null = null): void {
     let turn = 0;
     if (keys.turnLeft) turn += 1;
     if (keys.turnRight) turn -= 1;
     this.yaw += turn * t.turnSpeed * dt;
+    this.turning = Math.abs(turn) * t.turnSpeed;
     this.body.setRotation(
       { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, false);
@@ -587,8 +714,54 @@ export class Fighter {
     const target = this.grounded ? 0 : 1;
     this.tuck += (target - this.tuck) * Math.min(1, TUCK_RATE * dt);
     if (this.grounded) this.stridePhase += Math.hypot(v.x, v.z) * dt * STRIDE;
-    this.poseLegs();
+    this.gait = Math.hypot(v.x, v.z);
+
+    this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt);
+    this.applyPosture();
+    this.poseLegs(false, dt);
     this.holdPose(dt);
+  }
+
+  /**
+   * A point on the chest, given where it would be on a square-standing body
+   * (hull-local), placed where the posture has the chest now.
+   */
+  private onChest(x: number, y: number, out: THREE.Vector3): THREE.Vector3 {
+    return this.posture.chestPoint(this.posture.pose,
+      out.set(x, y - this.posture.waistY, 0), out);
+  }
+
+  /**
+   * Move everything physical that rides on the chest to where the posture
+   * has put it: the torso's collider, and the anchors the neck, the off arm
+   * and -- through `shoulderAnchor` -- the sword arm are jointed to.
+   *
+   * Moving a joint anchor is how a shoulder girdle moves here. The limb is
+   * not placed; its joint is, and the solver carries the limb after it at
+   * whatever the joint can do, the same as every other constraint in the
+   * body. The posture's springs keep each step's move to a few millimetres.
+   */
+  private applyPosture(): void {
+    const pose = this.posture.pose;
+    const { standing: STANDING } = this.build;
+    const local = this.build.local;
+
+    this.posture.swordShoulder(pose, this.shoulderAnchor);
+
+    const centre = this.onChest(0, this.torsoY, _anchor);
+    this.collider.setTranslationWrtParent({ x: centre.x, y: centre.y, z: centre.z });
+    const q = this.posture.chestQuat(pose, this._q);
+    this.collider.setRotationWrtParent({ x: q.x, y: q.y, z: q.z, w: q.w });
+
+    const head = this.parts.find((p) => p.name === "head");
+    if (head?.joint) {
+      head.joint.setAnchor1(this.onChest(0, local(STANDING.neck), _anchor));
+    }
+    const off = this.parts.find((p) => p.name === "offShoulder");
+    if (off?.joint) {
+      off.joint.setAnchor1(
+        this.onChest(-STANDING.shoulderX, local(STANDING.shoulder), _anchor));
+    }
   }
 
   /**
@@ -643,13 +816,24 @@ export class Fighter {
     ) === null;
   }
 
-  /** Weak PD keeping head and off-arm in a living posture rather than limp. */
+  /**
+   * Weak PD keeping head and off-arm in a living posture rather than limp.
+   *
+   * Both are held relative to the CHEST, not the hull, so they turn and lean
+   * with it; the head then turns on top of that toward whatever the posture's
+   * gaze has found. Being PD targets rather than placements, both arrive a
+   * little late and a little past -- which is the secondary motion.
+   */
   private holdPose(_dt: number): void {
     const hullRot = this.body.rotation();
-    this._q2.set(hullRot.x, hullRot.y, hullRot.z, hullRot.w);
+    this._q2.set(hullRot.x, hullRot.y, hullRot.z, hullRot.w)
+      .multiply(this.posture.chestQuat(this.posture.pose, this._q));
 
     if (!this.severed("head")) {
-      this.alignTo(this.head, this._q.copy(this._q2), HEAD_KP, HEAD_KD);
+      const p = this.posture;
+      this._q.copy(this._q2).multiply(
+        this._qe.setFromEuler(this._euler.set(p.gazePitch, p.gazeYaw, p.gazeRoll, "YXZ")));
+      this.alignTo(this.head, this._q, HEAD_KP, HEAD_KD);
     }
     // The off arm rests slightly forward and across, the way a free hand sits
     // when the other one is holding a sword.
@@ -694,12 +878,77 @@ export class Fighter {
     body.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
   }
 
+  /**
+   * Keep the feet where they are while the hips turn over them, and step
+   * when they have turned too far.
+   *
+   * Each foot holds a WORLD heading. Standing, it holds still, and the leg
+   * turns in its hip socket by however far the hips have come round. Past
+   * `PLANT_SLACK` the more wound-up foot -- the one on the side of the turn,
+   * if they are level -- picks up and steps to a little past square, then
+   * the other; only one is ever off the floor. Walking, turning, or in the
+   * air, the feet are being replanted every stride regardless and just
+   * follow the hips.
+   */
+  private plantFeet(teleport: boolean, dt: number): void {
+    const facing = this.yaw + this.posture.pose.pelvis;
+    const moving = this.gait > 0.05 || this.turning > 0.1 || this.tuck > 0.3;
+    let busy = false;
+
+    for (const leg of this.legs) {
+      leg.prevTurn = leg.turn;
+      if (teleport) {
+        leg.foot = facing;
+        leg.step = -1;
+      } else if (moving) {
+        leg.step = -1;
+        leg.foot += wrap(facing - leg.foot) * Math.min(1, FOLLOW_RATE * dt);
+      } else if (leg.step >= 0) {
+        leg.step = Math.min(1, leg.step + dt / STEP_TIME);
+        leg.foot = leg.stepFrom
+          + (leg.stepTo - leg.stepFrom) * smoothstep(0, 1, leg.step);
+        if (leg.step >= 1) leg.step = -1; else busy = true;
+      }
+      // However it got here, a leg does not wind up past what a hip allows:
+      // the foot slides instead.
+      const off = wrap(facing - leg.foot);
+      if (Math.abs(off) > PLANT_MAX) leg.foot = facing - Math.sign(off) * PLANT_MAX;
+    }
+
+    if (!teleport && !moving && !busy) {
+      let pick: (typeof this.legs)[number] | null = null;
+      let most = PLANT_SLACK;
+      for (const leg of this.legs) {
+        const off = wrap(facing - leg.foot);
+        // A turn to the left is led by the left foot, which is sign -1.
+        const leads = Math.sign(off) === -leg.sign ? 1e-3 : 0;
+        if (Math.abs(off) + leads > most) {
+          most = Math.abs(off) + leads;
+          pick = leg;
+        }
+      }
+      if (pick) {
+        const off = wrap(facing - pick.foot);
+        pick.step = 0;
+        pick.stepFrom = pick.foot;
+        pick.stepTo = pick.foot + off * (1 + STEP_LEAD);
+      }
+    }
+
+    for (const leg of this.legs) leg.turn = wrap(leg.foot - facing);
+  }
+
   /** Swing the legs and push the kinematic colliders to match. */
-  private poseLegs(teleport = false): void {
+  private poseLegs(teleport = false, dt = 0): void {
     const p = this.body.translation();
     this.mesh.position.set(p.x, p.y, p.z);
     this.mesh.rotation.set(0, this.yaw, 0);
+    // This step's posture, not an interpolated one: the leg colliders are
+    // pushed from these matrices, and the hips carry the legs.
+    this.placeTrunk(this.posture.pose);
     this.mesh.updateMatrixWorld(true);
+
+    this.plantFeet(teleport, dt);
 
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
@@ -713,19 +962,25 @@ export class Fighter {
       const tuckHip = leg.sign > 0 ? 0.85 : -0.3;
       const tuckKnee = leg.sign > 0 ? 1.25 : 0.55;
 
+      // A foot in the middle of a step comes up off the floor and goes down
+      // again: the same bend the stride uses, on a half-sine.
+      const lift = leg.step >= 0 ? Math.sin(Math.PI * leg.step) : 0;
+
       leg.prevHip = leg.hip;
       leg.prevKnee = leg.knee;
-      leg.hip = swing + (tuckHip - swing) * this.tuck;
-      leg.knee = bend + (tuckKnee - bend) * this.tuck;
+      leg.hip = swing + (tuckHip - swing) * this.tuck + STEP_HIP * lift;
+      leg.knee = bend + (tuckKnee - bend) * this.tuck + STEP_KNEE * lift;
       // A teleport has no previous pose worth easing out of.
       if (teleport) {
         leg.prevHip = leg.hip;
         leg.prevKnee = leg.knee;
+        leg.prevTurn = leg.turn;
       }
 
       // The colliders are pushed from these matrices below, so the pose used
       // here has to be this step's, not a fraction of the way into it.
       leg.hipPivot.rotation.x = leg.hip;
+      leg.hipPivot.rotation.y = leg.turn;
       leg.kneePivot.rotation.x = leg.knee;
     }
     this.mesh.updateMatrixWorld(true);
@@ -819,13 +1074,12 @@ export class Fighter {
     // on the body group; an off forearm comes off the upper arm above it.
     const upper = this.parts.find((p) => p.name === "offShoulder");
     const socket: WoundEnd = part.name === "head"
-      ? { object: this.mesh, local: new THREE.Vector3(0, local(STANDING.neck), 0) }
+      ? {
+          object: this.chest,
+          local: new THREE.Vector3(0, local(STANDING.neck) - this.posture.waistY, 0),
+        }
       : part.name === "offShoulder"
-        ? {
-            object: this.mesh,
-            local: new THREE.Vector3(
-              -STANDING.shoulderX, local(STANDING.shoulder), 0),
-          }
+        ? { object: this.offShoulderBall, local: new THREE.Vector3() }
         : {
             object: upper?.mesh ?? this.mesh,
             local: new THREE.Vector3(0, SEGMENT.upperArm.length / 2, 0),
@@ -839,16 +1093,72 @@ export class Fighter {
     return out.set(p.x, p.y, p.z);
   }
 
-  /** Shoulder anchor in world space. */
+  /** Set the hips, the chest and the sword shoulder's ball to a posture. */
+  private placeTrunk(pose: Pose): void {
+    this.pelvis.rotation.y = pose.pelvis;
+    this.chest.rotation.set(-pose.lean, pose.spine, pose.bend, "YXZ");
+    this.posture.clavicle(pose, this.shoulderBall.position).add(this.swordShoulderRest);
+  }
+
+  /**
+   * Sword shoulder in world space: the arm's joint anchor, where the posture
+   * has put it this step.
+   */
   shoulderWorld(out: THREE.Vector3): THREE.Vector3 {
+    return this.hullToWorld(this.shoulderAnchor, out);
+  }
+
+  /**
+   * Where the sword shoulder would be for a given posture, in world space.
+   * For the arm's probes, which ask about a held aim rather than this step.
+   */
+  shoulderWorldFor(pose: Pose, out: THREE.Vector3): THREE.Vector3 {
+    return this.hullToWorld(this.posture.swordShoulder(pose, out), out);
+  }
+
+  /**
+   * The trunk, as the sword arm has to keep out of it: the chest and the hips
+   * as capsules in world space, for a given posture.
+   *
+   * The same capsules the torso and pelvis colliders are, placed the same
+   * way -- the chest turned, leant and bent about the waist, the hips upright
+   * -- so what the arm keeps clear of is exactly what a blade would hit.
+   * Returns an array this fighter reuses; read it before asking again.
+   */
+  trunkCapsules(pose: Pose): readonly Capsule[] {
+    const { segment: SEGMENT } = this.build;
+    const [chest, hips] = this.trunk;
+
+    const half = Math.max(0.01, SEGMENT.torso.length / 2 - SEGMENT.torso.radius);
+    const centre = this.posture.chestPoint(pose,
+      _anchor.set(0, this.torsoY - this.posture.waistY, 0), _anchor);
+    const chestQ = this.posture.chestQuat(pose, _q);
+    const axis = _axis.set(0, half, 0).applyQuaternion(chestQ);
+    this.hullToWorld(_end.copy(centre).sub(axis), chest.a);
+    this.hullToWorld(_end.copy(centre).add(axis), chest.b);
+    chest.radius = SEGMENT.torso.radius * TRUNK_FIT;
+    chest.flat = CHEST_FLAT;
+    chest.forward.set(0, 0, -1).applyQuaternion(chestQ).applyAxisAngle(UP, this.yaw);
+
+    const hipHalf = Math.max(0.01, SEGMENT.pelvis.length / 2 - SEGMENT.pelvis.radius);
+    this.hullToWorld(_end.set(0, this.pelvisY - hipHalf, 0), hips.a);
+    this.hullToWorld(_end.set(0, this.pelvisY + hipHalf, 0), hips.b);
+    hips.radius = SEGMENT.pelvis.radius * TRUNK_FIT;
+    hips.flat = HIPS_FLAT;
+    hips.forward.set(0, 0, -1).applyAxisAngle(UP, this.yaw + pose.pelvis);
+    return this.trunk;
+  }
+
+  /** A hull-local point in world space. Safe to alias. */
+  private hullToWorld(l: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
     const p = this.body.translation();
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
-    const l = this.build.shoulderLocal;
+    const x = l.x, y = l.y, z = l.z;
     return out.set(
-      p.x + l.x * cos + l.z * sin,
-      p.y + l.y,
-      p.z + -l.x * sin + l.z * cos,
+      p.x + x * cos + z * sin,
+      p.y + y,
+      p.z + -x * sin + z * cos,
     );
   }
 
@@ -871,10 +1181,20 @@ export class Fighter {
    */
   applyPose(alpha: number): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+    this.placeTrunk(this.renderPose.lerpPoses(this.posture.prev, this.posture.pose, a));
     for (const leg of this.legs) {
       leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
+      leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a;
       leg.kneePivot.rotation.x = leg.prevKnee + (leg.knee - leg.prevKnee) * a;
     }
+  }
+
+  /**
+   * Where each foot points (world yaw) and whether it is mid-step, left then
+   * right. For the harness and the HUD: allocates, so not for the step loop.
+   */
+  get feet(): { yaw: number; stepping: boolean }[] {
+    return this.legs.map((l) => ({ yaw: l.foot, stepping: l.step >= 0 }));
   }
 
   /**
@@ -899,6 +1219,13 @@ export class Fighter {
     this.coyote = COYOTE;
     this.jumpLock = 0;
     this.grounded = true;
+    this.gait = 0;
+    this.turning = 0;
+    for (const leg of this.legs) {
+      leg.foot = 0;
+      leg.turn = leg.prevTurn = 0;
+      leg.step = -1;
+    }
     this.body.setTranslation({ x: spawn.x, y: spawn.y, z: spawn.z }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
@@ -927,6 +1254,13 @@ export class Fighter {
     place(this.offFore,
       local(STANDING.shoulder - SEGMENT.upperArm.length - SEGMENT.foreArm.length / 2),
       -STANDING.shoulderX, false);
+
+    // Square again before anything is jointed back on to it: a rebuilt joint
+    // takes its anchor from wherever the chest is.
+    this.posture.reset();
+    this.focus = null;
+    this.applyPosture();
+    this.placeTrunk(this.posture.pose);
 
     this.reattach();
   }
@@ -966,6 +1300,9 @@ export class Fighter {
 const _p = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
+const _anchor = new THREE.Vector3();
+const _axis = new THREE.Vector3();
+const _end = new THREE.Vector3();
 
 /** Drive a kinematic body from wherever its mesh has been posed to. */
 function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = false): void {

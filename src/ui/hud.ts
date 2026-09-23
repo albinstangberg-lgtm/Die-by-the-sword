@@ -41,6 +41,7 @@ export class Hud {
   private satBar!: HTMLElement;
   private tip!: HTMLElement;
   private elbow!: HTMLElement;
+  private twist!: HTMLElement;
   private roll!: HTMLElement;
   private fps!: HTMLElement;
   private dummyEl!: HTMLElement;
@@ -63,6 +64,7 @@ export class Hud {
           <dt>drive saturation</dt><dd data-f="sat">0%</dd>
           <dt>tip speed</dt><dd data-f="tip">0.0 m/s</dd>
           <dt>elbow</dt><dd data-f="elbow">0°</dd>
+          <dt>grip twist</dt><dd data-f="twist">0°</dd>
           <dt>blade angle error</dt><dd data-f="roll">0°</dd>
         </dl>
         <div class="bar" data-b="err"><i style="width:0%"></i></div>
@@ -103,6 +105,7 @@ export class Hud {
     this.sat = f("sat");
     this.tip = f("tip");
     this.elbow = f("elbow");
+    this.twist = f("twist");
     this.roll = f("roll");
     this.fps = f("fps");
     this.rollHint = f("rollhint");
@@ -116,6 +119,7 @@ export class Hud {
     this.sat.textContent = `${Math.round(s.saturation * 100)}%`;
     this.tip.textContent = `${s.tipSpeed.toFixed(1)} m/s`;
     this.elbow.textContent = `${Math.round((s.elbow * 180) / Math.PI)}°`;
+    this.twist.textContent = `${Math.round((s.twist * 180) / Math.PI)}°`;
     this.roll.textContent = `${Math.round((s.roll * 180) / Math.PI)}°`;
     this.fps.textContent = `${frameMs.toFixed(1)} ms`;
 
