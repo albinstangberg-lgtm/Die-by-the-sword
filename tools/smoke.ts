@@ -1593,6 +1593,52 @@ async function theFeetStayPlantedThenStep(): Promise<void> {
   check("only one foot is ever off the floor", !bothUp, bothUp ? "both at once" : "one at a time");
 }
 
+async function theKneesBendLikeAPersons(): Promise<void> {
+  console.log("\nthe knees bend forward, not back");
+  // A human knee comes forward of the line from hip to ankle as it bends; a
+  // horse's hind leg (which is what a sign slip gives you) goes behind it.
+  // Measured in the pelvis's frame, where forward is -Z, across a walk and a
+  // jump -- the stride and the tuck bend the knee from different code.
+  const rig = await buildRig();
+  rig.step(30);
+  const pelvis = rig.fighter.pelvis;
+  const legs = () => pelvis.children
+    .filter((c) => c.type === "Object3D" && c !== rig.fighter.chest)
+    .map((hipPivot) => {
+      // The knee pivot is the hip pivot's bare Object3D child; the shin mesh
+      // hangs half its length below it.
+      const knee = hipPivot.children.find((c) => c.type === "Object3D")!;
+      const shin = knee.children[0];
+      const h = pelvis.worldToLocal(hipPivot.getWorldPosition(new THREE.Vector3()));
+      const k = pelvis.worldToLocal(knee.getWorldPosition(new THREE.Vector3()));
+      const a = pelvis.worldToLocal(
+        knee.localToWorld(new THREE.Vector3(0, shin.position.y * 2, 0)));
+      // How far the knee sits ahead of the straight hip-ankle line, square
+      // to it in the side view, so it stays sound however high the foot is.
+      const uy = a.y - h.y, uz = a.z - h.z;
+      const vy = k.y - h.y, vz = k.z - h.z;
+      return (uy * vz - uz * vy) / Math.hypot(uy, uz);
+    });
+
+  let forward = 0;
+  let backward = 0;
+  const sample = () => {
+    rig.fighter.applyPose(1);
+    for (const ahead of legs()) {
+      forward = Math.max(forward, ahead);
+      backward = Math.max(backward, -ahead);
+    }
+  };
+  for (let i = 0; i < 120; i++) { rig.step(1, { ...NO_KEYS, forward: true }); sample(); }
+  for (let i = 0; i < 8; i++) { rig.step(1, { ...NO_KEYS, jump: true }); sample(); }
+  for (let i = 0; i < 40; i++) { rig.step(1); sample(); }
+
+  check("a bent knee comes forward of the hip-ankle line", forward > 0.05,
+    `up to ${(forward * 100).toFixed(1)}cm ahead`);
+  check("no knee ever bends backward", backward < 0.002,
+    `at most ${(backward * 100).toFixed(2)}cm behind`);
+}
+
 async function theBodyAgreesWithItsProbes(): Promise<void> {
   console.log("\nthe body the probes assume is the body you get");
   // An opponent aims by asking the arm's kinematic probes where its weapon
@@ -1815,6 +1861,7 @@ async function run(): Promise<void> {
   await slowInputIsUntouched();
   await theChestLeadsTheArm();
   await theFeetStayPlantedThenStep();
+  await theKneesBendLikeAPersons();
   await theBodyAgreesWithItsProbes();
   await thePostureIsInterpolated();
 

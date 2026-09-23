@@ -981,7 +981,11 @@ export class Fighter {
       // here has to be this step's, not a fraction of the way into it.
       leg.hipPivot.rotation.x = leg.hip;
       leg.hipPivot.rotation.y = leg.turn;
-      leg.kneePivot.rotation.x = leg.knee;
+      // `knee` is flexion, positive when bent. The hip's +x swings the thigh
+      // forward, and the knee folds the other way -- the foot goes back -- so
+      // the same number turns the shin through minus it. Forward here would
+      // bend the leg like a horse's hind leg.
+      leg.kneePivot.rotation.x = -leg.knee;
     }
     this.mesh.updateMatrixWorld(true);
 
@@ -1185,7 +1189,7 @@ export class Fighter {
     for (const leg of this.legs) {
       leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
       leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a;
-      leg.kneePivot.rotation.x = leg.prevKnee + (leg.knee - leg.prevKnee) * a;
+      leg.kneePivot.rotation.x = -(leg.prevKnee + (leg.knee - leg.prevKnee) * a);
     }
   }
 
