@@ -27,10 +27,12 @@ import {
 import { AXE, SPEAR, SWORD } from "../src/game/weapons";
 import { Ai } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
+import { Pose } from "../src/game/posture";
 import type { Fighter } from "../src/game/fighter";
 import { Impacts, type Impact } from "../src/game/impacts";
 import { Blood } from "../src/game/blood";
 import { DEFAULTS, type Tuning } from "../src/tuning";
+import { intrusion } from "../src/game/clearance";
 import { KEY_MAP, type Keys } from "../src/input/input";
 
 const STEP = 1 / 60;
@@ -1230,8 +1232,10 @@ async function everyMovingPartIsInterpolated(): Promise<void> {
 
   const hip = (alpha: number) => {
     rig.fighter.applyPose(alpha);
-    // The hip pivot is the first child added under the body group per leg.
-    const pivots = rig.fighter.mesh.children.filter((c) => c.type === "Object3D");
+    // The hip pivots hang off the pelvis, alongside the chest -- the other
+    // bare Object3D there, and the one that is not a leg.
+    const pivots = rig.fighter.pelvis.children.filter(
+      (c) => c.type === "Object3D" && c !== rig.fighter.chest);
     return pivots[0].rotation.x;
   };
 
@@ -1367,6 +1371,255 @@ async function severingBleeds(): Promise<void> {
 
 // -----------------------------------------------------------------------------
 
+// --- the body around the arm ----------------------------------------------------
+
+/**
+ * How far the sword arm is inside its own trunk, metres: the elbow, the middle
+ * of the forearm and the hand, against the body as it is drawn (see
+ * clearance.ts). The arm cannot collide with its own torso, so nothing but the
+ * posture and clearance passes keeps this at zero.
+ */
+function armInTrunk(rig: Rig): number {
+  const arm = rig.arm;
+  const seg = rig.fighter.build.segment;
+  const caps = rig.fighter.trunkCapsules(rig.fighter.posture.pose);
+  const uq = arm.upper.rotation();
+  const up = arm.upper.translation();
+  const elbow = new THREE.Vector3(0, seg.upperArm.length / 2, 0)
+    .applyQuaternion(new THREE.Quaternion(uq.x, uq.y, uq.z, uq.w))
+    .add(new THREE.Vector3(up.x, up.y, up.z));
+  const fp = arm.fore.translation();
+  return Math.max(
+    intrusion(elbow, seg.foreArm.radius * 1.15, caps, 0),
+    intrusion(new THREE.Vector3(fp.x, fp.y, fp.z), seg.foreArm.radius, caps, 0),
+    intrusion(arm.handPosition, seg.foreArm.radius * 1.22, caps, 0),
+  );
+}
+
+/** Settle at a pitch and a reach fraction, with the arm off to the right. */
+function windUp(rig: Rig, pitch: number, reach: number): void {
+  const [lo, hi] = rig.arm.reachLimits;
+  const want = lo + (hi - lo) * reach;
+  for (let i = 0; i < 120; i++) {
+    const aim = rig.arm.aim;
+    rig.input.dx = -(-0.4 - aim.yaw) / rig.tuning.sensitivity * 0.25;
+    rig.input.dy = -(pitch - aim.pitch) / rig.tuning.sensitivity * 0.25;
+    rig.input.wheel = Math.abs(want - aim.reach) > rig.tuning.reachRate
+      ? Math.sign(want - aim.reach) : 0;
+    rig.step(1);
+  }
+}
+
+/** Sweep across the body to the far left, at `rate` rad/s or all at once. */
+function sweepAcross(rig: Rig, rate: number | "flick", steps: number, each?: () => void): void {
+  const target = Arm.LIMITS.yaw[1];
+  for (let i = 0; i < steps; i++) {
+    const gap = target - rig.arm.aim.yaw;
+    const move = rate === "flick" ? (i === 0 ? gap : 0) : Math.min(gap, rate * STEP);
+    rig.input.dx = -move / rig.tuning.sensitivity;
+    rig.step(1);
+    each?.();
+  }
+}
+
+async function theArmKeepsOutOfItsOwnChest(): Promise<void> {
+  console.log("\nthe sword arm keeps out of its own chest");
+  // The arm has no collision with its own body -- it would snag on its own
+  // shoulder -- so a cross-body cut went straight through the chest: the
+  // designed elbow pole points back, which for an arm aimed across the body
+  // is the ribs. Measured before this, twenty centimetres deep.
+  const deepest = async (over: Partial<Tuning>, rate: number | "flick") => {
+    let worst = 0;
+    for (const pitch of [-0.8, -0.3, 0.3]) {
+      const rig = await buildRig(over);
+      windUp(rig, pitch, 0.5);
+      sweepAcross(rig, rate, 100, () => { worst = Math.max(worst, armInTrunk(rig)); });
+    }
+    return worst;
+  };
+
+  const rigid = await deepest({ torsoLead: 0, secondaryMotion: 0, clearance: 0 }, 3);
+  const swept = await deepest({}, 3);
+  const flicked = await deepest({}, "flick");
+
+  check("without the body's help it goes straight through", rigid > 0.1,
+    `${(rigid * 100).toFixed(1)}cm deep with no lead and no clearance (the old behaviour)`);
+  check("a cross-body sweep stays out of the chest", swept < 0.01,
+    `${(swept * 100).toFixed(1)}cm at worst over three heights (want < 1cm)`);
+  check("even a flick only grazes it", flicked < 0.04,
+    `${(flicked * 100).toFixed(1)}cm at worst over three heights (want < 4cm)`);
+
+  const rest = await buildRig();
+  rest.step(120);
+  check("at rest nothing is pushing on the arm", rest.arm.state.clearance === 0,
+    `${(rest.arm.state.clearance * 100).toFixed(2)}cm into the body at the guard`);
+}
+
+async function aFlickDoesNotSnapTheArm(): Promise<void> {
+  console.log("\na flick swings the arm round, it does not snap it");
+  // The original snap. A flick to the far left left the arm's swivel more than
+  // a quarter turn behind its target; the angular drive then folded the error
+  // onto an orientation only a backwards-bent elbow could reach, jammed there
+  // saturated while the elbow dragged straight, and at straight -- where the
+  // arm's inertia about its own length is nearly nothing -- spun the forearm
+  // at 150-170 rad/s.
+  const rig = await buildRig();
+  windUp(rig, 0.3, 0.5);
+  let spin = 0;
+  sweepAcross(rig, "flick", 90, () => {
+    const q = rig.arm.fore.rotation();
+    const along = new THREE.Vector3(0, 1, 0)
+      .applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+    const w = rig.arm.fore.angvel();
+    spin = Math.max(spin, Math.abs(w.x * along.x + w.y * along.y + w.z * along.z));
+  });
+  check("the forearm never spins about its own length", spin < 40,
+    `peak ${spin.toFixed(1)} rad/s (it was 150-170)`);
+  check("and the arm arrives", rig.arm.state.trackingError < 0.05,
+    `tracking error ${rig.arm.state.trackingError.toFixed(3)} m after 1.5s`);
+}
+
+async function slowInputIsUntouched(): Promise<void> {
+  console.log("\nintent reaches the arm untouched, and a flick is only rounded off");
+  const rig = await buildRig();
+  rig.step(60);
+
+  // A brisk drag, 3 rad/s: nothing about this may lag.
+  let worst = 0;
+  for (let i = 0; i < 30; i++) {
+    rig.input.dx = -(3 * STEP) / rig.tuning.sensitivity;
+    rig.step(1);
+    if (i >= 3) worst = Math.max(worst, Math.abs(rig.arm.postureDrive()!.yaw - rig.arm.aim.yaw));
+  }
+  check("a drag passes straight through", worst < 1e-9,
+    `followed intent within ${worst.toExponential(1)} rad of the mouse`);
+
+  // A flick: two radians in one frame. It is spread over a few frames, not
+  // dropped, and not slowed for long -- a real arm needs about as long to get
+  // round anyway, which is the point of rounding it off.
+  rig.input.dx = (2 / rig.tuning.sensitivity);
+  let arrived = -1;
+  for (let i = 0; i < 60 && arrived < 0; i++) {
+    rig.step(1);
+    if (Math.abs(rig.arm.postureDrive()!.yaw - rig.arm.aim.yaw) < 0.01) arrived = i + 1;
+  }
+  check("a flick arrives within a few frames", arrived > 0 && arrived <= 18,
+    `followed intent caught the mouse in ${arrived} steps (${(arrived * STEP * 1000).toFixed(0)} ms)`);
+}
+
+async function theChestLeadsTheArm(): Promise<void> {
+  console.log("\nthe chest turns ahead of the arm, the hips behind it");
+  const rig = await buildRig();
+  windUp(rig, -0.3, 0.5);
+
+  const chest: number[] = [];
+  const hips: number[] = [];
+  const handX: number[] = [];
+  const p = new THREE.Vector3();
+  sweepAcross(rig, 6, 120, () => {
+    chest.push(rig.fighter.posture.pose.chestYaw);
+    hips.push(rig.fighter.posture.pose.pelvis);
+    // The hand across the hull's own centre line: +X is the sword side.
+    rig.fighter.position(p);
+    const yaw = rig.fighter.yaw;
+    const dx = rig.arm.handPosition.x - p.x;
+    const dz = rig.arm.handPosition.z - p.z;
+    handX.push(dx * Math.cos(yaw) - dz * Math.sin(yaw));
+  });
+
+  // Both start wound back the other way -- the arm was held out to the right,
+  // and a body turns away with a backswing -- so progress is measured from
+  // where each started, not from square.
+  const progress = (series: number[], i: number) =>
+    (series[i] - series[0]) / (series[series.length - 1] - series[0]);
+  const crossed = handX.findIndex((x) => x < 0);
+  const chestThen = crossed > 0 ? progress(chest, crossed) : 0;
+  const hipsThen = crossed > 0 ? progress(hips, crossed) : 1;
+  check("the chest is more than half turned by the time the hand crosses it",
+    crossed > 0 && chestThen > 0.5,
+    `chest ${(chestThen * 100).toFixed(0)}% of the way round when the hand crossed (step ${crossed})`);
+  check("the hips lag well behind it", hipsThen < chestThen * 0.6,
+    `hips ${(hipsThen * 100).toFixed(0)}% of the way round at the same moment`);
+  check("the hips still get there", hips[hips.length - 1] > 0.15,
+    `hips turned ${hips[hips.length - 1].toFixed(2)} rad, chest ${chest[chest.length - 1].toFixed(2)} rad`);
+}
+
+async function theFeetStayPlantedThenStep(): Promise<void> {
+  console.log("\nthe feet stay planted under a turn, then step");
+  const rig = await buildRig();
+  rig.step(60);
+  const start = rig.fighter.feet.map((f) => f.yaw);
+
+  let bothUp = false;
+  let movedEarly = 0;
+  let steps = 0;
+  let wasUp = [false, false];
+  windUp(rig, -0.3, 0.5);
+  sweepAcross(rig, 6, 150, () => {
+    const feet = rig.fighter.feet;
+    if (feet[0].stepping && feet[1].stepping) bothUp = true;
+    feet.forEach((f, i) => { if (f.stepping && !wasUp[i]) steps++; });
+    wasUp = feet.map((f) => f.stepping);
+    if (rig.fighter.posture.pose.pelvis < 0.15) {
+      movedEarly = Math.max(movedEarly, ...feet.map((f, i) => Math.abs(f.yaw - start[i])));
+    }
+  });
+  const facing = rig.fighter.yaw + rig.fighter.posture.pose.pelvis;
+  const off = Math.max(...rig.fighter.feet.map((f) => Math.abs(f.yaw - facing)));
+
+  check("a planted foot does not skate while the hips turn over it", movedEarly < 1e-6,
+    `feet moved ${movedEarly.toFixed(4)} rad before the hips had turned far`);
+  check("held long enough, both feet step round", steps >= 2 && off < 0.12,
+    `${steps} step(s); feet within ${off.toFixed(2)} rad of the hips`);
+  check("only one foot is ever off the floor", !bothUp, bothUp ? "both at once" : "one at a time");
+}
+
+async function theBodyAgreesWithItsProbes(): Promise<void> {
+  console.log("\nthe body the probes assume is the body you get");
+  // An opponent aims by asking the arm's kinematic probes where its weapon
+  // would be. They solve with the posture a held aim SETTLES into, so once the
+  // live body has settled the two must be the same shoulder.
+  const rig = await buildRig();
+  rig.step(30);
+  aimAngles(rig, 1.2, -0.2, 150);
+  const live = rig.fighter.shoulderWorld(new THREE.Vector3());
+  const pose = rig.fighter.posture.steady(rig.arm.aim.yaw, rig.arm.aim.pitch, rig.tuning,
+    new Pose());
+  const steady = rig.fighter.shoulderWorldFor(pose, new THREE.Vector3());
+  check("a held aim settles to the shoulder the probes predict",
+    live.distanceTo(steady) < 0.01,
+    `${(live.distanceTo(steady) * 100).toFixed(2)}cm apart`);
+
+  // What a blade hits and what the arm keeps out of are one chest.
+  const c = rig.fighter.collider.translation();
+  const [chest] = rig.fighter.trunkCapsules(rig.fighter.posture.pose);
+  const mid = chest.a.clone().add(chest.b).multiplyScalar(0.5);
+  check("the torso's collider turns with the drawn chest",
+    mid.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) < 0.005,
+    `${(mid.distanceTo(new THREE.Vector3(c.x, c.y, c.z)) * 1000).toFixed(1)}mm apart`);
+
+  // And the head follows the blade across.
+  check("the head turns to watch the blade", rig.fighter.posture.gazeYaw > 0.1,
+    `gaze ${rig.fighter.posture.gazeYaw.toFixed(2)} rad to the left of the chest`);
+}
+
+async function thePostureIsInterpolated(): Promise<void> {
+  console.log("\nthe trunk is eased between steps like everything else");
+  const rig = await buildRig();
+  windUp(rig, -0.3, 0.5);
+  sweepAcross(rig, 6, 6);
+  const chestYaw = (alpha: number) => {
+    rig.fighter.applyPose(alpha);
+    return rig.fighter.chest.rotation.y + rig.fighter.pelvis.rotation.y;
+  };
+  const a0 = chestYaw(0);
+  const a1 = chestYaw(1);
+  const mid = chestYaw(0.5);
+  check("the chest moves within a step and lands halfway at half a step",
+    Math.abs(a1 - a0) > 1e-3 && Math.abs(mid - (a0 + a1) / 2) < 1e-6,
+    `alpha 0 ${a0.toFixed(4)}, 0.5 ${mid.toFixed(4)}, 1 ${a1.toFixed(4)}`);
+}
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
   await freeArmTracks();
@@ -1403,6 +1656,14 @@ async function run(): Promise<void> {
   await theTestingAreaIsThreeRooms();
   await anOpponentWaitsUntilItSeesYou();
   await severingBleeds();
+
+  await theArmKeepsOutOfItsOwnChest();
+  await aFlickDoesNotSnapTheArm();
+  await slowInputIsUntouched();
+  await theChestLeadsTheArm();
+  await theFeetStayPlantedThenStep();
+  await theBodyAgreesWithItsProbes();
+  await thePostureIsInterpolated();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

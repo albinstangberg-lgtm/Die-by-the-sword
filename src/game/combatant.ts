@@ -130,8 +130,10 @@ export class Combatant {
       this.arm.drive(tuning);          // limp: snapshots motion, applies nothing
       return;
     }
-    this.arm.readInput(input, tuning);
-    this.fighter.update(keys, tuning, dt);
+    this.arm.readInput(input, tuning, dt);
+    // The body first, from the arm's intent, so the shoulder is where this
+    // step's posture has it before the arm solves its ghost from it.
+    this.fighter.update(keys, tuning, dt, this.arm.postureDrive());
     this.arm.drive(tuning);
   }
 

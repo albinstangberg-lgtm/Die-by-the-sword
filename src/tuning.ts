@@ -32,6 +32,44 @@ export interface Tuning {
   invertY: boolean;
   rollSensitivity: number; // radians of edge roll per pixel, held right button
   reachRate: number;   // metres per wheel notch
+  /**
+   * The fastest the ghost hand may sweep round the shoulder, rad/s, and how
+   * hard it may get going, rad/s^2.
+   *
+   * Anything slower than this reaches the arm untouched, with no lag at all;
+   * only a flick is spread over the handful of steps an arm would need. That
+   * matters because a ghost teleported two radians away is chased along the
+   * straight chord, which runs inside the arm's reach and folds the elbow
+   * shut. Well above what the AI's hand does, and above what a real arm can.
+   */
+  flickSpeed: number;
+  flickAccel: number;
+
+  // --- body: how the trunk is carried around the arm (see posture.ts) ---
+  /**
+   * How much the chest turns ahead of the swing and the shoulder girdle
+   * slides to make room for it. 0 is the old rigid block, which the arm
+   * crosses by going straight through; 1 is a body that gets out of its way.
+   */
+  torsoLead: number;
+  /**
+   * Lean, side bend, shrug and head-tracking, as a multiple of the default.
+   * The part of the posture that is juice rather than clearance: 0 turns it
+   * off without touching the lead.
+   */
+  secondaryMotion: number;
+  /**
+   * The hips' share of a turn, 0..1. The spine takes the rest, fast; the hips
+   * take theirs slowly, and the feet stay planted until they cannot.
+   */
+  stanceShare: number;
+  /**
+   * How far off its own chest and hips the sword arm's target pose is kept,
+   * metres at human scale. A soft repulsion on the real limb starts at the
+   * body's surface, inside this. 0 turns both off: the arm has no collision
+   * with its own body, and without these it goes straight through.
+   */
+  clearance: number;
 
   // --- masses (kg) ---
   bladeMass: number;
@@ -77,6 +115,13 @@ export const DEFAULTS: Tuning = {
   invertY: false,
   rollSensitivity: 0.0075,
   reachRate: 0.035,
+  flickSpeed: 18,
+  flickAccel: 320,
+
+  torsoLead: 1,
+  secondaryMotion: 1,
+  stanceShare: 0.4,
+  clearance: 0.015,
 
   bladeMass: 1.4,
   armMass: 4.2,
@@ -121,7 +166,18 @@ export const CONTROLS: Control[] = [
   { group: "Input", key: "rollSensitivity", label: "roll sensitivity", min: 0.0005, max: 0.03, step: 0.0001,
     hint: "Radians of edge roll per pixel while the right button is held." },
   { group: "Input", key: "reachRate", label: "reach / notch  (m)", min: 0.005, max: 0.12, step: 0.005 },
+  { group: "Input", key: "flickSpeed", label: "flick speed cap  (rad/s)", min: 4, max: 80, step: 1,
+    hint: "The fastest the ghost may sweep round the shoulder. Slower input passes through untouched; a flick is spread over a few steps so the arm swings the arc instead of folding across the chord." },
+  { group: "Input", key: "flickAccel", label: "flick accel cap  (rad/s²)", min: 40, max: 3000, step: 10 },
   { group: "Input", key: "invertY", label: "invert Y" },
+
+  { group: "Body", key: "torsoLead", label: "torso lead", min: 0, max: 1.5, step: 0.05,
+    hint: "How far the chest turns ahead of a swing and the shoulder slides round the ribs. At 0 the trunk is a rigid block and a cross-body cut goes through it." },
+  { group: "Body", key: "secondaryMotion", label: "secondary motion", min: 0, max: 2, step: 0.05,
+    hint: "Lean into chops, bend with sweeps, shrug under strain, head following the blade." },
+  { group: "Body", key: "stanceShare", label: "hips' share of a turn", min: 0, max: 0.8, step: 0.05 },
+  { group: "Body", key: "clearance", label: "clearance from body  (m)", min: 0, max: 0.08, step: 0.005,
+    hint: "How far the arm keeps off its own chest and hips. The arm cannot collide with its own body, so at 0 a cross-body cut goes straight through it." },
 
   { group: "Mass & world", key: "bladeMass", label: "blade mass  (kg)", min: 0.2, max: 8, step: 0.1 },
   { group: "Mass & world", key: "armMass", label: "arm mass  (kg)", min: 0.5, max: 20, step: 0.1 },

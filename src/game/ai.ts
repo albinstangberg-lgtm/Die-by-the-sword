@@ -124,6 +124,8 @@ export class Ai implements ArmInput {
 
   private readonly _self = new THREE.Vector3();
   private readonly _foe = new THREE.Vector3();
+  /** Where it is looking: the eyes of whatever it has seen. */
+  private readonly _gaze = new THREE.Vector3();
   private readonly _probe = new THREE.Vector3();
   private readonly _mark = new THREE.Vector3();
   private readonly _was = new THREE.Vector3();
@@ -155,7 +157,13 @@ export class Ai implements ArmInput {
 
   /** Run once per fixed step, before the arm reads its input. */
   think(self: Combatant, foe: Combatant, t: Tuning, dt: number): void {
-    if (self.dead) { this.state = "beaten"; this.idle(); this.showTell(self); return; }
+    if (self.dead) {
+      this.state = "beaten";
+      this.idle();
+      this.showTell(self);
+      self.fighter.focus = null;
+      return;
+    }
 
     self.position(this._self);
     foe.position(this._foe);
@@ -173,6 +181,11 @@ export class Ai implements ArmInput {
     const sighted = self.sees(foe);
     if (sighted && (this.seen > 0 || range < NOTICE)) this.seen = MEMORY;
     else this.seen = Math.max(0, this.seen - dt);
+
+    // Once it has seen you it watches you -- not its own blade, which is what
+    // the player's fighter watches. A head turned toward you is the first
+    // thing that says it has noticed, from further off than any weapon tell.
+    self.fighter.focus = this.seen > 0 ? foe.fighter.eyeWorld(this._gaze) : null;
 
     if (this.seen <= 0) {
       // Holding its post. It does not track you, it does not turn, and it
