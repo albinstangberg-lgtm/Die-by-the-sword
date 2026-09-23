@@ -14,13 +14,13 @@ sharing a room — there are three now, with doors between them — and makes a 
 look like one. Since then the body has learned to get out of its own arm's way:
 the chest turns ahead of a swing, the shoulder slides round the ribs, the head
 watches the blade, the feet step under a turn, the arm no longer goes straight
-through the chest to get across it, and the forearm twists to keep the edge
-where you put it.
+through the chest to get across it, the forearm twists to keep the edge where
+you put it, and the wrist bends to keep the blade pointing where you aimed.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 145 checks, no browser needed
+npm run smoke    # headless physics harness — 148 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -63,8 +63,8 @@ goes exactly where you point. Turn on *show ghost hand* in the panel and it is
 the cyan wireframe.
 
 **2. A physical arm.** Upper arm on a spherical shoulder, forearm on a hinged
-elbow, weapon in a grip that turns about the forearm's length. Dynamic bodies
-with real mass, subject to gravity, inertia and collision.
+elbow, weapon in a hand that turns about its length and bends at the wrist.
+Dynamic bodies with real mass, subject to gravity, inertia and collision.
 
 **3. A force-limited PD controller** dragging the real hand toward the ghost:
 
@@ -122,9 +122,16 @@ instead.
   asked for. So when the clearance has to move the elbow, the edge no longer
   goes with it, and a roll toward your own chest no longer stops dead at the
   ribs: the elbow stops there and the forearm turns the rest of the way, as a
-  real one does. It turns where the edge faces, not where the blade points;
-  that would take a wrist. The grip is the joint's own motor, pushed only as
-  hard as `grip twist` allows.
+  real one does. The grip is the joint's own motor, pushed only as hard as
+  `grip twist` allows.
+- **The wrist bends.** The twist keeps where the edge *faces*; where the blade
+  *points* is the forearm's, and with the elbow moved out of the ribs the
+  forearm points somewhere else — at the far end of a cross-body cut, up to
+  sixty degrees off, back over the other shoulder. The wrist bends the weapon
+  back onto the line you aimed along, up to about fifty degrees, so the blade
+  stays within a degree of it through most of a cross-body cut and within
+  about eight at the very end. Where the body is not in the way it does
+  nothing: the weapon continues the forearm exactly, as it always did.
 - **Flicks travel the arc.** A flick used to teleport the ghost two radians round
   the shoulder, and the drive dragged the hand along the straight chord to it —
   which runs inside the arm's reach. The followed intent now passes anything a
@@ -435,7 +442,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Twenty-two things the physics taught us
+## Twenty-three things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -627,6 +634,23 @@ motor, which Rapier solves implicitly. Its motors take no force limit, but a
 velocity servo is limited anyway: asked for no more than 20 rad/s, a weapon that
 cannot turn at all — wedged in stone — gets `grip twist` of torque and no more.
 
+**A drive tuned on one body is tuned on its inertia.** The arm's angular drive
+was tuned on the forearm with the weapon welded on, and only ever worked
+because the weapon was there: the forearm can hardly roll on its own — the
+elbow is a hinge — so any roll swings the hand and drags the weapon with it.
+Put a soft wrist between them and the forearm alone got the same damping, far
+too much for it: its roll flipped direction every step, and grew. The wrist is
+therefore stiff across its bend, as the weld was, and the drive's torque is
+shared between forearm and weapon by their inertia about the hand, each toward
+its own target, so neither is ever driven harder than the pair was. Two more
+traps on the way. A ball joint's per-axis springs in Rapier read the angles
+off its quaternion, where each bend axis moves with the other once the grip is
+turned — two springs pushing each other sideways circulate, and at the grip's
+stop the forearm settled into a steady 12 rad/s roll; the wrist is a velocity
+servo on a proper bend error instead. And a bent weapon's share of the drive
+turns the forearm about its length too, so the forearm's own roll drive steps
+back as the wrist bends, or the two together over-drive it.
+
 And two about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -667,7 +691,9 @@ the shoulder slides to make room; 0 is the old rigid block), `secondary motion`
 from body` (how far the target pose keeps off your own chest and hips; 0 turns
 off both clearance layers). The angular drive adds `grip twist`: how hard the
 forearm turns the weapon in the hand — weak, and a blow on the flat knocks the
-edge off line. Input adds `flick speed cap` and `flick accel cap`: anything
+edge off line — and `wrist`: how hard it bends the weapon back onto the line
+you aimed along. The wrist is far stiffer than a real one on purpose, and its
+range starts above where the resting arm begins to shake. Input adds `flick speed cap` and `flick accel cap`: anything
 slower reaches the arm untouched.
 
 Movement adds `jump height` and `air control`. Presets: **heavy** (a sword that
@@ -711,15 +737,14 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
-- **At the far end of a cross-body cut the blade points back over your left
-  shoulder.** The weapon continues the forearm, so with the elbow kept out of
-  the ribs, that is where the forearm — and the blade — point. The forearm's
-  twist keeps the *edge* where you asked, but where the blade *points* would
-  take a wrist, and there is not one yet. The alternative was the elbow in the
-  ribs.
-- **The weapon turns in your hand when you have not rolled it.** That is the
-  forearm keeping your edge while the body moves your elbow. Watch `grip twist`
-  in the HUD: at the guard it reads zero.
+- **At the very end of a cross-body cut the blade drifts a few degrees back
+  toward your left shoulder.** With the elbow kept out of the ribs the forearm
+  points back over it; the wrist bends the blade onto the line you aimed along,
+  but a wrist only bends so far, and past about fifty degrees the rest shows.
+- **The weapon turns and bends in your hand when you have not rolled it.** That
+  is the forearm keeping your edge and the wrist keeping your line while the
+  body moves your elbow. Watch `grip twist` and `wrist bend` in the HUD: at the
+  guard both read zero.
 - **Hold a big turn and you step.** The hips come round under the chest, and
   when they have turned far enough over planted feet, the feet follow — the
   leading one first.
@@ -767,7 +792,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 145 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 148 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -802,8 +827,10 @@ And the grip: that each weapon's inertia is where its iron is — a one-part
 sword exactly as Rapier had it, a spear that rolls like a shaft rather than a
 pole; that the grip sits square when nothing needs it; that a roll toward the
 chest turns the edge all the way without the body pushing or the hand moving;
-that an elbow moved out of the ribs no longer takes the edge with it; and that
-ten seconds of the worst input there is never spins a weapon in anyone's hand.
+that an elbow moved out of the ribs no longer takes the edge with it; that the
+wrist is straight at the guard and, across the body, holds the blade on the
+line the elbow lost; and that ten seconds of the worst input there is never
+spins a weapon in anyone's hand or bends a wrist past its stop.
 
 ## Stack
 

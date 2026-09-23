@@ -1788,6 +1788,47 @@ async function theGripKeepsTheEdge(): Promise<void> {
     `the grip turned ${(cleared.arm.state.twist * 180 / Math.PI).toFixed(0)}deg to do it`);
 }
 
+async function theWristKeepsTheLine(): Promise<void> {
+  console.log("\nthe wrist points the blade where the aim asked");
+  const forearmOf = (rig: Rig) => {
+    const q = rig.arm.fore.rotation();
+    return new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+  };
+  const bladeOf = (rig: Rig) => {
+    const q = rig.arm.blade.rotation();
+    return new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+  };
+  const deg = (r: number) => (r * 180 / Math.PI).toFixed(0);
+
+  // Nothing to do at the guard: the weapon continues the forearm, as welded.
+  const rest = await buildRig();
+  rest.step(120);
+  check("at the guard the wrist is straight", rest.arm.state.wrist < 0.035,
+    `wrist bent ${(rest.arm.state.wrist * 180 / Math.PI).toFixed(1)}deg at the guard`);
+
+  // Across the body the clearance swivels the elbow out of the ribs, and the
+  // forearm -- which the weapon used to continue -- points somewhere else:
+  // at the far end of a cut, back over the other shoulder. With the elbow let
+  // into the ribs the forearm points where the aim asked, so that arm's blade
+  // is the line to hold.
+  const hold = async (over: Partial<Tuning>, yaw: number) => {
+    const rig = await buildRig(over);
+    rig.step(60);
+    aimAngles(rig, yaw, -0.3, 180);
+    return rig;
+  };
+  for (const yaw of [1.1, 1.5]) {
+    const cleared = await hold({}, yaw);
+    const asked = await hold({ clearance: 0 }, yaw);
+    const moved = forearmOf(cleared).angleTo(forearmOf(asked));
+    const off = bladeOf(cleared).angleTo(bladeOf(asked));
+    check(`across the body (yaw ${yaw}) the blade keeps the line the elbow lost`,
+      moved > 0.5 && off < 0.14 && cleared.arm.state.trackingError < 0.01,
+      `forearm ${deg(moved)}deg off the line, blade ${deg(off)}deg, wrist bent ` +
+      `${deg(cleared.arm.state.wrist)}deg, hand ${(cleared.arm.state.trackingError * 100).toFixed(1)}cm off`);
+  }
+}
+
 async function noGripSpinsUnderAbuse(): Promise<void> {
   console.log("\nnothing spins in the hand, whoever is holding it");
   // With the weapons' inertia about their own length finally right -- a
@@ -1801,6 +1842,7 @@ async function noGripSpinsUnderAbuse(): Promise<void> {
     const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
     let spin = 0;
     let turn = 0;
+    let bend = 0;
     const q = new THREE.Quaternion();
     for (let i = 0; i < 600; i++) {
       const move = { dx: (next() - 0.5) * 600, dy: (next() - 0.5) * 600,
@@ -1812,10 +1854,13 @@ async function noGripSpinsUnderAbuse(): Promise<void> {
       const w = rig.foe.arm.blade.angvel();
       spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
       turn = Math.max(turn, Math.abs(rig.foe.arm.state.twist));
+      bend = Math.max(bend, rig.foe.arm.state.wrist);
     }
-    check(`${species.name}'s weapon stays in hand`, spin < 100 && turn < 1.65,
+    // The wrist's stop is 60 degrees about each of its two axes, so a bend
+    // across both corners of it is a little more.
+    check(`${species.name}'s weapon stays in hand`, spin < 100 && turn < 1.65 && bend < 1.3,
       `peak spin about its length ${spin.toFixed(0)} rad/s, grip never past ` +
-      `${(turn * 180 / Math.PI).toFixed(0)}deg`);
+      `${(turn * 180 / Math.PI).toFixed(0)}deg, wrist never past ${(bend * 180 / Math.PI).toFixed(0)}deg`);
   }
 }
 
@@ -1867,6 +1912,7 @@ async function run(): Promise<void> {
 
   await theWeaponsWeighWhatTheyShould();
   await theGripKeepsTheEdge();
+  await theWristKeepsTheLine();
   await noGripSpinsUnderAbuse();
 
   console.log(
