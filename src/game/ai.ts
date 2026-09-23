@@ -93,7 +93,7 @@ export class Ai implements ArmInput {
    * extended one.
    *
    * Two of them, because a thrust needs both. Extending the arm swings the
-   * elbow through a large angle, and the weapon welded to the forearm swings
+   * elbow through a large angle, and the weapon held along the forearm swings
    * with it -- so a thrust that only aims its end pose comes in rotating about
    * the hand, which puts the point's whole velocity at right angles to the
    * shaft. Aiming BOTH ends at the target leaves the shaft pointing the same

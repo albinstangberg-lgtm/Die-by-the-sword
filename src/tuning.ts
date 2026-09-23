@@ -26,6 +26,13 @@ export interface Tuning {
   armKpRot: number;   // N.m per radian of error
   armKdRot: number;   // N.m per rad/s
   maxTorque: number;  // N.m. Keep well under maxForce so the blade trails.
+  /**
+   * How hard the forearm can turn the weapon in the hand, N·m -- the grip's
+   * twist. It keeps the edge where it was asked while the elbow goes where
+   * the body lets it. Weak, and a blow on the flat knocks the edge off line;
+   * a heavy head off its haft's line takes more of it to turn.
+   */
+  twistTorque: number;
 
   // --- input mapping ---
   sensitivity: number; // radians of arm sweep per pixel of mouse travel
@@ -110,6 +117,7 @@ export const DEFAULTS: Tuning = {
   armKpRot: 48,
   armKdRot: 5.0,
   maxTorque: 46,
+  twistTorque: 6,
 
   sensitivity: 0.0052,
   invertY: false,
@@ -161,6 +169,8 @@ export const CONTROLS: Control[] = [
   { group: "Arm — angular drive", key: "armKdRot", label: "damping  kd", min: 0, max: 20, step: 0.1 },
   { group: "Arm — angular drive", key: "maxTorque", label: "max torque  (N·m)", min: 0, max: 250, step: 1,
     hint: "Keep this modest — a torque budget the swing can exhaust is what makes the blade trail behind the hand instead of snapping to it." },
+  { group: "Arm — angular drive", key: "twistTorque", label: "grip twist  (N·m)", min: 0.5, max: 30, step: 0.5,
+    hint: "How hard the forearm turns the weapon in the hand to keep the edge where you asked. Weak, and a blow on the flat knocks the edge off line." },
 
   { group: "Input", key: "sensitivity", label: "sensitivity", min: 0.0005, max: 0.02, step: 0.0001 },
   { group: "Input", key: "rollSensitivity", label: "roll sensitivity", min: 0.0005, max: 0.03, step: 0.0001,

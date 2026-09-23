@@ -24,7 +24,7 @@ import { Combatant } from "../src/game/combatant";
 import {
   GOBLIN, ORC, SWORDSMAN, jointScaleFor, maxHealthFor, type Species,
 } from "../src/game/species";
-import { AXE, SPEAR, SWORD } from "../src/game/weapons";
+import { AXE, SPEAR, SWORD, weaponMassProperties } from "../src/game/weapons";
 import { Ai } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -1003,6 +1003,15 @@ async function theAxeIsHarderToSwing(): Promise<void> {
   // Same body, same arm, same drive, same command -- the ONLY difference is
   // what is in the hand, so any difference in how far the weapon comes round
   // is its mass distribution and nothing else.
+  //
+  // "Comes round" is where the weapon POINTS: the angle its length swept. It
+  // used to be the weapon's whole change of orientation, spin about its own
+  // length included, and that spin was measuring a Rapier bug -- two parts
+  // offset along a weapon gave it inertia about its own length that grew with
+  // how far out they sat, so a spear held by the butt resisted rolling as if
+  // it were being swung end over end. With that corrected (see
+  // `weaponMassProperties`) and a grip that can turn, spinning a spear about
+  // its shaft is nearly free, as it should be, and says nothing about steering.
   const sweptAngle = async (weapon: typeof SWORD): Promise<number> => {
     const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_SPAWN);
     rig.step(90);
@@ -1017,7 +1026,10 @@ async function theAxeIsHarderToSwing(): Promise<void> {
       rig.step(1);
     }
     const end = rig.foe.arm.blade.rotation();
-    return from.angleTo(new THREE.Quaternion(end.x, end.y, end.z, end.w));
+    const was = new THREE.Vector3(0, 1, 0).applyQuaternion(from);
+    const now = new THREE.Vector3(0, 1, 0)
+      .applyQuaternion(new THREE.Quaternion(end.x, end.y, end.z, end.w));
+    return was.angleTo(now);
   };
 
   const sword = await sweptAngle(SWORD);
@@ -1029,7 +1041,14 @@ async function theAxeIsHarderToSwing(): Promise<void> {
 
   // And the choked grip is not decoration. Take the same spear and hold it by
   // the butt -- every part shifted forward by the length that used to hang
-  // behind the hand -- and the same arm can barely move it.
+  // behind the hand -- and the same arm swings it markedly less far.
+  //
+  // Markedly, not hugely: a fifth or so less in 0.3s, measured on where the
+  // spear points. This used to demand more than a fifth, and passed only
+  // because the measure included spin about the shaft that Rapier had made
+  // grow with how far out the mass sat; on that physics, measured this way,
+  // it was 0.81. The arm's own inertia about the shoulder is most of what a
+  // swing has to move, and dilutes what the grip changes.
   const behind = SPEAR.parts[0].halfLen - SPEAR.parts[0].at;
   const byTheButt = {
     ...SPEAR,
@@ -1037,8 +1056,8 @@ async function theAxeIsHarderToSwing(): Promise<void> {
   };
   const choked = await sweptAngle(SPEAR);
   const butt = await sweptAngle(byTheButt);
-  check("a spear held choked up is steerable; held by the butt it is not",
-    butt < choked * 0.8,
+  check("a spear held choked up steers; held by the butt it lags",
+    butt < choked * 0.9,
     `${behind.toFixed(2)} m of shaft behind the hand is worth ` +
     `${(choked * 180 / Math.PI).toFixed(0)}deg against ${(butt * 180 / Math.PI).toFixed(0)}deg`);
 }
@@ -1620,6 +1639,140 @@ async function thePostureIsInterpolated(): Promise<void> {
     `alpha 0 ${a0.toFixed(4)}, 0.5 ${mid.toFixed(4)}, 1 ${a1.toFixed(4)}`);
 }
 
+// --- the grip ----------------------------------------------------------------------
+
+async function theWeaponsWeighWhatTheyShould(): Promise<void> {
+  console.log("\na weapon's inertia is where its iron is, about every axis");
+  // Rapier adds up a body's colliders with the parallel-axis term the wrong
+  // way round, which gave the two-part weapons inertia about their own length
+  // that no rod has. The weapon body now carries mass properties worked out
+  // in weapons.ts instead; these hold it to them.
+  const bodyOf = async (weapon: typeof SWORD) => {
+    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_SPAWN);
+    rig.step(1);
+    return rig.foe.arm.blade;
+  };
+
+  const sword = await bodyOf(SWORD);
+  const expected = weaponMassProperties(SWORD);
+  const p = sword.principalInertia();
+  const off = Math.max(
+    Math.abs(p.x - expected.principal.x) / expected.principal.x,
+    Math.abs(p.y - expected.principal.y) / expected.principal.y,
+    Math.abs(p.z - expected.principal.z) / expected.principal.z);
+  // A single part is the one case Rapier always got right: agreeing with it
+  // there is what says the shapes are worked out the way it works them out.
+  check("a one-part sword comes out exactly as Rapier had it", off < 0.01,
+    `principal (${p.x.toFixed(5)}, ${p.y.toFixed(5)}, ${p.z.toFixed(5)}), within ${(off * 100).toFixed(2)}%`);
+
+  const spear = weaponMassProperties(SPEAR);
+  check("a spear rolls in the hand like a shaft, not a pole", spear.twist < 0.001,
+    `${spear.twist.toFixed(5)} kg·m² about its length (Rapier had 0.265)`);
+
+  const axe = weaponMassProperties(AXE);
+  const across = Math.min(axe.principal.x, Math.max(axe.principal.y, axe.principal.z));
+  check("an axe is harder to twist than a sword, and far easier than to swing",
+    axe.twist > weaponMassProperties(SWORD).twist * 10 && axe.twist < across / 10,
+    `twist ${axe.twist.toFixed(4)} kg·m² against a swing of ${across.toFixed(3)}`);
+
+  const spearBody = await bodyOf(SPEAR);
+  check("and the weapon weighs what it says", Math.abs(spearBody.mass() - SPEAR.mass) < 1e-3,
+    `${spearBody.mass().toFixed(3)} kg (declared ${SPEAR.mass})`);
+}
+
+async function theGripKeepsTheEdge(): Promise<void> {
+  console.log("\nthe forearm twists to keep the edge where it was asked");
+  const edgeOf = (rig: Rig) => {
+    const q = rig.arm.blade.rotation();
+    return new THREE.Vector3(0, 0, 1).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+  };
+  const axisOf = (rig: Rig) => {
+    const q = rig.arm.blade.rotation();
+    return new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+  };
+
+  // Nothing for it to do at rest: the grip is square and the weapon sits
+  // exactly where it sat when it was welded on.
+  const rest = await buildRig();
+  rest.step(120);
+  check("with the body out of the way, the grip stays square",
+    Math.abs(rest.arm.state.twist) < 0.035,
+    `grip turned ${(rest.arm.state.twist * 180 / Math.PI).toFixed(1)}deg at the guard`);
+
+  // Roll the edge toward the chest from the guard. The elbow meets the ribs
+  // and stops; the forearm turns the rest of the way.
+  const rollIn = async (over: Partial<Tuning>) => {
+    const rig = await buildRig(over);
+    rig.step(120);
+    const before = edgeOf(rig);
+    rig.input.rollDx = 140;
+    rig.step(1);
+    rig.step(110);
+    return { rig, turned: Math.acos(Math.min(1, Math.abs(before.dot(edgeOf(rig))))) };
+  };
+  const kept = await rollIn({});
+  const free = await rollIn({ clearance: 0 });
+  check("a roll toward the chest turns the edge all the way",
+    Math.abs(kept.turned - free.turned) < 0.15,
+    `edge turned ${(kept.turned * 180 / Math.PI).toFixed(0)}deg; with the elbow let into ` +
+    `the ribs it turns ${(free.turned * 180 / Math.PI).toFixed(0)}deg`);
+  check("without the body pushing back or the hand moving",
+    kept.rig.arm.state.clearance === 0 && kept.rig.arm.state.trackingError < 0.01,
+    `body pushing ${(kept.rig.arm.state.clearance * 100).toFixed(1)}cm, ` +
+    `hand ${(kept.rig.arm.state.trackingError * 100).toFixed(1)}cm off, ` +
+    `grip turned ${(kept.rig.arm.state.twist * 180 / Math.PI).toFixed(0)}deg`);
+
+  // Across the body the clearance has to move the elbow, which used to take
+  // the edge sixty degrees round with it. Laid square to where the blade
+  // actually points, the edge is now the one the aim asked for.
+  const hold = async (over: Partial<Tuning>) => {
+    const rig = await buildRig(over);
+    rig.step(60);
+    aimAngles(rig, 1.4, -0.3, 180);
+    return rig;
+  };
+  const cleared = await hold({});
+  const asked = await hold({ clearance: 0 });
+  const axis = axisOf(cleared);
+  const want = edgeOf(asked).addScaledVector(axis, -edgeOf(asked).dot(axis)).normalize();
+  const miss = Math.acos(Math.min(1, Math.abs(edgeOf(cleared).dot(want))));
+  check("an elbow moved out of the ribs no longer takes the edge with it",
+    miss < 0.09 && Math.abs(cleared.arm.state.twist) > 0.35,
+    `edge ${(miss * 180 / Math.PI).toFixed(1)}deg from the one asked for, ` +
+    `the grip turned ${(cleared.arm.state.twist * 180 / Math.PI).toFixed(0)}deg to do it`);
+}
+
+async function noGripSpinsUnderAbuse(): Promise<void> {
+  console.log("\nnothing spins in the hand, whoever is holding it");
+  // With the weapons' inertia about their own length finally right -- a
+  // spear's is a sixteen-hundredth of what Rapier had -- and the grip free to
+  // turn, the arm's roll lost the phantom mass that had been steadying it.
+  // A freshly spawned goblin spun its spear at 900 rad/s. Ten seconds of the
+  // worst input there is, for each of them.
+  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+    const rig = await buildRig({}, species, FOE_SPAWN);
+    let rand = 12345;
+    const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    let spin = 0;
+    let turn = 0;
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < 600; i++) {
+      const move = { dx: (next() - 0.5) * 600, dy: (next() - 0.5) * 600,
+        wheel: next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0, rollDx: (next() - 0.5) * 220 };
+      rig.foe.act({ consumeMouse: () => move }, NO_KEYS, rig.tuning, STEP);
+      rig.step(1);
+      const r = rig.foe.arm.blade.rotation();
+      const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+      const w = rig.foe.arm.blade.angvel();
+      spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
+      turn = Math.max(turn, Math.abs(rig.foe.arm.state.twist));
+    }
+    check(`${species.name}'s weapon stays in hand`, spin < 100 && turn < 1.65,
+      `peak spin about its length ${spin.toFixed(0)} rad/s, grip never past ` +
+      `${(turn * 180 / Math.PI).toFixed(0)}deg`);
+  }
+}
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
   await freeArmTracks();
@@ -1664,6 +1817,10 @@ async function run(): Promise<void> {
   await theFeetStayPlantedThenStep();
   await theBodyAgreesWithItsProbes();
   await thePostureIsInterpolated();
+
+  await theWeaponsWeighWhatTheyShould();
+  await theGripKeepsTheEdge();
+  await noGripSpinsUnderAbuse();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

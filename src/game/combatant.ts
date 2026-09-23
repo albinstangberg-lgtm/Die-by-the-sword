@@ -26,7 +26,7 @@ const SEVERABLE: Record<string, keyof typeof JOINT_INTEGRITY> = {
   offElbow: "elbow",
 };
 
-/** Cutting either of these disarms the fighter — the sword is welded to the hand. */
+/** Cutting either of these disarms the fighter — the sword goes with the hand. */
 type ArmJoint = "shoulder" | "elbow";
 
 export interface CombatantState {
