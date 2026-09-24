@@ -1047,6 +1047,15 @@ export class Ai implements ArmInput {
     }
     const apex = Math.sqrt(2 * t.jumpHeight * this.species.build.scale / Math.abs(t.gravity));
     const takeoff = this.strikeReach * LEAP_LAND + run * (CHOP + apex);
+    // Still getting the weapon up, it stops where it will jump from -- short
+    // of it by as far as its feet carry it once they stop, or it coasts in
+    // past it, jumps from too close, and the axe comes down behind you.
+    const coast = range > 1e-6 ? self.fighter.coast(
+      (this._foe.x - this._self.x) / range, (this._foe.z - this._self.z) / range) : 0;
+    if (!up && range - coast <= takeoff && range > takeoff) {
+      this.hold(0, 0);
+      return;
+    }
     if (range <= takeoff) {
       if (!up || !self.fighter.grounded) {
         this.hold(0, 0);
@@ -1365,7 +1374,10 @@ export class Ai implements ArmInput {
   private walkTo(self: Combatant, p: THREE.Vector3, within = ARRIVE): boolean {
     const dx = p.x - this._self.x;
     const dz = p.z - this._self.z;
-    if (Math.hypot(dx, dz) < within * this.species.build.scale) {
+    const d = Math.hypot(dx, dz);
+    // There once the feet will carry it the rest of the way.
+    const coast = d > 1e-6 ? self.fighter.coast(dx / d, dz / d) : 0;
+    if (d < within * this.species.build.scale + coast) {
       this.hold(0, 0);
       return false;
     }

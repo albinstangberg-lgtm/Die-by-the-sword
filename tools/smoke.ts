@@ -3015,6 +3015,10 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
   // One step's worth of its walking pace, metres.
   const pace = rig.tuning.moveSpeed * rig.foe.fighter.build.scale * STEP;
   let way = 0;
+  // How long the keys it is holding have been held: a step eases up to pace,
+  // so one only counts as going nowhere once the feet have had their time.
+  let keysWere = "";
+  let heldFor = 0;
   for (let i = 0; i < seconds * 60; i++) {
     const before = rig.ai.intent;
     rig.fight(1, drive(rig));
@@ -3030,8 +3034,11 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
     const mz = it.z - was.z;
     was.copy(it);
     const k = rig.ai.keys;
+    const keys = `${+k.forward}${+k.back}${+k.left}${+k.right}`;
+    heldFor = keys === keysWere ? heldFor + STEP : 0;
+    keysWere = keys;
     if (FOOTWORK.has(now) && (k.forward || k.back || k.left || k.right)
-      && Math.hypot(mx, mz) < pace * 0.3) bout.blocked++;
+      && heldFor > rig.tuning.stepEase && Math.hypot(mx, mz) < pace * 0.3) bout.blocked++;
 
     const dx = it.x - me.x;
     const dz = it.z - me.z;
@@ -3714,6 +3721,9 @@ async function aCrouchGetsLow(): Promise<void> {
   const fast = z1 - f.body.translation().z;
   check("crouched, the steps are short", slow < fast * 0.55,
     `${slow.toFixed(2)} m a second crouched, ${fast.toFixed(2)} standing`);
+  // Stood still first: measured mid-stride it was the walk's bob it read, which
+  // sat on the edge of the tolerance and tipped over it when steps were eased.
+  rig.step(30);
   check("and letting go stands you back up", Math.abs(headOf() - soles() - standing) < 0.02,
     `head ${(headOf() - soles()).toFixed(2)} m`);
 }

@@ -156,10 +156,19 @@ export class Pickup {
         const e = this._e.set(this.stand.x - p.x, 0, this.stand.z - p.z)
           .applyAxisAngle(UP, -f.yaw);
         const turn = wrap(this.face - f.yaw);
-        keys.forward = e.z < -THERE * s;
-        keys.back = e.z > THERE * s;
-        keys.right = e.x > THERE * s;
-        keys.left = e.x < -THERE * s;
+        // Letting go early by as far as the feet will carry it once the key
+        // comes up: holding on to the last centimetre, a body eased to a
+        // stop went past the spot, back, and past it again until it gave up.
+        const sin = Math.sin(f.yaw);
+        const cos = Math.cos(f.yaw);
+        const ahead = f.coast(-sin, -cos);
+        const behind = f.coast(sin, cos);
+        const right = f.coast(cos, -sin);
+        const left = f.coast(-cos, sin);
+        keys.forward = -e.z - ahead > THERE * s;
+        keys.back = e.z - behind > THERE * s;
+        keys.right = e.x - right > THERE * s;
+        keys.left = -e.x - left > THERE * s;
         keys.turnLeft = turn > SQUARE;
         keys.turnRight = turn < -SQUARE;
         const there = Math.hypot(e.x, e.z) < THERE * 1.5 * s && Math.abs(turn) < SQUARE * 1.5;
