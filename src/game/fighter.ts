@@ -9,11 +9,12 @@ import {
   stumpCap,
 } from "./skin";
 import type { WoundEnd } from "./blood";
-import { CROUCH_DROP, Pose, Posture, type PostureDrive } from "./posture";
+import { CROUCH_DROP, Pose, Posture, type Gait, type PostureDrive } from "./posture";
 import { wrap, type Capsule } from "./clearance";
 import { clamp, smoothstep } from "./motion";
 import { emptyBlow, judgeBlow, type Blow } from "./balance";
 import type { Impact } from "./impacts";
+import { Ragdoll } from "./ragdoll";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -247,6 +248,11 @@ const RISE_SPIN = 12;
 const SPRAWL_NEAR = [0.35, 0.6] as const;
 const SPRAWL_FAR = [0.12, 0.2] as const;
 const SPRAWL_RATE = 6;
+/**
+ * How fast a body that dies standing starts to go over some way of its own,
+ * rad/s at human size, whatever else the blow did: see `fallFrom`.
+ */
+const TIP = [0.5, 1.1] as const;
 
 type Stance = "up" | "down" | "rising";
 
@@ -342,6 +348,10 @@ export class Fighter {
   private stridePhase = 0;
   /** How much of the stride the legs are showing: 0 standing, 1 walking. */
   private striding = 0;
+  /** Which way the feet are asked to go: 1 forward, -1 back, 0 sideways. */
+  private heading = 0;
+  /** The legs' going, as the posture wants it. */
+  private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0 };
   private headMesh!: THREE.Object3D;
 
   /** One set of materials for the whole figure, from its palette. */
@@ -372,6 +382,10 @@ export class Fighter {
 
   /** The hips' collider, which a crouch carries down with them. */
   private pelvisCollider!: RAPIER.Collider;
+  /** The walking capsule: what stands, and what a corpse no longer has. */
+  private readonly hullCollider: RAPIER.Collider;
+  /** Dead: the body gone limp, and everything it simulates. See ragdoll.ts. */
+  private ragdoll: Ragdoll | null = null;
   /**
    * A vault or a climb under way: where it goes, as a path of hull centres
    * with the distance along it to each, how far through it the body is,
@@ -390,6 +404,11 @@ export class Fighter {
    * doing the reaching -- a pick-up -- and not by any key.
    */
   stoop = 0;
+  /**
+   * How far the body is curled round a lost sword arm, 0..1. Set by whatever
+   * knows the arm is gone -- the Combatant -- each step.
+   */
+  hurt = 0;
   private readonly downRay: RAPIER.Ray;
 
   /** On its feet, on the floor, or getting up off it. */
@@ -465,7 +484,7 @@ export class Fighter {
 
     // The hull: what stands and walks. Blades ignore it, so a hit always lands
     // on a named body part instead of a nondescript capsule.
-    world.createCollider(
+    this.hullCollider = world.createCollider(
       rapier.ColliderDesc.capsule(HULL.height / 2 - HULL.radius, HULL.radius)
         .setMass(HULL.mass)
         .setFriction(0.4)
@@ -887,6 +906,7 @@ export class Fighter {
     }
 
     const len = Math.hypot(ix, iz);
+    this.heading = len > 0 ? -iz / len : 0;
     const v = this.tmpVec.set(0, 0, 0);
     if (len > 0) {
       const sin = Math.sin(this.yaw);
@@ -974,8 +994,13 @@ export class Fighter {
 
   /** What every step on its feet ends with: the posture, and the legs under it. */
   private finishStep(drive: PostureDrive | null, t: Tuning, dt: number, crouch: number): void {
+    const gait = this.gaitNow;
+    gait.phase = this.stridePhase;
+    // Going over or up something is not walking, whatever the legs show.
+    gait.amount = this.traverse ? 0 : this.striding * (1 - this.tuck);
+    gait.forward = this.heading;
     this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch,
-      this.traverse ? 0 : clamp(this.stoop, 0, 1));
+      this.traverse ? 0 : clamp(this.stoop, 0, 1), clamp(this.hurt, 0, 1), gait);
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
@@ -1363,8 +1388,8 @@ export class Fighter {
   }
 
   /**
-   * Down for good. The same fall as a knockdown with no blow behind it, and no
-   * getting up: nothing will call `update` on this body again.
+   * Down for good, and limp: see ragdoll.ts. No getting up -- nothing will
+   * call `update` on this body again.
    *
    * Which is also why the head and the off arm have to let go here. The head
    * is held by a torque that `holdPose` clears and reapplies every step, the
@@ -1373,18 +1398,66 @@ export class Fighter {
    * dead head forever.
    */
   collapse(): void {
+    // Died on its feet: the blow that did it goes on, because nothing is left
+    // to step out of it. A blow that put the body over already has.
+    if (this.stance === "up" && !this.ragdoll) this.fallFrom(this._blow);
     this.traverse = null;
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
     this.reel = 0;
     this.knock.set(0, 0, 0);
-    this.body.setEnabledRotations(true, true, true, true);
-    this.body.setAngularDamping(0.4);
     for (const part of this.parts) {
       part.body?.resetTorques(true);
       part.body?.resetForces(true);
     }
+    if (this.ragdoll) return;
+    const head = this.parts.find((p) => p.name === "head");
+    const pose = this.posture.pose;
+    this.ragdoll = new Ragdoll({
+      phys: this.phys, side: this.side, build: this.build,
+      hull: this.body, hullCollider: this.hullCollider, pelvisCollider: this.pelvisCollider,
+      mesh: this.mesh, pelvis: this.pelvis, chest: this.chest, legs: this.legs,
+      neck: head && !head.severed ? head.joint ?? null : null,
+      waist: new THREE.Vector3(0, this.posture.waistY - pose.drop, 0),
+      chestQuat: this.posture.chestQuat(pose, new THREE.Quaternion()),
+      hipsAt: new THREE.Vector3(0, -pose.drop, 0),
+      hipsQuat: pose.hipsQuat(new THREE.Quaternion()),
+    });
+  }
+
+  /**
+   * Which way a body that dies standing goes down.
+   *
+   * Along the blow that killed it, with what its feet had yet to take of the
+   * shove, and over it the way a blow high or low puts a body over -- and a
+   * little way off true whatever hit it, because nothing falls straight down
+   * its own middle. Without that last, every body folded straight down onto
+   * its heels into the same kneeling heap.
+   */
+  private fallFrom(blow: Blow): void {
+    const lv = this.body.linvel();
+    this.body.setLinvel({ x: lv.x + this.knock.x, y: lv.y, z: lv.z + this.knock.z }, true);
+    const axis = _spin.crossVectors(UP, blow.dir);
+    const rate = (blow.over * blow.topple) / this.build.hullCentreY;
+    const off = Math.random() * Math.PI * 2;
+    const tip = (TIP[0] + Math.random() * (TIP[1] - TIP[0])) / Math.sqrt(this.build.scale);
+    const av = this.body.angvel();
+    this.body.setAngvel({
+      x: av.x + axis.x * rate + Math.cos(off) * tip,
+      y: av.y,
+      z: av.z + axis.z * rate + Math.sin(off) * tip,
+    }, true);
+  }
+
+  /** A step of lying dead: once per step, before the physics step. */
+  lie(): void {
+    this.ragdoll?.capture();
+  }
+
+  /** Whether this body has gone limp for good. */
+  get limp(): boolean {
+    return this.ragdoll !== null;
   }
 
   /**
@@ -1522,7 +1595,7 @@ export class Fighter {
     const q = this.posture.chestQuat(pose, this._q);
     this.collider.setRotationWrtParent({ x: q.x, y: q.y, z: q.z, w: q.w });
     // The hips go down into a crouch with everything above them.
-    this.pelvisCollider.setTranslationWrtParent({ x: 0, y: this.pelvisY - pose.sink, z: 0 });
+    this.pelvisCollider.setTranslationWrtParent({ x: 0, y: this.pelvisY - pose.drop, z: 0 });
 
     const head = this.parts.find((p) => p.name === "head");
     if (head?.joint) {
@@ -1557,7 +1630,7 @@ export class Fighter {
     const p = this.body.translation();
     const { standing: STANDING, segment: SEGMENT } = this.build;
     return out.set(
-      p.x, p.y + this.build.local(STANDING.crown) - SEGMENT.head.radius - this.posture.pose.sink,
+      p.x, p.y + this.build.local(STANDING.crown) - SEGMENT.head.radius - this.posture.pose.drop,
       p.z);
   }
 
@@ -1757,7 +1830,7 @@ export class Fighter {
     const { segment: SEGMENT } = this.build;
     const l1 = SEGMENT.thigh.length;
     const l2 = SEGMENT.shin.length;
-    const reach = Math.max(0.35 * (l1 + l2), l1 + l2 - this.posture.pose.sink);
+    const reach = Math.max(0.35 * (l1 + l2), l1 + l2 - this.posture.pose.drop);
     const crouchHip = Math.acos(Math.min(1, (l1 * l1 + reach * reach - l2 * l2) / (2 * l1 * reach)));
     const crouchKnee = Math.PI
       - Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + l2 * l2 - reach * reach) / (2 * l1 * l2))));
@@ -1797,9 +1870,12 @@ export class Fighter {
       }
 
       // The colliders are pushed from these matrices below, so the pose used
-      // here has to be this step's, not a fraction of the way into it.
+      // here has to be this step's, not a fraction of the way into it. The
+      // hips turn and tilt with the stride over legs that do not: see
+      // `placeTrunk`.
       leg.hipPivot.rotation.x = leg.hip;
-      leg.hipPivot.rotation.y = leg.turn;
+      leg.hipPivot.rotation.y = leg.turn - this.posture.pose.hipSwing;
+      leg.hipPivot.rotation.z = -this.posture.pose.roll;
       // `knee` is flexion, positive when bent. The hip's +x swings the thigh
       // forward, and the knee folds the other way -- the foot goes back -- so
       // the same number turns the shin through minus it. Forward here would
@@ -1916,12 +1992,32 @@ export class Fighter {
     return out.set(p.x, p.y, p.z);
   }
 
-  /** Set the hips, the chest and the sword shoulder's ball to a posture. */
+  /**
+   * Set the hips, the chest and the sword shoulder's ball to a posture.
+   *
+   * The hips group turns and tilts with the stride; the chest does not go
+   * with it. The chest is placed where the posture puts it -- the same
+   * turn and pivot the shoulder, the neck and the chest's collider are placed
+   * from -- whatever the hips under it are doing, so what is drawn and what
+   * the arm hangs from never part.
+   */
   private placeTrunk(pose: Pose): void {
-    this.pelvis.rotation.y = pose.pelvis;
-    this.pelvis.position.y = -pose.sink;
-    this.chest.rotation.set(-pose.lean, pose.spine, pose.bend, "YXZ");
+    this.pelvis.position.set(0, -pose.drop, 0);
+    const hips = pose.hipsQuat(this.pelvis.quaternion);
+    const into = _qInv.copy(hips).invert();
+    this.chest.position.set(0, this.posture.waistY, 0).applyQuaternion(into);
+    this.chest.quaternion.copy(into).multiply(this.posture.chestQuat(pose, _qChest));
     this.posture.clavicle(pose, this.shoulderBall.position).add(this.swordShoulderRest);
+  }
+
+  /**
+   * Where a wounded sword side is held, world space: the socket, with the arm
+   * gone at the shoulder, or `down` metres down the side from it, where the
+   * stump of one cut at the elbow hangs. Measured on the body rather than off
+   * the stump, which swings about as the body moves: a hand chasing it flailed.
+   */
+  woundWorld(down: number, out: THREE.Vector3): THREE.Vector3 {
+    return this.hullToWorld(this.posture.swordSide(this.posture.pose, down, _wound), out);
   }
 
   /**
@@ -1991,7 +2087,7 @@ export class Fighter {
     const into = _qInto.copy(hull).multiply(chest).invert();
     outP.set(world.x - p.x, world.y - p.y, world.z - p.z)
       .applyQuaternion(_qInv.copy(hull).invert());
-    outP.y -= this.posture.waistY - pose.sink;
+    outP.y -= this.posture.waistY - pose.drop;
     outP.applyQuaternion(_qInv.copy(chest).invert());
     outQ.copy(into).multiply(worldQ);
   }
@@ -2038,8 +2134,8 @@ export class Fighter {
     chest.forward.set(0, 0, -1).applyQuaternion(chestQ).applyAxisAngle(UP, this.yaw);
 
     const hipHalf = Math.max(0.01, SEGMENT.pelvis.length / 2 - SEGMENT.pelvis.radius);
-    this.hullToWorld(_end.set(0, this.pelvisY - pose.sink - hipHalf, 0), hips.a);
-    this.hullToWorld(_end.set(0, this.pelvisY - pose.sink + hipHalf, 0), hips.b);
+    this.hullToWorld(_end.set(0, this.pelvisY - pose.drop - hipHalf, 0), hips.a);
+    this.hullToWorld(_end.set(0, this.pelvisY - pose.drop + hipHalf, 0), hips.b);
     hips.radius = SEGMENT.pelvis.radius * TRUNK_FIT;
     hips.flat = HIPS_FLAT;
     hips.forward.set(0, 0, -1).applyAxisAngle(UP, this.yaw + pose.pelvis);
@@ -2078,10 +2174,17 @@ export class Fighter {
    */
   applyPose(alpha: number): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
-    this.placeTrunk(this.renderPose.lerpPoses(this.posture.prev, this.posture.pose, a));
+    // Dead, nothing is posed: hips, chest and legs lie as their bodies do.
+    if (this.ragdoll) {
+      this.ragdoll.pose(a);
+      return;
+    }
+    const pose = this.renderPose.lerpPoses(this.posture.prev, this.posture.pose, a);
+    this.placeTrunk(pose);
     for (const leg of this.legs) {
       leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
-      leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a;
+      leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a - pose.hipSwing;
+      leg.hipPivot.rotation.z = -pose.roll;
       leg.kneePivot.rotation.x = -(leg.prevKnee + (leg.knee - leg.prevKnee) * a);
     }
   }
@@ -2110,7 +2213,13 @@ export class Fighter {
   reset(spawn: THREE.Vector3): void {
     const { segment: SEGMENT, standing: STANDING } = this.build;
     const local = this.build.local;
+    // Alive again: the hips back on the hull, and the legs posed. The neck a
+    // corpse was given a range for is rebuilt below, once the head is back.
+    const wasLimp = this.ragdoll !== null;
+    this.ragdoll?.dispose();
+    this.ragdoll = null;
     this.yaw = 0;
+    this.hurt = 0;
     this.stridePhase = 0;
     this.striding = 0;
     this.tuck = 0;
@@ -2136,6 +2245,7 @@ export class Fighter {
     this.swing.time = -Infinity;
     this.body.setEnabledRotations(false, true, false, true);
     this.body.setAngularDamping(6);
+    this.body.setLinearDamping(0.2);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setTranslation({ x: spawn.x, y: spawn.y, z: spawn.z }, true);
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
@@ -2174,6 +2284,27 @@ export class Fighter {
     this.placeTrunk(this.posture.pose);
 
     this.reattach();
+    if (wasLimp) {
+      const head = this.parts.find((p) => p.name === "head");
+      if (head?.joint) {
+        this.phys.world.removeImpulseJoint(head.joint, true);
+        head.joint = this.jointFor("head");
+      }
+      // The hips and chest groups were turned to lie as the corpse did, and
+      // the legs were lying wherever it fell: square the figure up, and put
+      // the legs under it outright rather than dragging them across the room.
+      this.pelvis.quaternion.identity();
+      this.pelvis.position.set(0, 0, 0);
+      this.chest.position.set(0, this.posture.waistY, 0);
+      // Walking only ever sets a hip's swing and turn and a knee's bend: the
+      // rest of a sprawl would stay in them.
+      for (const leg of this.legs) {
+        leg.hipPivot.rotation.set(0, 0, 0);
+        leg.kneePivot.rotation.set(0, 0, 0);
+      }
+      this.placeTrunk(this.posture.pose);
+      this.poseLegs(true);
+    }
   }
 
   /**
@@ -2212,6 +2343,7 @@ const _p = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
 const _anchor = new THREE.Vector3();
+const _wound = new THREE.Vector3();
 const _axis = new THREE.Vector3();
 const _end = new THREE.Vector3();
 const _extra = new THREE.Vector3();

@@ -215,7 +215,7 @@ export const CONTROLS: Control[] = [
   { group: "Body", key: "torsoLead", label: "torso lead", min: 0, max: 1.5, step: 0.05,
     hint: "How far the chest turns ahead of a swing and the shoulder slides round the ribs. At 0 the trunk is a rigid block and a cross-body cut goes through it." },
   { group: "Body", key: "secondaryMotion", label: "secondary motion", min: 0, max: 2, step: 0.05,
-    hint: "Lean into chops, bend with sweeps, shrug under strain, head following the blade." },
+    hint: "Lean into chops, bend with sweeps, shrug under strain, head following the blade -- and the hips and chest walking with the legs, and breathing." },
   { group: "Body", key: "stanceShare", label: "hips' share of a turn", min: 0, max: 0.8, step: 0.05 },
   { group: "Body", key: "clearance", label: "clearance from body  (m)", min: 0, max: 0.08, step: 0.005,
     hint: "How far the arm keeps off its own chest and hips. The arm cannot collide with its own body, so at 0 a cross-body cut goes straight through it." },
