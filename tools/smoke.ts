@@ -2502,6 +2502,121 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
     windup ? "drew back for a swing" : `intent "${rig.ai.intent}" after 6s`);
 }
 
+/** A knocked-down fighter's ragdoll, which only exists while it lies there. */
+type Limp = { hips: { rotation(): { x: number; y: number; z: number; w: number } };
+  hipsCollider: { handle: number } } | null;
+
+async function aKnockdownGoesLimp(): Promise<void> {
+  console.log("\nknocked down, the body goes limp, pulls itself together, and gets up whole");
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  rig.hold(60);
+  const f = rig.foe.fighter;
+  const limpOf = () => (f as unknown as { ragdoll: Limp }).ragdoll;
+  const legParts = f.parts.filter((p) => /thigh|shin/.test(p.name));
+  const legs = legParts.map((p) => p.collider.parent()!);
+  const census = () => `${rig.phys.world.bodies.len()} bodies, ${rig.phys.world.impulseJoints.len()} joints`;
+  const standing = census();
+
+  const up = new THREE.Vector3(0, 1, 0);
+  const upOf = (r: { x: number; y: number; z: number; w: number }) =>
+    up.clone().applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+  // Where each leg piece is drawn, as a frame would draw it: the body group
+  // placed as the renderer's interpolator would, and the figure posed.
+  const drawn = () => {
+    const p = f.body.translation();
+    const r = f.body.rotation();
+    f.mesh.position.set(p.x, p.y, p.z);
+    f.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+    f.applyPose(1);
+    f.mesh.updateMatrixWorld(true);
+    return legParts.map((l) => l.mesh.getWorldPosition(new THREE.Vector3()));
+  };
+
+  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  const effect = rig.foe.lastBlow!.effect;
+  let limp = true;
+  let simulated = true;
+  let bent = 0;
+  let waist = 0;
+  let hit: boolean | null = null;
+  let hurt = 0;
+  let before: THREE.Vector3[] = [];
+  let jump = -1;
+  for (let i = 0; i < 60 * 4 && f.down; i++) {
+    const ragdoll = limpOf();
+    if (ragdoll) {
+      if (!legs.every((b) => b.isDynamic())) simulated = false;
+      const knees = [0, 2].map((k) => upOf(legs[k].rotation()).angleTo(upOf(legs[k + 1].rotation())));
+      bent = Math.max(bent, ...knees);
+      // How far the chest is from square over the hips: the waist's bend.
+      waist = upOf(f.body.rotation()).angleTo(upOf(ragdoll.hips.rotation()));
+      // Half a second in, a light cut across the hips of the body on the floor.
+      if (i === 30) {
+        const health = rig.foe.state.health;
+        hit = rig.foe.receive(fakeImpact(ragdoll.hipsCollider.handle, { closingSpeed: 4 }));
+        hurt = health - rig.foe.state.health;
+      }
+      before = drawn();
+    } else if (jump < 0 && before.length) {
+      // The step it stopped being limp: nothing drawn should have jumped.
+      const after = drawn();
+      jump = Math.max(...after.map((a, k) => a.distanceTo(before[k])));
+    }
+    if (i < 3 && !f.limp) limp = false;
+    rig.hold(1);
+  }
+  check("a knockdown goes limp: the legs are the body's own, not posed",
+    effect === "down" && limp && simulated,
+    `${effect}; ${simulated ? "every leg bone simulated" : "legs posed"} while it was down`);
+  check("and it goes over bending, not as a plank", bent > 0.3,
+    `knees bent up to ${bent.toFixed(2)} rad`);
+  check("the hips on the floor can still be cut", hit === true && hurt > 0,
+    hit === null ? "never lay long enough to try" : `hit ${hit}, ${hurt.toFixed(1)} damage`);
+  check("before it gets up it has pulled itself straight", waist < 0.35,
+    `the chest ${(waist * 180 / Math.PI).toFixed(0)}deg off square over the hips at the last`);
+  check("and the legs go from lying to posed without a jump", jump >= 0 && jump < 0.06,
+    jump < 0 ? "never saw it get up" : `a leg moved ${(jump * 100).toFixed(1)} cm in the step it did`);
+
+  rig.hold(90);
+  check("on its feet, nothing of the ragdoll is left over",
+    !f.down && !f.limp && legs.every((b) => b.isKinematic()) && census() === standing,
+    `down ${f.down}, ${census()} against ${standing} before it fell`);
+
+  // Floored again halfway up: limp again, from however far up it had got.
+  rig.hold(30);
+  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  let rising = false;
+  for (let i = 0; i < 60 * 4 && !rising; i++) {
+    rig.hold(1);
+    rising = f.down && !f.limp;
+  }
+  rig.hold(10);
+  rig.foe.receive(blowOn(rig, rig.foe, 12, 0.8));
+  const again = rig.foe.lastBlow!.effect === "down" && f.limp;
+  for (let i = 0; i < 60 * 5 && f.down; i++) rig.hold(1);
+  rig.hold(60);
+  check("knocked down again on its way up, it goes limp again, and still gets up whole",
+    rising && again && !f.down && census() === standing && tiltOf(f.body) < 2,
+    `${rising ? "caught rising" : "never seen rising"}, ${again ? "limp again" : "not limp"}; `
+      + `down ${f.down}, ${census()}, tilt ${tiltOf(f.body).toFixed(1)}deg`);
+
+  // And killed on the floor: it stays down, and a reset still takes it all away.
+  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.hold(20);
+  const torso = f.collider.handle;
+  for (let i = 0; i < 60 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
+  rig.hold(180);
+  const stayed = rig.foe.dead && f.limp && legs.every((b) => b.isDynamic());
+  rig.foe.reset(rig.tuning, foeSpawn(GOBLIN));
+  rig.impacts.resetSweeps();
+  rig.hold(60);
+  check("killed where it lies, it stays down; a reset stands it up whole",
+    stayed && !f.limp && census() === standing
+      && Math.abs(f.body.translation().y - GOBLIN.build.hullCentreY) < 0.05,
+    `${stayed ? "stayed limp" : "did not stay down"}; ${census()}, `
+      + `hull at ${f.body.translation().y.toFixed(3)} m`);
+}
+
 async function aStaggerTakesTheSwingOffIt(): Promise<void> {
   console.log("\na stagger takes a swing off something light enough to rock");
   const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
@@ -2715,6 +2830,42 @@ async function aCorpseLiesStill(): Promise<void> {
   check("a corpse comes to rest where it fell",
     rig.foe.dead && drift < 1.5 && fastest < 0.3,
     `${drift.toFixed(2)} m from where it died, ${fastest.toFixed(2)} m/s in its sixth second`);
+}
+
+async function aDroppedWeaponIsNotKicked(): Promise<void> {
+  console.log("\na weapon on the floor is stepped over, not kicked across the room");
+  // The legs are kinematic, so nothing they touch can push back. A blade
+  // meets bodies, legs included -- and a spear lying on the floor that a foot
+  // came down on was fired off at seventeen metres a second, with the corpse
+  // still holding it. A weapon nobody is swinging stays out of bodies now.
+  let fastest = 0;
+  let what = "";
+  for (let a = 0; a < 8; a++) {
+    const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+    rig.hold(30);
+    rig.foe.health = 0.1;
+    rig.foe.receive(fakeImpact(rig.foe.fighter.collider.handle));
+    rig.hold(150);
+    const spear = rig.foe.arm.blade.translation();
+    const yaw = (a * Math.PI) / 4;
+    rig.place(new THREE.Vector3(spear.x + Math.sin(yaw) * 1.2, 0.95, spear.z + Math.cos(yaw) * 1.2));
+    rig.fighter.yaw = yaw;
+    const moving = [rig.foe.fighter.body, rig.foe.arm.blade, rig.foe.arm.fore, rig.foe.arm.upper];
+    for (let i = 0; i < 150; i++) {
+      rig.step(1, { ...NO_KEYS, forward: true });
+      for (const b of moving) {
+        const v = b.linvel();
+        const sp = Math.hypot(v.x, v.y, v.z);
+        if (sp > fastest) {
+          fastest = sp;
+          what = b === rig.foe.arm.blade ? "the spear" : b === rig.foe.fighter.body ? "the corpse" : "its arm";
+        }
+      }
+    }
+  }
+  // Your own sword still meets its arm on the way past, at walking pace.
+  check("walked over from eight sides, nothing on the floor is thrown about", fastest < 3,
+    `fastest was ${what}, at ${fastest.toFixed(2)} m/s`);
 }
 
 // --- footwork -----------------------------------------------------------------
@@ -3680,12 +3831,14 @@ async function run(): Promise<void> {
 
   await oneBlowThreeBodies();
   await aKnockedDownFighterGetsUp();
+  await aKnockdownGoesLimp();
   await aStaggerTakesTheSwingOffIt();
   await realBlowsAreWeighed();
   await theDummySwingsWhenStruck();
   await knockdownsDoNotWearTheBodyOut();
   await oneSwingIsOneBlow();
   await aCorpseLiesStill();
+  await aDroppedWeaponIsNotKicked();
 
   await footworkAsksTheStone();
   await anOpponentMovesBetweenSwings();

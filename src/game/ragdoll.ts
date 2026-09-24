@@ -20,8 +20,15 @@ import type { Build } from "./anatomy";
  * rigid bodies already, and are left to hang as they are, the neck given a
  * range so a dead head cannot turn right round.
  *
- * Nothing is placed and nothing is driven. Wherever the killing blow and the
- * floor put it is where it lies.
+ * Nothing is placed and nothing is driven. Wherever the blow and the floor
+ * put it is where it lies.
+ *
+ * A body knocked down is one of these too, for as long as it is down, with
+ * some life in it: motors in the same joints brace it on the way over, and
+ * gather it before it gets up -- the waist straightens and the legs draw in.
+ * It is then taken apart again, so that what stands up is a hull whose hips
+ * and legs are already more or less where the living figure keeps them: see
+ * `Fighter.beginRise`.
  *
  * The meshes are the living figure's, and stay where they are in its
  * hierarchy -- hips, belt, the balls at the hip and knee, the feet -- and are
@@ -68,7 +75,12 @@ export interface RagdollRig {
 const ANG_X = 3, ANG_Y = 4, ANG_Z = 5;
 interface JointRaw {
   jointSetLimits(handle: number, axis: number, min: number, max: number): void;
+  jointConfigureMotorModel(handle: number, axis: number, model: number): void;
+  jointConfigureMotorPosition(
+    handle: number, axis: number, target: number, stiffness: number, damping: number): void;
 }
+/** Rapier's MotorModel.ForceBased: the gains are a torque per radian and per rad/s, as given. */
+const MOTOR_BY_FORCE = 1;
 
 /**
  * How far each joint goes, radians, about its own X (forward and back), Y
@@ -105,6 +117,12 @@ export class Ragdoll {
   private readonly chestOnHull = new THREE.Matrix4();
   /** Last step's transform of every body this simulates, for render to ease from. */
   private readonly tracked: Tracked[] = [];
+  /** The joints by what they are, for `drive`: the waist, then each leg's hip and knee. */
+  private waistJoint!: RAPIER.ImpulseJoint;
+  private readonly hipJoints: RAPIER.ImpulseJoint[] = [];
+  private readonly kneeJoints: RAPIER.RevoluteImpulseJoint[] = [];
+  /** The hips' own collider: a stand-in for the hull's, which is switched off. */
+  readonly hipsCollider: RAPIER.Collider;
 
   constructor(private readonly rig: RagdollRig) {
     const { rapier, world } = rig.phys;
@@ -137,7 +155,7 @@ export class Ragdoll {
         .setAngularDamping(ANGULAR_DAMPING)
         .setCanSleep(false),
     );
-    world.createCollider(
+    this.hipsCollider = world.createCollider(
       rapier.ColliderDesc.capsule(
         Math.max(0.01, seg.pelvis.length / 2 - seg.pelvis.radius), seg.pelvis.radius)
         .setMass(seg.pelvis.mass)
@@ -156,7 +174,7 @@ export class Ragdoll {
 
     // --- the waist -----------------------------------------------------------
     const waist = rig.waist.clone().applyQuaternion(hullQuat).add(hullPos);
-    this.ball(hull, this.hips, waist, WAIST);
+    this.waistJoint = this.ball(hull, this.hips, waist, WAIST);
 
     // --- the legs --------------------------------------------------------------
     for (const leg of rig.legs) {
@@ -165,7 +183,7 @@ export class Ragdoll {
       // A leg's own +Y runs up it: the hip is half a thigh up the thigh, the
       // knee half a thigh down it and half a shin up the shin.
       const hip = pointOn(leg.thigh, 0, seg.thigh.length / 2);
-      this.ball(this.hips, leg.thigh, hip, HIP);
+      this.hipJoints.push(this.ball(this.hips, leg.thigh, hip, HIP));
       const knee = world.createImpulseJoint(
         rapier.JointData.revolute(
           { x: 0, y: -seg.thigh.length / 2, z: 0 },
@@ -176,6 +194,7 @@ export class Ragdoll {
       ) as RAPIER.RevoluteImpulseJoint;
       knee.setLimits(KNEE[0], KNEE[1]);
       this.joints.push(knee);
+      this.kneeJoints.push(knee);
     }
 
     // --- the neck ----------------------------------------------------------------
@@ -223,12 +242,56 @@ export class Ragdoll {
   /** A ball joint between two bodies at a world point, with a range on each axis. */
   private ball(
     a: RAPIER.RigidBody, b: RAPIER.RigidBody, at: THREE.Vector3, range: Range,
-  ): void {
+  ): RAPIER.ImpulseJoint {
     const { rapier, world } = this.rig.phys;
     const joint = world.createImpulseJoint(
       rapier.JointData.spherical(toLocal(a, at), toLocal(b, at)), a, b, true);
     limit(joint, range);
     this.joints.push(joint);
+    return joint;
+  }
+
+  /**
+   * Some life in it: the hips square under the chest, and each leg to the
+   * hip and knee `legs` gives it, flexion positive.
+   *
+   * A body knocked over is not a dead one. It goes over braced, held more or
+   * less straight on its way to the floor, rather than folding in a heap
+   * where it stood; and before it gets up it pulls itself together into the
+   * sprawl a living figure on the floor has its legs in, so there is little
+   * left to hide when the legs go back to being posed.
+   *
+   * Motors in the joints the body already has: a spring and damper to a
+   * target angle, closing at `rate`, 1/s, on what each joint has to move.
+   * That is worked out from the anatomy -- the upper body about the waist, a
+   * whole leg about the hip, a shin about the knee -- and not left to Rapier,
+   * whose own scaling goes by the two bodies a joint joins and nothing hung
+   * off them: at the waist, that is a pair of hips and a chest without its
+   * head and arms, and the motor could not lift the one off the floor. The
+   * floor, and anything on it, still has its say.
+   */
+  drive(legs: readonly { hip: number; knee: number }[], rate: number): void {
+    const seg = this.rig.build.segment;
+    const upper = seg.torso.mass + seg.head.mass + 2 * (seg.upperArm.mass + seg.foreArm.mass);
+    const leg = seg.thigh.mass + seg.shin.mass;
+    const waist = upper * seg.torso.length * seg.torso.length;
+    const hip = leg * seg.thigh.length * seg.thigh.length;
+    const knee = seg.shin.mass * seg.shin.length * seg.shin.length;
+    motor(this.waistJoint, [0, 0, 0], waist * rate * rate, 2 * waist * rate);
+    for (let i = 0; i < this.hipJoints.length; i++) {
+      motor(this.hipJoints[i], [legs[i].hip, 0, 0], hip * rate * rate, 2 * hip * rate);
+      const joint = this.kneeJoints[i];
+      joint.configureMotorModel(MOTOR_BY_FORCE);
+      // A knee's bend is negative about its hinge: see KNEE.
+      joint.configureMotorPosition(-legs[i].knee, knee * rate * rate, 2 * knee * rate);
+    }
+  }
+
+  /** Nothing in it: limp. */
+  relax(): void {
+    motor(this.waistJoint, [0, 0, 0], 0, 0);
+    for (const hip of this.hipJoints) motor(hip, [0, 0, 0], 0, 0);
+    for (const knee of this.kneeJoints) knee.configureMotorPosition(0, 0, 0);
   }
 
   /** Call once per step, before the physics step: what render eases from. */
@@ -315,6 +378,16 @@ function limit(joint: RAPIER.ImpulseJoint, r: Range): void {
   raw.jointSetLimits(joint.handle, ANG_X, r.x[0], r.x[1]);
   raw.jointSetLimits(joint.handle, ANG_Y, r.y[0], r.y[1]);
   raw.jointSetLimits(joint.handle, ANG_Z, r.z[0], r.z[1]);
+}
+
+/** A ball joint's motors, X, Y and Z, toward `target`: a stiffness of 0 and a damping of 0 is off. */
+function motor(joint: RAPIER.ImpulseJoint, target: readonly number[], k: number, d: number): void {
+  const raw = (joint as unknown as { rawSet: JointRaw }).rawSet;
+  const axes = [ANG_X, ANG_Y, ANG_Z];
+  for (let i = 0; i < 3; i++) {
+    raw.jointConfigureMotorModel(joint.handle, axes[i], MOTOR_BY_FORCE);
+    raw.jointConfigureMotorPosition(joint.handle, axes[i], target[i], k, d);
+  }
 }
 
 /** A point on a body, given in its own frame, in world space. */

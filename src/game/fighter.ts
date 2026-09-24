@@ -210,10 +210,11 @@ const FOLLOW_RATE = 12;
 // balance.ts says what a blow does; these are how the body carries it out. A
 // shove is a velocity on top of the one the feet are asked for, spent at the
 // rate a stumble can spend it. A stagger also takes the feet away from whoever
-// is steering them. A knockdown takes everything: the locks come off, the
-// body goes over, lies there, and is driven back up. Every duration goes with
-// the square root of the body's size, like anything else that moves under
-// gravity -- a goblin is back up sooner than an orc.
+// is steering them. A knockdown takes everything: the body goes limp -- the
+// same ragdoll a dead one is, see ragdoll.ts -- goes over however the blow and
+// the floor have it, lies there, pulls itself together, and is driven back up.
+// Every duration goes with the square root of the body's size, like anything
+// else that moves under gravity -- a goblin is back up sooner than an orc.
 
 /**
  * How fast stumbling feet catch a knocked body, as a share of gravity. A
@@ -231,16 +232,44 @@ const RECOIL_MAX = 4;
 /**
  * On the floor, before it starts to get up, seconds -- counted from when it
  * is lying there, not from the blow, since a fall takes as long as it takes.
+ * The first `LAND_TIME` of it is spent landing, and the last `GATHER_TIME`
+ * pulling itself together; in between, it is limp.
  */
 const LIE_TIME = 0.8;
-/** Lying is the hull's long axis within this cosine of flat: fifty degrees over. */
+/** Lying is the chest's long axis within this cosine of flat: fifty degrees over. */
 const FLOORED = 0.64;
 /** Propped against a wall, it counts as lying after this long anyway. */
 const FALL_MAX = 1.2;
+/**
+ * How hard a body knocked over holds itself on the way down, 1/s: what keeps
+ * it going over as a body rather than folding up where it stood, which is
+ * how the dead go down. Soft enough that it still gives where it lands.
+ */
+const BRACE_RATE = 5;
+/**
+ * And how long it goes on holding once it is over, seconds of lying. Let go
+ * the moment it tipped past flat, a body going over backwards landed on its
+ * shoulders with its legs still swinging, and they went on up into the air.
+ */
+const LAND_TIME = 0.25;
+/** Braced, the legs are held nearly straight: hip, knee. */
+const BRACE_LEG = { hip: 0.1, knee: 0.15 } as const;
+/**
+ * How long a body on the floor spends gathering itself before it gets up,
+ * seconds, and how fast its joints go to it, 1/s: the waist straightening
+ * under the chest and the legs drawing in. It is what makes getting up start
+ * from a body rather than from wherever its limbs happened to land.
+ */
+const GATHER_TIME = 0.3;
+const GATHER_RATE = 14;
 /** Getting up, seconds. */
 const RISE_TIME = 0.65;
-/** How freely a body on the floor turns: enough that a capsule does not roll about like a log. */
-const DOWN_DAMPING = 1.5;
+/**
+ * Over the first this-long of getting up, seconds, the hips and legs are drawn
+ * from where they lay limp to where the living figure poses them, so what was
+ * left over from the gathering does not show as a jump.
+ */
+const UNLIMP_TIME = 0.25;
 /** A rise cannot be dragged anywhere faster than this, m/s and rad/s, whatever it has hit. */
 const RISE_SPEED = 6;
 const RISE_SPIN = 12;
@@ -437,6 +466,31 @@ export class Fighter {
   private readonly risePivot = new THREE.Vector3();
   /** 0 on its feet, 1 slack on the floor. Blended, so the legs do not pop. */
   private sprawl = 0;
+  /** Going over held together, until it is over: see `BRACE_RATE`. */
+  private braced = false;
+  /** Pulling itself together on the floor to get up. */
+  private gathering = false;
+  /** How far the feet sink over a rise: from where the lying body left them to the floor. */
+  private riseDrop = 0;
+  /**
+   * How much of the pose it lay in is left to show, 1 just up off the floor
+   * and 0 once the living pose has it all: see `easeFromLimp`.
+   */
+  private unlimp = 0;
+  /** The pose it lay in, as the figure's own groups had it: see `easeFromLimp`. */
+  private readonly limpPose = {
+    pelvisP: new THREE.Vector3(), pelvisQ: new THREE.Quaternion(),
+    chestP: new THREE.Vector3(), chestQ: new THREE.Quaternion(),
+    hips: [new THREE.Quaternion(), new THREE.Quaternion()],
+    knees: [new THREE.Quaternion(), new THREE.Quaternion()],
+  };
+  /**
+   * Told when a ragdoll's hips come to stand in for the hull's, which is
+   * switched off -- with the collider's handle and the part it stands in
+   * for -- and with `part` null when they hand back. Whatever routes hits
+   * needs to know, or the hips of a body on the floor are scenery.
+   */
+  onStandIn?: (handle: number, part: string | null) => void;
 
   constructor(
     private phys: PhysicsWorld,
@@ -1312,10 +1366,12 @@ export class Fighter {
     swing.severity = Math.max(swing.severity, blow.severity);
 
     if (this.stance === "down") {
-      // Loose on the floor, it is shoved like anything else lying there.
+      // Loose on the floor, it is shoved like anything else lying there --
+      // the piece that was hit, which drags the rest after it by its joints.
       if (worse) {
-        const j = blow.speed * this.body.mass();
-        this.body.applyImpulseAtPoint(
+        const hit = this.phys.world.getCollider(impact.colliderHandle)?.parent() ?? this.body;
+        const j = blow.speed * hit.mass();
+        hit.applyImpulseAtPoint(
           { x: impact.into.x * j, y: impact.into.y * j, z: impact.into.z * j },
           { x: impact.at.x, y: impact.at.y, z: impact.at.z }, true);
       }
@@ -1363,9 +1419,10 @@ export class Fighter {
   }
 
   /**
-   * Over it goes. The rotation locks come off and nothing drives the body:
-   * it carries on the way the blow sent it, and it topples -- its top along
-   * the blow if it was hit high, its feet along it if it was hit low.
+   * Over it goes, limp. Nothing drives the body: it carries on the way the
+   * blow sent it, and it topples -- its top along the blow if it was hit
+   * high, its feet along it if it was hit low -- and bends wherever a body
+   * bends on the way down.
    */
   private knockDown(blow: Blow): void {
     this.traverse = null;
@@ -1374,8 +1431,6 @@ export class Fighter {
     this.lying = 0;
     this.reel = 0;
     this.knock.set(0, 0, 0);
-    this.body.setEnabledRotations(true, true, true, true);
-    this.body.setAngularDamping(DOWN_DAMPING);
 
     const lv = this.body.linvel();
     this.body.setLinvel({ x: lv.x + blow.knock.x, y: lv.y, z: lv.z + blow.knock.z }, true);
@@ -1385,6 +1440,9 @@ export class Fighter {
     const av = this.body.angvel();
     this.body.setAngvel(
       { x: av.x + axis.x * rate, y: av.y, z: av.z + axis.z * rate }, true);
+    this.goLimp();
+    this.braced = true;
+    this.ragdoll!.drive(this.legs.map(() => BRACE_LEG), BRACE_RATE / Math.sqrt(this.build.scale));
   }
 
   /**
@@ -1411,7 +1469,23 @@ export class Fighter {
       part.body?.resetTorques(true);
       part.body?.resetForces(true);
     }
+    // Knocked down already, it may have been bracing, or pulling itself together.
+    this.ragdoll?.relax();
+    this.braced = false;
+    this.gathering = false;
+    this.goLimp();
+  }
+
+  /**
+   * The hull stops holding the body up, and the body becomes a ragdoll:
+   * see ragdoll.ts. Built from however the posture had the trunk, so nothing
+   * jumps -- and the head stops being held, for as long as it is limp.
+   */
+  private goLimp(): void {
     if (this.ragdoll) return;
+    this.head.resetTorques(true);
+    this.posture.still();
+    this.unlimp = 0;
     const head = this.parts.find((p) => p.name === "head");
     const pose = this.posture.pose;
     this.ragdoll = new Ragdoll({
@@ -1424,6 +1498,25 @@ export class Fighter {
       hipsAt: new THREE.Vector3(0, -pose.drop, 0),
       hipsQuat: pose.hipsQuat(new THREE.Quaternion()),
     });
+    this.onStandIn?.(this.ragdoll.hipsCollider.handle, "pelvis");
+  }
+
+  /**
+   * Not limp any more: the ragdoll taken apart, the hips back on the hull
+   * and the legs posed again. The neck was given a range to hang by, which a
+   * living head does not have, so it is jointed back on without one.
+   */
+  private firmUp(): void {
+    const ragdoll = this.ragdoll;
+    if (!ragdoll) return;
+    this.onStandIn?.(ragdoll.hipsCollider.handle, null);
+    ragdoll.dispose();
+    this.ragdoll = null;
+    const head = this.parts.find((p) => p.name === "head");
+    if (head?.joint) {
+      this.phys.world.removeImpulseJoint(head.joint, true);
+      head.joint = this.jointFor("head");
+    }
   }
 
   /**
@@ -1455,7 +1548,7 @@ export class Fighter {
     this.ragdoll?.capture();
   }
 
-  /** Whether this body has gone limp for good. */
+  /** Whether this body is limp: dead, or knocked down and not yet getting up. */
   get limp(): boolean {
     return this.ragdoll !== null;
   }
@@ -1463,11 +1556,11 @@ export class Fighter {
   /**
    * A step on the floor, or on the way up off it.
    *
-   * The body is not driven at all while it lies there: it is a dynamic body
-   * with its locks off, and wherever the blow and the floor put it is where it
-   * is. The legs, the posture and the held head carry on, so what lies there
-   * is still a body -- and the legs, being kinematic, have to be told where it
-   * has fallen or they would stay standing without it. The arms hang limp.
+   * The body is not driven at all while it lies there: it is a ragdoll, and
+   * wherever the blow and the floor put it is where it is. Nothing is posed
+   * either -- the posture, the legs and the head all wait, as a dead body's
+   * do -- until the last moments, when it pulls itself together to get up.
+   * The arms hang limp throughout.
    */
   private updateDown(t: Tuning, dt: number): void {
     this.stanceTime += dt;
@@ -1479,15 +1572,31 @@ export class Fighter {
     this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
 
     const pace = Math.sqrt(this.build.scale);
-    if (this.stance === "down") {
-      // How upright the hull still is: the height of its long axis.
+    const ragdoll = this.ragdoll;
+    if (this.stance === "down" && ragdoll) {
+      ragdoll.capture();
+      // How upright the chest still is: the height of its long axis.
       const r = this.body.rotation();
       const upright = 1 - 2 * (r.x * r.x + r.z * r.z);
       if (upright < FLOORED || this.stanceTime > FALL_MAX * pace) this.lying += dt;
+      // Down and landed: let go, and lie there as a body lies.
+      if (this.braced && this.lying >= LAND_TIME * pace) {
+        this.braced = false;
+        ragdoll.relax();
+      }
+      if (!this.gathering && this.lying >= (LIE_TIME - GATHER_TIME) * pace) {
+        this.gathering = true;
+        const legs = this.legs.map((l) => {
+          const [hip, knee] = l.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
+          return { hip, knee };
+        });
+        ragdoll.drive(legs, GATHER_RATE / pace);
+      }
       if (this.lying >= LIE_TIME * pace) this.beginRise();
-    } else {
-      this.rise(dt, RISE_TIME * pace);
+      else return;
     }
+    if (this.stance === "rising") this.rise(dt, RISE_TIME * pace);
+    this.unlimp = Math.max(0, this.unlimp - dt / (UNLIMP_TIME * pace));
 
     this.posture.update(null, null, this.yaw, this.body.translation(), t, dt);
     this.applyPosture();
@@ -1498,16 +1607,87 @@ export class Fighter {
   /**
    * Start getting up: from however it lies, round its feet, to standing and
    * facing the way it faced before it went over.
+   *
+   * The ragdoll is taken apart first, and what gets up is the hull again --
+   * the chest, which never stopped being it, carrying the hips and legs
+   * posed. Two of its colliders are kept out of the way until it is on its
+   * feet: the walking capsule, which lies along the chest and would come
+   * back on half in the floor, and the hips', which the gathering will have
+   * brought close to where they are but not onto it. The hips can still be
+   * hit meanwhile; they just do not meet the floor.
    */
   private beginRise(): void {
+    this.snapshotLimp();
+    this.firmUp();
+    this.braced = false;
+    this.gathering = false;
+    this.hullCollider.setEnabled(false);
+    this.pelvisCollider.setCollisionGroups(this.side.hitOnlyFilter);
+    this.body.setLinearDamping(0.2);
+    this.unlimp = 1;
+    this.sprawl = 1;
+
     this.stance = "rising";
     this.stanceTime = 0;
     const r = this.body.rotation();
     this.riseFrom.set(r.x, r.y, r.z, r.w);
     this.riseTo.setFromAxisAngle(UP, this.yaw);
     const p = this.body.translation();
-    this.risePivot.set(0, -this.build.hull.height / 2, 0)
+    const half = this.build.hull.height / 2;
+    this.risePivot.set(0, -half, 0)
       .applyQuaternion(this.riseFrom).add(_extra.set(p.x, p.y, p.z));
+    // The feet come down to whatever is under them. Lying on a hull, that was
+    // always a hull's radius; lying as a body, it is wherever the chest and
+    // hips hold them.
+    this.downRay.origin = { x: this.risePivot.x, y: this.risePivot.y + half, z: this.risePivot.z };
+    const floor = this.phys.world.castRay(
+      this.downRay, 2 * half, true, undefined, this.side.groundFilter, undefined, this.body);
+    this.riseDrop = floor === null ? this.build.hull.radius : floor.timeOfImpact - half;
+
+    // The legs back under the figure outright, where the living pose has them
+    // -- a sprawl -- rather than dragged there across a step.
+    this.poseLegs(true);
+  }
+
+  /**
+   * The pose the ragdoll last lay in, as the figure's own hips, chest and leg
+   * pivots had it: what `easeFromLimp` draws them out of.
+   */
+  private snapshotLimp(): void {
+    if (!this.ragdoll) return;
+    const p = this.body.translation();
+    const r = this.body.rotation();
+    this.mesh.position.set(p.x, p.y, p.z);
+    this.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+    this.ragdoll.pose(1);
+    const l = this.limpPose;
+    l.pelvisP.copy(this.pelvis.position);
+    l.pelvisQ.copy(this.pelvis.quaternion);
+    l.chestP.copy(this.chest.position);
+    l.chestQ.copy(this.chest.quaternion);
+    for (let i = 0; i < this.legs.length; i++) {
+      l.hips[i].copy(this.legs[i].hipPivot.quaternion);
+      l.knees[i].copy(this.legs[i].kneePivot.quaternion);
+    }
+  }
+
+  /**
+   * Just up off the floor, draw the hips, chest and legs out of the pose they
+   * lay in toward the one the living figure has them in, over `UNLIMP_TIME`.
+   * The gathering leaves the difference small; this hides what is left.
+   */
+  private easeFromLimp(): void {
+    if (this.unlimp <= 0) return;
+    const w = smoothstep(0, 1, this.unlimp);
+    const l = this.limpPose;
+    this.pelvis.position.lerp(l.pelvisP, w);
+    this.pelvis.quaternion.slerp(l.pelvisQ, w);
+    this.chest.position.lerp(l.chestP, w);
+    this.chest.quaternion.slerp(l.chestQ, w);
+    for (let i = 0; i < this.legs.length; i++) {
+      this.legs[i].hipPivot.quaternion.slerp(l.hips[i], w);
+      this.legs[i].kneePivot.quaternion.slerp(l.knees[i], w);
+    }
   }
 
   /**
@@ -1524,7 +1704,7 @@ export class Fighter {
     const q = _qRise.slerpQuaternions(this.riseFrom, this.riseTo, s);
     const target = _pRise.set(0, this.build.hull.height / 2, 0).applyQuaternion(q)
       .add(this.risePivot);
-    target.y -= this.build.hull.radius * s;
+    target.y -= this.riseDrop * s;
 
     const p = this.body.translation();
     const lin = target.set(target.x - p.x, target.y - p.y, target.z - p.z)
@@ -1553,6 +1733,10 @@ export class Fighter {
     this.stanceTime = 0;
     this.knock.set(0, 0, 0);
     this.reel = 0;
+    // Standing on its feet at the floor, the walking capsule can come back
+    // without landing in anything, and the hips meet the world again.
+    this.hullCollider.setEnabled(true);
+    this.pelvisCollider.setCollisionGroups(this.side.bodyFilter);
     this.body.setRotation(
       { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
@@ -1880,7 +2064,7 @@ export class Fighter {
       // forward, and the knee folds the other way -- the foot goes back -- so
       // the same number turns the shin through minus it. Forward here would
       // bend the leg like a horse's hind leg.
-      leg.kneePivot.rotation.x = -leg.knee;
+      leg.kneePivot.rotation.set(-leg.knee, 0, 0);
     }
     this.mesh.updateMatrixWorld(true);
 
@@ -2174,7 +2358,7 @@ export class Fighter {
    */
   applyPose(alpha: number): void {
     const a = alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
-    // Dead, nothing is posed: hips, chest and legs lie as their bodies do.
+    // Limp, nothing is posed: hips, chest and legs lie as their bodies do.
     if (this.ragdoll) {
       this.ragdoll.pose(a);
       return;
@@ -2185,8 +2369,9 @@ export class Fighter {
       leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
       leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a - pose.hipSwing;
       leg.hipPivot.rotation.z = -pose.roll;
-      leg.kneePivot.rotation.x = -(leg.prevKnee + (leg.knee - leg.prevKnee) * a);
+      leg.kneePivot.rotation.set(-(leg.prevKnee + (leg.knee - leg.prevKnee) * a), 0, 0);
     }
+    this.easeFromLimp();
   }
 
   /**
@@ -2216,8 +2401,15 @@ export class Fighter {
     // Alive again: the hips back on the hull, and the legs posed. The neck a
     // corpse was given a range for is rebuilt below, once the head is back.
     const wasLimp = this.ragdoll !== null;
+    if (this.ragdoll) this.onStandIn?.(this.ragdoll.hipsCollider.handle, null);
     this.ragdoll?.dispose();
     this.ragdoll = null;
+    // Reset halfway up off the floor, these were still out of the way.
+    this.hullCollider.setEnabled(true);
+    this.pelvisCollider.setCollisionGroups(this.side.bodyFilter);
+    this.braced = false;
+    this.gathering = false;
+    this.unlimp = 0;
     this.yaw = 0;
     this.hurt = 0;
     this.stridePhase = 0;

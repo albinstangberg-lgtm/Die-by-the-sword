@@ -159,6 +159,18 @@ export class Combatant {
       this.handles.set(part.collider.handle, { joint: null, part: part.name });
       targets.register(part.collider.handle, `${possessive} ${part.label}`);
     }
+    // Limp, the hips are a body of their own with a collider of their own:
+    // it is hit as the hips it stands in for.
+    this.fighter.onStandIn = (handle, part) => {
+      if (part === null) {
+        this.handles.delete(handle);
+        targets.forget(handle);
+        return;
+      }
+      const label = this.fighter.parts.find((p) => p.name === part)?.label ?? part;
+      this.handles.set(handle, { joint: null, part });
+      targets.register(handle, `${possessive} ${label}`);
+    };
   }
 
   private register(targets: Targets, handle: number, joint: ArmJoint, label: string): void {

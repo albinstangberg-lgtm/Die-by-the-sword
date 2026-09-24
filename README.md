@@ -31,7 +31,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 266 checks, no browser needed
+npm run smoke    # headless physics harness — 275 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -226,7 +226,10 @@ A blade collides with a body the way it collides with stone and with another
 blade: the other team's bodies, and the practice dummy. A cut lands on the first
 thing it meets and stops there. An arm held across a chest takes the blow the
 chest would have taken, a shield takes it before either, and a blade that meets
-a hip does not carry on into the ribs. An ally's body it still passes through.
+a hip does not carry on into the ribs. An ally's body it still passes through,
+and so does a weapon nobody is swinging — in the hand of someone lying on the
+floor, or on an arm that has come off: it lies on the stone and meets other
+blades, and bodies step over it.
 
 For a long time it was the other way round, and for a good reason. Modelling
 flesh as something a blade collides with means the solver brakes the blade the
@@ -288,13 +291,13 @@ body's change of speed = closing speed × m_blow / (m_blow + M)
 
 Past two fifths of its balance a body **staggers**: its feet scramble, it
 steps back while they catch it, and whatever it was winding up is gone. Past
-all of it, it **goes down**. The rotation locks come off, nothing drives it,
-and it falls the way the blow sent it — over its feet if it was hit high, onto
-its back if its legs were taken. It lies there most of a second, then is driven
-back up round its feet, the way it is walked — by its velocity, never placed —
-and takes its weapon back up to the guard. Only the sideways part of a blow
-counts: one straight down drives a body into the floor, and the floor pushes
-back.
+all of it, it **goes down**: limp, a ragdoll (see *Knocked down*, below), and
+it falls the way the blow sent it — over its feet if it was hit high, onto its
+back if its legs were taken. It lies there most of a second, pulls itself
+together, is driven back up round its feet the way it is walked — by its
+velocity, never placed — and takes its weapon back up to the guard. Only the
+sideways part of a blow counts: one straight down drives a body into the floor,
+and the floor pushes back.
 
 The same swing — your sword, 8 m/s into the upper chest:
 
@@ -386,6 +389,27 @@ the stump higher up; a goblin's shoulders are wide for its reach.
 
 A hand on a ledge, a shield on that arm, or a player steering it with the left
 button keeps it; everything else, the wound gets.
+
+### Knocked down
+
+A body knocked over is a ragdoll for as long as it is down — the same one a
+dead body becomes, below: the walking capsule switched off, the hips come away
+on a waist that bends, the legs simulated, the neck hanging on a range. But it
+is not a dead one. It goes over **braced**: soft motors in the waist, hips and
+knees hold it more or less straight, so it goes over as a body rather than
+folding up where it stood, and they let go a quarter of a second after it lands.
+Then it lies limp. Before it gets up it **pulls itself together** on the same
+motors — the waist straightens under the chest and a knee draws up — and then
+the ragdoll is taken apart, and what gets up is the hull: the chest, which
+never stopped being it, with the hips and legs drawn out of how they lay into
+the living pose over the first quarter of a second, so nothing jumps. The
+walking capsule stays off until it is on its feet, since lying along the chest
+it would come back on half in the floor.
+
+Down, it is still a body. The hips on the floor can be cut, a blow to it moves
+the piece it lands on and drags the rest after it, and knocked flat again on
+its way up it goes limp again from wherever it had got to. Killed where it
+lies, it simply stays down.
 
 ### Dying
 
@@ -852,7 +876,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Forty-eight things the physics taught us
+## Fifty-one things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1273,6 +1297,33 @@ root of the drop: the last millimetre of a dip fading out after the feet had
 stopped bent a man standing still a tenth of a radian at both knees. The dip
 only comes in well into a walk now, and is gone before the stride is.
 
+**A joint motor is only as strong as the two bodies it joins.** Rapier's
+acceleration-based motors scale their gains by the joint's own effective mass —
+the two bodies it joins, and nothing hung off them. The waist of a body on the
+floor joins a pair of hips to a chest without its head or arms, so the motor
+meant to straighten it before it got up took out the twist and the side bend,
+which only slide along the floor, and could not lift either end off it: the
+chest stayed 49° off square, on its limit, with the motor on. The gains are a
+torque now, worked out from the anatomy — the whole upper body about the waist,
+a whole leg about the hip, a shin about the knee — and the same waist comes
+straight to within two degrees.
+
+**A spring left moving waits.** A blow throws the chest away from it with a kick
+to the posture's springs, and a body gone limp stops stepping its posture — so
+the flinch from the blow that floored it waited out the whole time it lay
+there, and then threw the chest's collider into the floor the step it began to
+get up. The body jumped six degrees, and the legs drawn on it eight
+centimetres into the floor. Going limp stops every spring where it is.
+
+**Nothing pushes back on a kinematic leg.** The legs are posed, not simulated,
+so they meet nothing but hostile blades — a leg that could touch the room would
+bulldoze it. Once blades met bodies, though, the legs met every hostile blade,
+including one lying on the floor in a dead hand: a foot coming down on a
+goblin's spear fired it off at seventeen metres a second, with the goblin still
+holding it. About one run of the harness in a hundred found a corpse fourteen
+metres from where it fell, without a blow having landed on it. A weapon nobody
+is swinging stops meeting bodies now.
+
 And five about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1489,7 +1540,8 @@ src/
                      how far a crouch sinks it and a stoop bows it over, the
                      hips and chest walking with the legs, breathing, and
                      curling round a lost arm
-    ragdoll.ts       a body with nobody in it: hips, legs and waist let go
+    ragdoll.ts       a body with nobody in it, or knocked flat: hips, legs and
+                     waist let go -- braced going over, gathered to get up
     offarm.ts        the other arm: a ghost hand of its own, and a shield on it
     shield.ts        a round shield: what it weighs and how it is drawn
     drive.ts         an angular PD held inside what each axis's inertia can take

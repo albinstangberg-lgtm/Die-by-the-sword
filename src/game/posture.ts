@@ -414,6 +414,19 @@ export class Posture {
     this.gazeYaw = this.gazePitch = this.gazeRoll = 0;
   }
 
+  /**
+   * Hold the posture where it is, with nothing moving: every spring's speed
+   * taken away. For a body that goes limp, whose trunk the ragdoll carries
+   * from here -- a flinch left in the springs would otherwise wait out the
+   * whole time it lay on the floor and throw the chest the moment it began
+   * to get up.
+   */
+  still(): void {
+    for (const s of [this.twist, this.hips, this.leanS, this.bendS,
+      this.protractS, this.elevateS, this.gazeYawS, this.gazePitchS, this.sinkS]) s.v = 0;
+    this.prev.copy(this.pose);
+  }
+
   // ---------------------------------------------------------------------------
   // Per step
   // ---------------------------------------------------------------------------
