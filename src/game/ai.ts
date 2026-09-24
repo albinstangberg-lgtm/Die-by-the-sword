@@ -335,7 +335,7 @@ interface Step {
 export class Ai implements ArmInput {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, jump: false,
+    turnLeft: false, turnRight: false, jump: false, crouch: false,
   };
 
   private state: State = "waiting";
@@ -1149,7 +1149,8 @@ export class Ai implements ArmInput {
 
   /** Is a swing coming its way: your blade near it, and coming at it? */
   private threat(self: Combatant, foe: Combatant): boolean {
-    if (foe.dead || foe.fighter.down || foe.arm.disarmed) return false;
+    // Nothing in the hand is nothing to get out of the way of.
+    if (foe.dead || foe.fighter.down || !foe.arm.wielding) return false;
     const arm = foe.arm;
 
     // The nearest the weapon comes to it, hand to tip, flat on the floor.
@@ -1372,9 +1373,10 @@ export class Ai implements ArmInput {
       case "body":
         break;
     }
+    // The middle of your chest, wherever a crouch has taken it.
     return out.set(
       this._foe.x,
-      this._foe.y - f.build.hullCentreY + f.build.standing.crown * CHEST,
+      this._foe.y - f.build.hullCentreY + f.build.standing.crown * CHEST - f.sink,
       this._foe.z);
   }
 

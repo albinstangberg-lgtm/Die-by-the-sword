@@ -19,11 +19,15 @@ pointing where you aimed. And a blow now lands with its weight: the swing that
 puts a goblin on the floor does not move an orc. And nothing tells you what is
 coming any more: an opponent makes each swing up as it throws it, aimed at
 whatever of you is there, and the only warning is its weapon going back.
+And now there is a second arm worth having: it holds still, it can carry a
+shield you steer with the other mouse button, and the sword can go on your
+back to leave a hand free for a potion. You can crouch under a cut and vault
+what is waist high.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 201 checks, no browser needed
+npm run smoke    # headless physics harness — 231 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -33,11 +37,16 @@ npm run build    # production bundle
 |---|---|
 | **mouse** | the sword arm |
 | **right-drag** | hold the right button, move left/right to roll the cutting edge |
-| **wheel** | reach — extend and retract |
+| **left-drag** | hold the left button: the mouse moves the other arm — and the shield on it — instead |
+| **wheel** | reach — extend and retract, for whichever arm the mouse is on |
 | **W / S** | forward, back |
 | **A / D** | turn (arrow keys also work) |
 | **Q / E** | sidestep |
-| **Space** | jump |
+| **Space** | jump — or, running at something waist high, vault it |
+| **C** | hold to crouch |
+| **X** | sword on your back, and back in your hand |
+| **F** | pick up what is in reach — sword on your back first |
+| **H** | drink a potion — takes a free hand |
 | **Tab** | tuning panel |
 | **R** | reset the fight |
 | **Esc** | release the mouse |
@@ -55,6 +64,10 @@ Right-drag is modal: while the button is down, horizontal mouse travel rolls the
 edge instead of sweeping the arm sideways. Vertical travel still aims, so you
 never lose height control while setting your edge. The HUD says `ROLLING` while
 it's live.
+
+Left-drag is the same kind of switch for the other hand: while it is down, the
+mouse and the wheel move the off arm, and the sword holds where you left it.
+The HUD says `SHIELD` while it's live.
 
 ## How the mechanic works
 
@@ -320,6 +333,104 @@ with nothing else, and **a swept hit is flesh**, because that is the only thing
 a sweep looks for. Sparks come off the wall, blood comes out of the body, and
 neither has to be told what it hit.
 
+## The other arm, and what you carry
+
+### The other arm holds still
+
+The off arm used to be held in a pose by a weak spring on each bone, and it
+flopped: stood perfectly still, both bones spun about their own length at a
+steady 37 radians a second, and the first shove of a sidestep threw the limb
+over to the wrong side of the body. It was the sword arm's roll singularity
+(see the findings) on the arm nobody had gone back to. The head, held the same
+way, buzzed about its own vertical at 15.
+
+It is the sword arm's mechanic now, on a smaller budget: a ghost hand solved
+from the off shoulder, the same two-bone elbow, a clamped PD drive pulling the
+real hand after it, the limb's weight fed forward. It is damped against the
+ghost's own motion, so a body that walks does not leave its hand behind. And
+every gain is held inside what an explicit step on that bone's inertia can take
+about each of its principal axes ([`drive.ts`](src/game/drive.ts)) — the one
+rule the old spring broke. Empty, the hand rests in front of the belly on a
+third of the sword arm's budget, loose enough to swing a little when you turn
+and settle back. Standing still it now reads 0.00 rad/s.
+
+### The shield
+
+A round shield of wood and iron, 3.2 kilos, strapped to the off forearm as a
+collider on the forearm's own body — so it goes wherever the forearm goes,
+including onto the floor if the forearm is cut off. It has a blade's collision
+groups: it meets the world and other blades, and nothing that bleeds. So an
+enemy's cut that finds it is stopped by the solver exactly as a parry is, and
+never reaches the sweep that finds flesh. It does no damage and takes none.
+
+What it cannot do is make a blow weigh less. A blocked blow is weighed like any
+other (see [Weight](#weight)): an axe caught on a shield still staggers you, it
+just leaves you whole.
+
+With a shield on, the off arm takes the sword arm's whole budget and holds a
+guard across the chest, the elbow out and forward so the forearm — and the
+shield on it — runs across the body and faces ahead. Hold the left button and
+move the mouse to put it somewhere else; let go and it stays there, as the
+sword does. Held still at its guard, against opponents that do not know it is
+there, it takes six to nine blows a bout; in the harness a dozen scripted cuts
+at a chest behind it do a third of the damage they do without it. Where it
+goes is up to you.
+
+There are two. One hangs on a rack against the training room's east wall: take
+it down to practise with and hang it back to fight without, as often as you
+like. The other lies in the far corner of the hall, past the orc.
+
+### The scabbard
+
+**X** puts the sword on your back, hilt over the sword shoulder and point toward
+the other hip, and takes it out again. On your back it is out of the world: the
+joint that held it in the hand is taken out, and it rides the chest as a body
+nothing can touch, so it cannot cut, parry, or snag a door frame. The hand is
+empty and the arm still goes where the mouse sends it. Drawn, it comes back
+into the hand laid along the forearm, moving with it, jointed on across no gap.
+
+An empty hand is a different arm. The drives were tuned on a hand with a sword
+in it; empty, the same gains shook it back and forth every step at the clamp.
+It gets half the linear drive and the same inertia-bounded turning as the off
+arm, and holds still.
+
+### Picking things up, and potions
+
+**F** takes whatever is in reach — about a stride from the middle of you — and
+the hand that takes things is the sword hand. So the sword has to be on your
+back first, and picking something up in a fight costs you your sword for as
+long as it takes. The prompt at the bottom of the screen says what F would do.
+
+Potions go on your belt. **H** drinks one, and that takes a free hand: the sword
+hand with the sword away, or the other hand with no shield on it. A potion
+gives back two fifths of your health over two seconds rather than at once, so
+drinking in the middle of a fight is a bet on those two seconds. There is one
+by the rack, two in the hall — one behind the block — and one at the back of
+the cell.
+
+### Crouching
+
+Hold **C** and the hips sink 38 centimetres, the chest tips forward over them,
+and everything above them goes down with them: the chest and its collider,
+the shoulders the arms hang from, the neck, the head. The legs bend under it by
+a two-bone solve that keeps the feet on the floor. The hull that walks does
+not change; it is invisible and no blade finds it, so what a crouch takes out
+of the way of a swing is the body you can see and cut. Crouched you walk at
+under half speed. An opponent aims at wherever your head and chest are, while
+it draws back — so a crouch after the swing has gone is a crouch under it.
+
+### Vaulting
+
+Running at something between knee and chest high, **Space** goes over it
+instead of straight up. It asks the stone first, the same stone footwork asks:
+something at knee height within a stride, a top between a knee and a chest when
+looked down on, a far side within a pace and a half, and floor to land on with
+nothing overhead. A wall fails the top, a pillar fails it too. The body is then
+driven up, over and down by its velocity, the way it is walked and got up off
+the floor — never placed — so anything in the way still has its say. Your arms
+are yours the whole way over. The hall's block is vaultable, and the training
+room has a low wall along its west side to practise on.
+
 ## The testing area
 
 Three rooms, and the point of them is that they are not one room.
@@ -342,8 +453,10 @@ Three rooms, and the point of them is that they are not one room.
                you start here
 ```
 
-You start in the training room with the practice dummy and four pillars, and
-nothing else in it — a cut you land there is a cut you can read. North through
+You start in the training room with the practice dummy and four pillars — and
+a shield on a rack by the east wall, a potion beside it, and a low wall along
+the west side to vault — and nothing else in it: a cut you land there is a cut
+you can read. North through
 the door is the hall, which holds the orc and the scenery a big swing gets
 caught on. East out of the hall is the cell, which holds the goblin and
 nothing at all, because a spear's reach is the whole argument and a cluttered
@@ -627,7 +740,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Thirty-six things the physics taught us
+## Thirty-nine things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -964,7 +1077,24 @@ should have, still took the axe twelve times in sixteen. Once its feet leave the
 floor now it holds its line and its aim at where you were: nine chops in ten on
 someone who stands there, and none on someone who steps aside.
 
-And three about the harness rather than the game:
+**An arm nobody drives is still being driven.** The off arm was "held in a
+living posture" by a spring on each bone, weak on purpose, and it was never
+still: its damping, applied explicitly, was six or seven times what a bone's
+inertia about its own length can take in one step. Each bone flipped its spin every step
+and sat at the torque clamp, 37 rad/s, forever — and the head, on the same kind
+of spring with two thirds too much damping, buzzed at 15. A weak controller is not
+a safe one. Every drive here now asks the body what it can take, axis by axis,
+before it pushes.
+
+**An empty hand is a different arm.** The sword arm was tuned with a sword in
+it, and the day it could put the sword away the same gains shook the empty hand
+back and forth every step at the clamp, a centimetre from where it was sent.
+Nothing had changed but the load: a kilo and a half of steel at the end of the
+forearm is most of what the linear drive was pushing, and the forearm's swing
+and the upper arm's roll — one motion when the elbow is bent — weigh a
+fraction of what two drives damping them at once assumed.
+
+And four about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
 aim by the whole measured error, on both axes, including the part of the error
@@ -986,6 +1116,13 @@ much of the test's work. Measured on where the spear *points*, on the same
 physics, the butt-held spear lagged by 0.81: never a fifth. The test now
 measures the direction and asks for a tenth; the claim was true, just smaller
 than the number that proved it.
+
+**A test can pass because nothing happened.** "A sheathed sword cuts nothing
+it passes through" backed the player through the practice dummy with the sword
+on their back, and passed — and passed just as well with the code that stops a
+sheathed sword being swept for cuts taken out. The body shoves the dummy aside
+before the scabbard gets there. It measured nothing, and now asks only what is
+true: that a sword on your back is out of the world.
 
 **The scripted player is part of the test.** The footwork checks roll dice, so
 they were run across dozens of seeds before their numbers were set, and three
@@ -1109,6 +1246,18 @@ Some things look like bugs and are not:
   does nothing until you are up and the sword is back at the guard.
 - **A stagger costs your feet, not your arm.** While you reel you cannot walk,
   sidestep or jump, but you can still swing.
+- **Your shield stays where you left it.** Let go of the left button and it
+  holds that guard, as the sword holds its aim. An empty off hand goes back to
+  hanging in front of you.
+- **A blocked blow can still put you on your back.** The shield stops the
+  blade, not the weight behind it.
+- **F does nothing with your sword drawn.** The hand that picks things up is
+  the one holding it. X first.
+- **H does nothing with a sword in one hand and a shield on the other arm.**
+  Drinking takes a free hand.
+- **Space runs you up and over a low wall instead of jumping.** Only when you
+  are moving forward and it is waist high and within a stride; standing still
+  it is a jump.
 - **Standing still gets you killed in well under a minute** by whichever of
   them you have walked in on, and much faster by both, if you manage to bring
   them together.
@@ -1130,12 +1279,19 @@ src/
     weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
     species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
     anatomy.ts       one set of proportions, scaled to any body
-    fighter.ts       torso, locomotion, the jump, feet that stay planted, and
-                     a body that can be knocked over and get back up
-    posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze
+    fighter.ts       torso, locomotion, the jump and the vault, feet that stay
+                     planted, legs that bend into a crouch, and a body that can
+                     be knocked over and get back up
+    posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
+                     and how far a crouch sinks it
+    offarm.ts        the other arm: a ghost hand of its own, and a shield on it
+    shield.ts        a round shield: what it weighs and how it is drawn
+    drive.ts         an angular PD held inside what each axis's inertia can take
+    items.ts         potions, the shield and the rack, and taking them
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
-    arena.ts         three rooms built to be hit, and the doors between them
+    arena.ts         three rooms built to be hit, the doors between them, and
+                     where the things lying about are put down
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
     cutting.ts       swept-segment hit detection: how a weapon finds flesh
@@ -1152,7 +1308,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 201 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 231 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1230,6 +1386,19 @@ half a metre; that the axe is up before it jumps and comes down in the air;
 that it lands on someone who stands there and misses someone who steps aside as
 it jumps; and that it walks up to you, rather than leaping, the first time.
 
+And it holds the new kit to its claims: that the other arm and the head hold
+still standing, and the arm settles back where it hangs after a walk; that X
+puts the sword on your back, out of the world, with the empty hand steady, and
+draws it back into the hand within half a millimetre; that nothing is picked up
+with the sword drawn, a potion heals over seconds and never past full, and with
+a shield on one arm and a sword in the other there is no hand to drink with;
+that the rack gives the shield and takes it back; that a blade meeting a shield
+is stopped, the body behind it is cut a third as much, and the blow's weight
+still arrives; that the left button raises the shield and the sword holds its
+aim meanwhile; that a crouch lowers the head and chest a third of a metre with
+both feet on the floor, and halves your pace; and that the low wall and the
+block are vaulted, and a pillar and a standing jump are not.
+
 ## Stack
 
 TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
@@ -1240,6 +1409,7 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. An off-hand that does
-something — a shield, or the second hand a spear actually wants. Blood that
-stays on the floor, and on the blade.
+Rounds and a reason to be in the rooms. Friendly fire. Picking up what an
+opponent dropped — the orc's axe, taken off it with its arm. A shield for an
+opponent, and the second hand a spear actually wants. Blood that stays on the
+floor, and on the blade.

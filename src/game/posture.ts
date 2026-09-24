@@ -122,6 +122,18 @@ const BEND_MAX = 0.14;
 const BEND_OMEGA = 10;
 const BEND_ZETA = 0.6;
 
+// --- crouch -------------------------------------------------------------------
+
+/**
+ * How far a crouch sinks the hips, metres at human scale: knees bent past a
+ * right angle, low enough to go under a cut at the head with room to spare.
+ */
+export const CROUCH_DROP = 0.38;
+/** And how far it tips the chest forward over them, at the bottom. */
+const CROUCH_LEAN = 0.22;
+/** Quick, but a body's weight still has to go down and come back up. */
+const CROUCH_OMEGA = 13;
+
 // --- gaze ---------------------------------------------------------------------
 
 /** Neck range relative to the chest. */
@@ -149,6 +161,8 @@ export class Pose {
   protract = 0;
   /** Sword shoulder above its rest, metres. */
   elevate = 0;
+  /** How far the hips have sunk into a crouch, metres. Everything above them goes with them. */
+  sink = 0;
 
   /** Where the chest actually faces, relative to the hull. */
   get chestYaw(): number {
@@ -162,6 +176,7 @@ export class Pose {
     this.bend = o.bend;
     this.protract = o.protract;
     this.elevate = o.elevate;
+    this.sink = o.sink;
     return this;
   }
 
@@ -172,6 +187,7 @@ export class Pose {
     this.bend = a.bend + (b.bend - a.bend) * t;
     this.protract = a.protract + (b.protract - a.protract) * t;
     this.elevate = a.elevate + (b.elevate - a.elevate) * t;
+    this.sink = a.sink + (b.sink - a.sink) * t;
     return this;
   }
 }
@@ -200,6 +216,7 @@ export class Posture {
   private readonly elevateS = new Spring(CLAVICLE_OMEGA, CLAVICLE_ZETA);
   private readonly gazeYawS = new Spring(GAZE_OMEGA, GAZE_ZETA);
   private readonly gazePitchS = new Spring(GAZE_OMEGA, GAZE_ZETA);
+  private readonly sinkS = new Spring(CROUCH_OMEGA);
 
   /** Hull-local height of the waist: the pivot the chest turns and bends about. */
   readonly waistY: number;
@@ -270,6 +287,10 @@ export class Posture {
     out.bend = 0;
     out.protract = this.protractFor(yaw - out.chestYaw, t);
     out.elevate = this.elevateFor(pitch, t);
+    // A crouch is the legs', not the aim's: a held aim settles at whatever
+    // height the body is at now, with the lean the crouch gives it.
+    out.sink = this.pose.sink;
+    out.lean += this.crouchLean(out.sink);
     return out;
   }
 
@@ -285,9 +306,10 @@ export class Posture {
     for (const pose of [this.pose, this.prev]) {
       pose.pelvis = pose.spine = pose.lean = pose.bend = 0;
       pose.protract = pose.elevate = 0;
+      pose.sink = 0;
     }
     for (const s of [this.twist, this.hips, this.leanS, this.bendS,
-      this.protractS, this.elevateS, this.gazeYawS, this.gazePitchS]) s.reset(0);
+      this.protractS, this.elevateS, this.gazeYawS, this.gazePitchS, this.sinkS]) s.reset(0);
     this.gazeYaw = this.gazePitch = this.gazeRoll = 0;
   }
 
@@ -301,15 +323,19 @@ export class Posture {
    * `drive` is null when there is no sword arm to carry -- it has been cut off
    * -- and the body relaxes back to square. `focus` overrides what the head
    * looks at; `hullYaw` and `hullPos` place the hull, for turning world points
-   * into the body's own frame.
+   * into the body's own frame. `crouch` is how far down the legs want to be,
+   * 0 standing and 1 all the way.
    */
   update(
     drive: PostureDrive | null, focus: THREE.Vector3 | null,
     hullYaw: number, hullPos: { x: number; y: number; z: number },
-    t: Tuning, dt: number,
+    t: Tuning, dt: number, crouch = 0,
   ): void {
     this.prev.copy(this.pose);
     const k = t.secondaryMotion;
+
+    // First, so the lean below can go with it: the crouch.
+    this.pose.sink = Math.max(0, this.sinkS.step(crouch * CROUCH_DROP * this.build.scale, dt));
 
     let twistT = 0;
     let leanT = 0;
@@ -331,7 +357,7 @@ export class Posture {
     const pose = this.pose;
     pose.pelvis = this.hips.step(this.hipsFor(twistT, t), dt);
     pose.spine = clamp(chest - pose.pelvis, -SPINE_MAX, SPINE_MAX);
-    pose.lean = this.leanS.step(leanT, dt);
+    pose.lean = this.leanS.step(leanT + this.crouchLean(pose.sink), dt);
     pose.bend = this.bendS.step(bendT, dt);
 
     let protractT = 0;
@@ -346,6 +372,11 @@ export class Posture {
     pose.elevate = this.elevateS.step(elevateT, dt);
 
     this.updateGaze(focus ?? drive?.look ?? null, hullYaw, hullPos, t, dt);
+  }
+
+  /** The forward tip of the chest that goes with sinking this far. */
+  private crouchLean(sink: number): number {
+    return CROUCH_LEAN * Math.min(1, sink / (CROUCH_DROP * this.build.scale));
   }
 
   /**
@@ -415,7 +446,7 @@ export class Posture {
    */
   chestPoint(pose: Pose, local: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
     const q = this.chestQuat(pose, _q);
-    return out.copy(local).applyQuaternion(q).setY(out.y + this.waistY);
+    return out.copy(local).applyQuaternion(q).setY(out.y + this.waistY - pose.sink);
   }
 
   /** How far the girdle has carried the sword shoulder, in the chest's frame. */

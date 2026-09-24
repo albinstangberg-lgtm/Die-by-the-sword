@@ -8,6 +8,7 @@ import type { Tuning } from "../tuning";
 import type { Build } from "./anatomy";
 import type { Fighter } from "./fighter";
 import { SWORD, weaponMassProperties, type Weapon } from "./weapons";
+import { stablePD } from "./drive";
 import { smoothstep, Tracker } from "./motion";
 import { GUARD, Pose, type PostureDrive } from "./posture";
 import {
@@ -220,6 +221,29 @@ const WRIST_SPEED = 20;
 const WRIST_ROLL_FROM = 0.1;
 const WRIST_ROLL_TO = 0.5;
 
+// --- the scabbard ----------------------------------------------------------------
+//
+// A sword goes on the back, hilt over the sword shoulder and point down toward
+// the other hip, where a hand coming up over the shoulder finds it. Given in
+// the chest's own frame, relative to the waist pivot as the posture places
+// everything on the chest: +X the sword side, +Y up, +Z out of the back.
+
+/** Where the pommel sits, metres at human scale. */
+const SHEATH_AT = new THREE.Vector3(0.12, 0.58, 0.155);
+/** Which way the blade runs from it: down, and across to the other hip. */
+const SHEATH_DIR = new THREE.Vector3(-0.42, -0.9, 0).normalize();
+
+/**
+ * The linear drive's gains with nothing in the hand, as a share of its own.
+ *
+ * It was tuned pushing a hand with a sword in it, which carries a kilo and a
+ * half of steel. An empty hand at the end of two bones can weigh less than
+ * half a kilo to push, and the same damping on that is past what an explicit
+ * step can take: the hand flipped back and forth every step at the force
+ * clamp, a centimetre from where it was sent.
+ */
+const EMPTY_HAND = 0.5;
+
 /** Rapier's axes, by the numbers its raw joint calls take them as. */
 const ANG_X = 3, ANG_Y = 4, ANG_Z = 5;
 
@@ -328,7 +352,7 @@ export class Arm {
    * twist) and bending off the forearm's line (the wrist), each on its own
    * motor. See `applyGrip`.
    */
-  private readonly wristJoint: RAPIER.ImpulseJoint;
+  private wristJoint: RAPIER.ImpulseJoint | null = null;
   /**
    * What the arm's roll about each bone's length has to turn, kg·m²: each
    * bone's own inertia about its length, and each bone's mass at half its
@@ -366,6 +390,20 @@ export class Arm {
 
   /** Set when the owner is down: the limb hangs, but still reports its motion. */
   limp = false;
+
+  /**
+   * The weapon is on the back rather than in the hand. The hand is empty and
+   * the arm still goes where the mouse sends it; nothing it does can cut.
+   */
+  private sheathedNow = false;
+  /** The scabbard the weapon goes into, if this weapon has one: a sword does. */
+  private scabbard: THREE.Object3D | null = null;
+  /** The hand, which rides the weapon while it is held and the forearm while it is not. */
+  private handMeshObj!: THREE.Mesh;
+  private readonly sheathPoint = new THREE.Vector3();
+  private readonly sheathQuat = new THREE.Quaternion();
+  private readonly _sheathP = new THREE.Vector3();
+  private readonly _sheathQ = new THREE.Quaternion();
 
   readonly group = new THREE.Group();
   /** Public so the Interpolator can drive them; physics never touches meshes. */
@@ -607,6 +645,20 @@ export class Arm {
     this.shoulderJoint = this.makeShoulderJoint();
     this.elbowJoint = this.makeElbowJoint();
 
+    this.wristJoint = this.makeWristJoint();
+
+    this.buildMeshes(fighter.palette.skin);
+    scene.add(this.group);
+    if (weapon === SWORD) this.buildScabbard();
+  }
+
+  /**
+   * The weapon in the hand: a ball joint, built so the weapon continues the
+   * forearm. A factory because putting a sword away takes it out of the hand
+   * and drawing it has to put it back exactly as it was.
+   */
+  private makeWristJoint(): RAPIER.ImpulseJoint {
+    const { rapier, world } = this.phys;
     // Hand: at rest the weapon's +Y (its length) continues the forearm's +Y
     // and its +Z is the cutting edge, as when it was welded. A ball joint, so
     // it can turn about that length -- the forearm's twist -- and bend off it
@@ -617,14 +669,14 @@ export class Arm {
     // the forearm's side, a bent wrist's "twist" motor would turn the weapon
     // about the forearm instead, which swings the bend round as well, and the
     // wrist's motors and the grip's spent every step undoing each other.
-    this.wristJoint = world.createImpulseJoint(
-      rapier.JointData.spherical({ x: 0, y: 0, z: 0 }, { x: 0, y: foreHalf, z: 0 }),
+    const joint = world.createImpulseJoint(
+      rapier.JointData.spherical({ x: 0, y: 0, z: 0 }, { x: 0, y: this.foreHalf, z: 0 }),
       this.blade, this.fore, true,
     );
     // Rapier's typed wrapper gives a ball joint no limits or motors, but the
     // joint underneath has one of each per axis.
-    const raw = this.gripRaw;
-    const h = this.wristJoint.handle;
+    const raw = (joint as unknown as { rawSet: GripRaw }).rawSet;
+    const h = joint.handle;
     raw.jointSetLimits(h, ANG_Y, -TWIST_LIMIT, TWIST_LIMIT);
     raw.jointSetLimits(h, ANG_X, -WRIST_LIMIT, WRIST_LIMIT);
     raw.jointSetLimits(h, ANG_Z, -WRIST_LIMIT, WRIST_LIMIT);
@@ -633,10 +685,9 @@ export class Arm {
     for (const axis of [ANG_X, ANG_Y, ANG_Z]) {
       raw.jointConfigureMotorModel(h, axis, rapier.MotorModel.ForceBased);
     }
+    this.wristJoint = joint;
     this.slackenGrip();
-
-    this.buildMeshes(fighter.palette.skin);
-    scene.add(this.group);
+    return joint;
   }
 
   /**
@@ -879,7 +930,7 @@ export class Arm {
     // watching its own blade watches. Not for probes: they are hypothetical.
     if (!steady) {
       this._look.copy(bladeDir)
-        .multiplyScalar(this.weapon.grip + this.weapon.span * this.strikePoint)
+        .multiplyScalar(this.sheathedNow ? 0 : this.weapon.grip + this.weapon.span * this.strikePoint)
         .add(this._ghostPos);
     }
   }
@@ -1026,6 +1077,10 @@ export class Arm {
     // and it has to hang from where the shoulder is drawn.
     this.shoulderJoint?.setAnchor1(this.fighter.shoulderAnchor);
 
+    // A sword on the back rides the back, whatever the arm is doing -- a body
+    // on the floor, a limb cut off -- so this goes before anything returns.
+    if (this.sheathedNow) this.holdSheathed(false);
+
     // A detached arm is meat. Continuing to run the PD on it would have the
     // controller flying a severed limb around the room by itself -- and the
     // grip's motor, left running, would go on turning the weapon in its hand.
@@ -1057,6 +1112,7 @@ export class Arm {
     this.upper.resetTorques(false);
     this.blade.resetForces(false);
     this.blade.resetTorques(false);
+    const holding = !this.sheathedNow;
 
     // Gravity feed-forward. Without it the PD has to spend a standing 45N just
     // holding the sword up, and since a proportional controller only produces
@@ -1089,8 +1145,11 @@ export class Arm {
     this.state.trackingError = err.length();
 
     const maxForce = t.maxForce * this.power;
-    const force = err.multiplyScalar(t.armKp * this.power)
-      .addScaledVector(this._handVel, -t.armKd * this.power);
+    // An empty hand is a fraction of the mass the linear drive was tuned to
+    // push: see EMPTY_HAND.
+    const lin = holding ? 1 : EMPTY_HAND;
+    const force = err.multiplyScalar(t.armKp * this.power * lin)
+      .addScaledVector(this._handVel, -t.armKd * this.power * lin);
     const mag = force.length();
     this.state.saturation = maxForce > 0 ? Math.min(1, mag / maxForce) : 1;
     if (mag > maxForce) force.multiplyScalar(maxForce / mag);
@@ -1128,6 +1187,21 @@ export class Arm {
 
     const kpRot = t.armKpRot * this.power;
     const kdRot = t.armKdRot * this.power;
+
+    if (!holding) {
+      // The hand is empty. The drive was tuned on a forearm with a weapon in
+      // it, and without one the forearm's swing and the upper arm's roll --
+      // one motion, when the elbow is bent -- weigh a fraction of what the
+      // drive assumed: both drives damping it at once flipped it back and
+      // forth every step. So each bone gets only what its own inertia can
+      // take about each of its axes, as the off arm does.
+      this.applyEmptyHanded(t, error, av);
+      this.state.roll = this.state.twist = this.state.wrist = 0;
+      this.applyClearance(t);
+      this.snapshotBlade();
+      this.sampleTip();
+      return;
+    }
     const torque = this._v.copy(error).multiplyScalar(kpRot);
     torque.x -= av.x * kdRot;
     torque.y -= av.y * kdRot;
@@ -1188,6 +1262,44 @@ export class Arm {
 
     this.snapshotBlade();
     this.sampleTip();
+  }
+
+  /**
+   * The angular drive with nothing in the hand: each bone toward its own
+   * target, every axis held inside what its inertia can take. `error` and
+   * `av` are the forearm's, as `drive` measured them.
+   */
+  private applyEmptyHanded(
+    t: Tuning, error: THREE.Vector3, av: { x: number; y: number; z: number },
+  ): void {
+    const dt = this.phys.world.timestep;
+    const kp = t.armKpRot * this.power;
+    const kd = t.armKdRot * this.power;
+    const maxTorque = t.maxTorque * this.power;
+
+    const fore = stablePD(this.fore, this._refA.copy(error),
+      this._refB.set(av.x, av.y, av.z), kp, kd, dt, this._refC);
+    let tmag = fore.length();
+    this.state.torqueSaturation = maxTorque > 0 ? Math.min(1, tmag / maxTorque) : 1;
+    if (tmag > maxTorque) fore.multiplyScalar(maxTorque / tmag);
+    this.fore.addTorque({ x: fore.x, y: fore.y, z: fore.z }, true);
+
+    const uq = this.upper.rotation();
+    const e = this._q4.copy(this._q3.set(uq.x, uq.y, uq.z, uq.w)).invert()
+      .premultiply(this._upperQuat);
+    if (e.w < 0) e.set(-e.x, -e.y, -e.z, -e.w);
+    const sinHalf = Math.hypot(e.x, e.y, e.z);
+    const upperErr = this._refA.set(0, 0, 0);
+    if (sinHalf > 1e-6) {
+      upperErr.set(e.x, e.y, e.z).multiplyScalar((2 * Math.atan2(sinHalf, e.w)) / sinHalf);
+    }
+    const w = this.upper.angvel();
+    const upper = stablePD(this.upper, upperErr, this._refB.set(w.x, w.y, w.z),
+      kp * UPPER_TORQUE_SCALE, kd * UPPER_TORQUE_SCALE, dt, this._refD);
+    tmag = upper.length();
+    const cap = maxTorque * UPPER_TORQUE_SCALE;
+    if (tmag > cap) upper.multiplyScalar(cap / tmag);
+    this.upper.addTorque({ x: upper.x, y: upper.y, z: upper.z }, true);
   }
 
   /**
@@ -1253,6 +1365,7 @@ export class Arm {
     // the hand's own.
 
     // The twist, as before: a capped velocity servo on the grip's own turn.
+    if (!this.wristJoint) return;
     const raw = this.gripRaw;
     const h = this.wristJoint.handle;
     const want = clamp(TWIST_RATE * wrapPi(this.twistTarget - turn), -TWIST_SPEED, TWIST_SPEED);
@@ -1284,6 +1397,7 @@ export class Arm {
 
   /** Let go of the grip: a hand nothing is driving holds its weapon loosely. */
   private slackenGrip(): void {
+    if (!this.wristJoint) return;
     const raw = this.gripRaw;
     const h = this.wristJoint.handle;
     for (const axis of [ANG_X, ANG_Y, ANG_Z]) {
@@ -1384,6 +1498,8 @@ export class Arm {
     if (t.gravityComp <= 0) return;
     const up = -t.gravity * t.gravityComp;
     for (const body of [this.upper, this.fore, this.blade]) {
+      // A sheathed weapon is carried by the back, not held up by the arm.
+      if (body === this.blade && this.sheathedNow) continue;
       body.addForce({ x: 0, y: body.mass() * up, z: 0 }, false);
     }
   }
@@ -1446,8 +1562,17 @@ export class Arm {
     this._preAng.set(av.x, av.y, av.z);
   }
 
-  /** Blade tip position and velocity — used for impact quality. */
+  /**
+   * Blade tip position and velocity — used for impact quality. With the
+   * weapon on the back there is no blade to speak of: this is the empty hand,
+   * which is what the camera frames and what anyone watching your arm sees.
+   */
   private sampleTip(): void {
+    if (this.sheathedNow) {
+      this.handSample(this._tipPos, this._tipVel);
+      this.state.tipSpeed = this._tipVel.length();
+      return;
+    }
     const bq = this.blade.rotation();
     this._q.set(bq.x, bq.y, bq.z, bq.w);
     const r = this._v.set(0, this.tipY, 0).applyQuaternion(this._q);
@@ -1547,7 +1672,7 @@ export class Arm {
     // rides the weapon rather than the forearm, so a turn of the grip turns
     // the hand with it: the forearm is drawn round, and its own twist along
     // its length would not show anyway.
-    const hand = handMesh(fore.radius * 1.22, skin);
+    const hand = this.handMeshObj = handMesh(fore.radius * 1.22, skin);
     this.bladeMesh.add(hand);
 
     this.ghostMesh = buildGhostMesh(this.build.scale);
@@ -1831,6 +1956,15 @@ export class Arm {
   /** Re-seat the arm after a reset, so it doesn't whip back across the room. */
   reset(t: Tuning): void {
     const wasSevered = this.severedAt;
+    // Back in the hand before anything is laid out: it is jointed on again
+    // below, once the arm is where the joint expects it.
+    if (this.sheathedNow) {
+      this.blade.setBodyType(this.phys.rapier.RigidBodyType.Dynamic, true);
+      for (const c of this.weaponColliders) c.setEnabled(true);
+      this.setWeaponMass(this.weaponMass);
+      this.sheathedNow = false;
+      this.moveHand(this.bladeMesh, 0);
+    }
     this.severedAt = null;
     for (const cap of this.caps) {
       cap.removeFromParent();
@@ -1877,6 +2011,7 @@ export class Arm {
     // the shoulder — a limb kept on by a controller rather than by a joint.
     if (wasSevered === "shoulder") this.shoulderJoint = this.makeShoulderJoint();
     if (wasSevered === "elbow") this.elbowJoint = this.makeElbowJoint();
+    if (!this.wristJoint) this.makeWristJoint();
   }
 
   /**
@@ -1964,6 +2099,156 @@ export class Arm {
 
   get disarmed(): boolean {
     return this.severedAt !== null;
+  }
+
+  // -------------------------------------------------------------------------
+  // The scabbard
+  // -------------------------------------------------------------------------
+
+  /** The weapon is on the back, and the hand is empty. */
+  get sheathed(): boolean {
+    return this.sheathedNow;
+  }
+
+  /** A weapon in a hand on an arm that is on: something that can cut. */
+  get wielding(): boolean {
+    return !this.sheathedNow && this.severedAt === null;
+  }
+
+  /**
+   * Put the weapon up, on the back. False if there is nothing to do it with:
+   * no scabbard, no arm, a body on the floor, or already done.
+   *
+   * The weapon comes out of the hand -- its joint is taken out of the world --
+   * and rides the back as a kinematic body with nothing to touch, so it can
+   * neither cut nor be caught on anything. The hand goes on with the arm.
+   */
+  sheathe(): boolean {
+    if (!this.scabbard || this.sheathedNow || this.severedAt !== null || this.limp) return false;
+    if (this.wristJoint) {
+      this.phys.world.removeImpulseJoint(this.wristJoint, true);
+      this.wristJoint = null;
+    }
+    this.blade.setBodyType(this.phys.rapier.RigidBodyType.KinematicPositionBased, true);
+    for (const c of this.weaponColliders) c.setEnabled(false);
+    this.sheathedNow = true;
+    this.twistTarget = 0;
+    this._wristTarget.identity();
+    this.moveHand(this.foreMesh, this.foreHalf);
+    this.holdSheathed(true);
+    return true;
+  }
+
+  /**
+   * Take the weapon back into the hand: laid along the forearm as it was
+   * welded, turned square in the grip, moving with the hand, and jointed on
+   * across no gap at all. False if it is already there or cannot be.
+   */
+  draw(): boolean {
+    if (!this.sheathedNow || this.severedAt !== null || this.limp) return false;
+    this.unsheathe();
+    return true;
+  }
+
+  /** Where the sheath has the weapon this step, and put it there. */
+  private holdSheathed(teleport: boolean): void {
+    this.fighter.chestFrameWorld(this.sheathPoint, this.sheathQuat, this._sheathP, this._sheathQ);
+    const p = this._sheathP;
+    const q = this._sheathQ;
+    if (teleport) {
+      this.blade.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
+      this.blade.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
+    } else {
+      this.blade.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z });
+      this.blade.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w });
+    }
+  }
+
+  /** The weapon back in the hand, whatever the arm is doing. */
+  private unsheathe(): void {
+    const fq = this.fore.rotation();
+    const q = this._q.set(fq.x, fq.y, fq.z, fq.w);
+    const hand = this._v.set(0, this.foreHalf, 0).applyQuaternion(q);
+    const fp = this.fore.translation();
+    const lv = this.fore.linvel();
+    const av = this.fore.angvel();
+
+    this.blade.setBodyType(this.phys.rapier.RigidBodyType.Dynamic, true);
+    this.blade.setTranslation({ x: fp.x + hand.x, y: fp.y + hand.y, z: fp.z + hand.z }, true);
+    this.blade.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
+    this.blade.setLinvel({
+      x: lv.x + (av.y * hand.z - av.z * hand.y),
+      y: lv.y + (av.z * hand.x - av.x * hand.z),
+      z: lv.z + (av.x * hand.y - av.y * hand.x),
+    }, true);
+    this.blade.setAngvel({ x: av.x, y: av.y, z: av.z }, true);
+    this.blade.resetForces(true);
+    this.blade.resetTorques(true);
+    for (const c of this.weaponColliders) c.setEnabled(true);
+    // A body's type change is no time to trust its mass to have come through.
+    this.setWeaponMass(this.weaponMass);
+
+    this.sheathedNow = false;
+    this.twistTarget = 0;
+    this._wristTarget.identity();
+    if (!this.wristJoint) this.makeWristJoint();
+    this.moveHand(this.bladeMesh, 0);
+  }
+
+  /** The hand mesh onto the weapon or the forearm, at the wrist. */
+  private moveHand(parent: THREE.Object3D, y: number): void {
+    parent.add(this.handMeshObj);
+    this.handMeshObj.position.set(0, y, 0);
+  }
+
+  /** The hand -- the end of the forearm -- and its velocity, now. */
+  private handSample(pos: THREE.Vector3, vel: THREE.Vector3): void {
+    const fq = this.fore.rotation();
+    const r = this._v.set(0, this.foreHalf, 0).applyQuaternion(this._q.set(fq.x, fq.y, fq.z, fq.w));
+    const fp = this.fore.translation();
+    pos.set(fp.x + r.x, fp.y + r.y, fp.z + r.z);
+    const lv = this.fore.linvel();
+    const av = this.fore.angvel();
+    vel.set(
+      lv.x + (av.y * r.z - av.z * r.y),
+      lv.y + (av.z * r.x - av.x * r.z),
+      lv.z + (av.x * r.y - av.y * r.x),
+    );
+  }
+
+  /**
+   * A scabbard on the back, on the chest so it turns and leans with it, and
+   * the pose the weapon takes in it: pommel at the top, flat against the
+   * back, edges out to either side.
+   */
+  private buildScabbard(): void {
+    const s = this.build.scale;
+    this.sheathPoint.copy(SHEATH_AT).multiplyScalar(s);
+    // The weapon's +Y runs down the scabbard, its +X -- the flat -- out of the
+    // back, and its edge, +Z, follows.
+    const flat = this._ta.set(0, 0, 1);
+    const along = this._tb.copy(SHEATH_DIR);
+    const edge = this._tc.crossVectors(flat, along);
+    this.sheathQuat.setFromRotationMatrix(this._m.makeBasis(flat, along, edge));
+
+    const len = this.weapon.span + 0.04;
+    const leather = new THREE.MeshStandardMaterial({ color: 0x3a2b22, roughness: 0.88 });
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.024, len, 0.058), leather);
+    body.position.y = this.weapon.grip + len / 2 - 0.02;
+    body.castShadow = true;
+    g.add(body);
+    const chape = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.06, 0.062),
+      new THREE.MeshStandardMaterial({ color: 0x9a7b3f, roughness: 0.4, metalness: 0.8 }));
+    chape.position.y = this.weapon.grip + len - 0.04;
+    g.add(chape);
+    g.scale.setScalar(s);
+    // The chest group's origin is the waist pivot, and the posture places
+    // everything on the chest relative to it: the same frame as the sheath.
+    g.position.copy(this.sheathPoint);
+    g.quaternion.copy(this.sheathQuat);
+    this.fighter.chest.add(g);
+    this.scabbard = g;
   }
 
   /**

@@ -15,8 +15,10 @@
 import * as THREE from "three";
 import { createPhysics, makeSides } from "../src/core/physics";
 import {
-  buildArena, DUMMY_AT, GOBLIN_POST, inRoom, ORC_POST, ROOMS, SPAWN, THIN_POST,
+  buildArena, DUMMY_AT, GOBLIN_POST, inRoom, ITEM_LAYOUT, LOW_WALL, ORC_POST, ROOMS, SPAWN,
+  THIN_POST,
 } from "../src/game/arena";
+import { interact, Items } from "../src/game/items";
 import { Targets } from "../src/game/targets";
 import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
@@ -33,13 +35,13 @@ import { Impacts, type Impact } from "../src/game/impacts";
 import { Blood } from "../src/game/blood";
 import { DEFAULTS, type Tuning } from "../src/tuning";
 import { intrusion } from "../src/game/clearance";
-import { KEY_MAP, type Keys } from "../src/input/input";
+import { ACTION_MAP, KEY_MAP, type Keys } from "../src/input/input";
 
 const STEP = 1 / 60;
 
 const NO_KEYS: Keys = {
   forward: false, back: false, left: false, right: false,
-  turnLeft: false, turnRight: false, jump: false,
+  turnLeft: false, turnRight: false, jump: false, crouch: false,
 };
 
 /** An opponent's intents between swings: on its feet, and committed to nothing. */
@@ -50,9 +52,16 @@ const FIGHTING: ReadonlySet<string> = new Set([...FOOTWORK, "windup", "leap", "s
 /** A scriptable stand-in for pointer-lock input. */
 class FakeInput implements ArmInput {
   dx = 0; dy = 0; wheel = 0; rollDx = 0;
+  /** The left button's share: the other arm. */
+  offDx = 0; offDy = 0; offWheel = 0; guarding = false;
   consumeMouse() {
     const out = { dx: this.dx, dy: this.dy, wheel: this.wheel, rollDx: this.rollDx };
     this.dx = 0; this.dy = 0; this.wheel = 0; this.rollDx = 0;
+    return out;
+  }
+  consumeOff() {
+    const out = { dx: this.offDx, dy: this.offDy, wheel: this.offWheel, active: this.guarding };
+    this.offDx = 0; this.offDy = 0; this.offWheel = 0;
     return out;
   }
 }
@@ -2783,6 +2792,302 @@ async function crowdingItDoesNotStopIt(): Promise<void> {
     `${shaft} shaft sweeps -- the one swing it has up close`);
 }
 
+// -----------------------------------------------------------------------------
+// The other arm, the scabbard, the belt, the shield, crouching and vaulting
+// -----------------------------------------------------------------------------
+
+/** How fast a body is turning, rad/s. */
+function spin(b: { angvel(): { x: number; y: number; z: number } }): number {
+  const w = b.angvel();
+  return Math.hypot(w.x, w.y, w.z);
+}
+
+/** Where a world point sits in a fighter's own frame: +X its sword side, -Z ahead. */
+function inHull(f: Fighter, p: { x: number; y: number; z: number }): THREE.Vector3 {
+  const h = f.body.translation();
+  return new THREE.Vector3(p.x - h.x, p.y - h.y, p.z - h.z)
+    .applyAxisAngle(new THREE.Vector3(0, 1, 0), -f.yaw);
+}
+
+async function theOtherArmHoldsStill(): Promise<void> {
+  console.log("\nthe other arm is carried, not flopping about");
+  const rig = await buildRig();
+  rig.step(120);
+  const limb = rig.fighter.offLimb;
+  const head = rig.fighter.parts.find((p) => p.name === "head")!.body!;
+  let arm = 0;
+  let neck = 0;
+  for (let i = 0; i < 120; i++) {
+    rig.step(1);
+    arm = Math.max(arm, spin(limb.upper), spin(limb.fore));
+    neck = Math.max(neck, spin(head));
+  }
+  // Both used to sit in a limit cycle at the torque clamp, flipping every step.
+  check("standing still, the other arm holds still", arm < 0.5,
+    `${arm.toFixed(2)} rad/s at most over two seconds; it spun at 37 about its own length`);
+  check("and so does the head", neck < 0.5,
+    `${neck.toFixed(2)} rad/s at most; it buzzed at 15 about its own vertical`);
+
+  const fore = limb.fore.translation();
+  const hand = inHull(rig.fighter, fore);
+  check("its hand hangs in front of the body, on its own side", hand.z < -0.1 && hand.x < 0,
+    `forearm at ${hand.x.toFixed(2)} across, ${(-hand.z).toFixed(2)} ahead`);
+
+  rig.step(60, { ...NO_KEYS, forward: true });
+  rig.step(30);
+  let after = 0;
+  for (let i = 0; i < 30; i++) {
+    rig.step(1);
+    after = Math.max(after, spin(limb.upper), spin(limb.fore));
+  }
+  check("a walk and a stop, and it settles back where it hangs",
+    rig.player.offArm.trackingError < 0.02 && after < 1,
+    `${(rig.player.offArm.trackingError * 100).toFixed(1)} cm off its mark, ${after.toFixed(2)} rad/s`);
+}
+
+async function theSwordGoesOnYourBack(): Promise<void> {
+  console.log("\nthe sword goes on your back, and comes back to your hand");
+  const rig = await buildRig();
+  rig.step(60);
+  const put = rig.arm.sheathe();
+  rig.step(30);
+  const blade = inHull(rig.fighter, rig.arm.blade.translation());
+  check("X puts it on your back", put && rig.arm.sheathed && blade.z > 0.08 && blade.y > 0.3,
+    `hilt ${blade.z.toFixed(2)} m behind the hull's middle, ${blade.y.toFixed(2)} above it`);
+
+  let shake = 0;
+  for (let i = 0; i < 60; i++) {
+    rig.step(1);
+    shake = Math.max(shake, spin(rig.arm.fore), spin(rig.arm.upper));
+  }
+  // The drive was tuned with a sword in the hand; empty, it used to flip the
+  // arm back and forth every step at the force clamp.
+  check("the empty hand holds still", shake < 1 && rig.arm.state.trackingError < 0.02,
+    `${shake.toFixed(2)} rad/s at most, ${(rig.arm.state.trackingError * 100).toFixed(1)} cm off`);
+
+  // On your back it is out of the world: it can neither be parried, nor
+  // snag a door frame, nor be swept for a cut.
+  const out = rig.arm.weaponColliders.every((c) => !c.isEnabled());
+  check("and out of the world while it is there: nothing can touch it",
+    out && !rig.arm.wielding && rig.arm.blade.isKinematic(),
+    `${rig.arm.weaponColliders.length} colliders off, wielding ${rig.arm.wielding}`);
+
+  const drawn = rig.arm.draw();
+  rig.step(40);
+  const hand = rig.arm.handPosition;
+  const hilt = rig.arm.blade.translation();
+  const gap = Math.hypot(hilt.x - hand.x, hilt.y - hand.y, hilt.z - hand.z);
+  check("drawn, it is back in the hand and the arm tracks",
+    drawn && rig.arm.wielding && gap < 0.01 && rig.arm.state.trackingError < 0.03,
+    `hilt ${(gap * 1000).toFixed(1)} mm from the hand, ${(rig.arm.state.trackingError * 100).toFixed(1)} cm off`);
+
+  rig.arm.sheathe();
+  rig.place(SPAWN);
+  check("a reset puts it back in your hand", !rig.arm.sheathed && rig.arm.wielding,
+    `sheathed ${rig.arm.sheathed}`);
+}
+
+async function aFreeHandTakesThings(): Promise<void> {
+  console.log("\npotions, pick-ups and the rack: a free hand, and time");
+  const rig = await buildRig();
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  const potion = ITEM_LAYOUT.potions[0];
+  rig.place(new THREE.Vector3(potion.x - 0.8, SPAWN.y, potion.z));
+  rig.step(20);
+  const drawn = interact(rig.player, items);
+  check("with a sword in your hand you pick nothing up", !drawn.ok && rig.player.potions === 0,
+    drawn.text);
+  rig.arm.sheathe();
+  rig.step(5);
+  const took = interact(rig.player, items);
+  check("with it on your back, you can", took.ok && rig.player.potions === 1, took.text);
+
+  rig.player.health = 40;
+  const sip = rig.player.drink();
+  rig.step(12);
+  const early = rig.player.health;
+  rig.step(150);
+  check("a potion gives health back over seconds, not at once",
+    sip.ok && early < 50 && Math.abs(rig.player.health - 80) < 0.5 && rig.player.potions === 0,
+    `${early.toFixed(1)} a fifth of a second in, ${rig.player.health.toFixed(1)} after`);
+  rig.player.health = 95;
+  rig.player.potions = 1;
+  rig.player.drink();
+  rig.step(150);
+  check("and never past full", rig.player.health === rig.player.maxHealth,
+    `${rig.player.health.toFixed(1)} of ${rig.player.maxHealth}`);
+
+  const rack = ITEM_LAYOUT.rack.at;
+  rig.place(new THREE.Vector3(rack.x - 0.9, SPAWN.y, rack.z));
+  rig.step(20);
+  rig.arm.sheathe();
+  const take = interact(rig.player, items);
+  rig.arm.draw();
+  rig.step(20);
+  rig.player.health = 50;
+  rig.player.potions = 1;
+  const busy = rig.player.drink();
+  check("a shield on one arm and a sword in the other: no hand to drink with",
+    take.ok && rig.player.hasShield && !busy.ok && rig.player.potions === 1, busy.text);
+  rig.arm.sheathe();
+  const hang = interact(rig.player, items);
+  const hung = !rig.player.hasShield;
+  const again = interact(rig.player, items);
+  check("the rack takes the shield back, and gives it again",
+    hang.ok && hung && again.ok && rig.player.hasShield, `${hang.text}; ${again.text}`);
+}
+
+async function aShieldStopsABlade(): Promise<void> {
+  console.log("\na shield stops a blade, and the blow still lands its weight");
+  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const run = async (shield: boolean) => {
+    const at = spawnFor(SWORDSMAN, 0, SPAWN.z - 1.1);
+    const rig = await buildRig({}, SWORDSMAN, at);
+    rig.foe.fighter.yaw = Math.PI;             // facing you
+    if (shield) rig.foe.equipShield();
+    rig.holdFoe();
+    rig.pin(standAt);
+    rig.hold(90);
+    let blocks = 0;
+    let damage = 0;
+    let weight = 0;
+    rig.impacts.addBlade(rig.arm, (i) => {
+      if (rig.foe.block(i)) {
+        blocks++;
+        weight = Math.max(weight, rig.foe.lastBlow?.speed ?? 0);
+        return;
+      }
+      if (rig.foe.receive(i)) damage += cutDamage(i);
+    });
+    const target = new THREE.Vector3(0, SWORDSMAN.build.standing.crown * 0.72, at.z);
+    const sweepRate = 0.2 / rig.tuning.sensitivity;
+    for (let swings = 0; swings < 12; swings++) {
+      if (swings % 4 === 0) aimBladeAt(rig, target, 2);
+      const dir = swings % 2 === 0 ? 1 : -1;
+      aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
+      for (let i = 0; i < 14; i++) {
+        rig.input.dx = dir * sweepRate;
+        rig.hold(1);
+      }
+      rig.hold(10);
+    }
+    return { blocks, damage, weight };
+  };
+  const bare = await run(false);
+  const held = await run(true);
+  check("a cut that meets the shield is stopped by it", held.blocks >= 3,
+    `the blade met the shield ${held.blocks} times in twelve swings`);
+  check("and the body behind it is cut far less",
+    bare.damage > 5 && held.damage < bare.damage * 0.5,
+    `${held.damage.toFixed(1)} damage behind a shield, ${bare.damage.toFixed(1)} without`);
+  check("the weight of a blocked blow still arrives", held.weight > 0,
+    `the hardest block moved the body ${held.weight.toFixed(2)} m/s`);
+}
+
+async function theShieldArmIsSteered(): Promise<void> {
+  console.log("\nthe left button steers the shield, and the sword stays put");
+  const rig = await buildRig();
+  rig.step(30);
+  rig.player.equipShield();
+  rig.step(90);
+  const shield = rig.player.offArm.shieldCollider!;
+  const low = shield.translation().y;
+  const sword = { ...rig.arm.aim };
+  rig.input.guarding = true;
+  for (let i = 0; i < 20; i++) {
+    rig.input.offDy = -12;
+    rig.step(1);
+  }
+  rig.input.guarding = false;
+  rig.step(60);
+  const high = shield.translation().y;
+  const still = Math.abs(rig.arm.aim.yaw - sword.yaw) + Math.abs(rig.arm.aim.pitch - sword.pitch);
+  check("dragged up, the shield goes up, and stays there when you let go",
+    high - low > 0.3 && rig.player.offArm.trackingError < 0.02,
+    `${low.toFixed(2)} -> ${high.toFixed(2)} m, ${(rig.player.offArm.trackingError * 100).toFixed(1)} cm off its mark`);
+  check("and the sword held its aim meanwhile", still < 1e-9, `aim moved ${still.toFixed(4)} rad`);
+}
+
+async function aCrouchGetsLow(): Promise<void> {
+  console.log("\na crouch: everything above the knees goes down, the feet stay on the floor");
+  const rig = await buildRig();
+  rig.step(60);
+  const f = rig.fighter;
+  const headOf = () => f.parts.find((p) => p.name === "head")!.collider.translation().y;
+  const soles = () => f.body.translation().y - SWORDSMAN.build.hullCentreY;
+  const feet = () => f.parts.filter((p) => p.name.endsWith("shin")).map((p) => {
+    const c = p.collider;
+    const t = c.translation();
+    const r = c.rotation();
+    const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+    const half = SWORDSMAN.build.segment.shin.length / 2;
+    return Math.min(t.y + axis.y * half, t.y - axis.y * half) - soles();
+  });
+  const standing = headOf() - soles();
+  const chestUp = f.collider.translation().y;
+  rig.step(40, { ...NO_KEYS, crouch: true });
+  const crouched = headOf() - soles();
+  const chestDown = f.collider.translation().y;
+  const low = feet();
+  check("the head and the chest go down a third of a metre",
+    standing - crouched > 0.3 && chestUp - chestDown > 0.3,
+    `head ${standing.toFixed(2)} -> ${crouched.toFixed(2)} m, chest down ${(chestUp - chestDown).toFixed(2)}`);
+  check("and the legs bend under it, feet on the floor", low.every((y) => Math.abs(y) < 0.03),
+    `lowest ends of the shins ${low.map((y) => y.toFixed(3)).join(", ")} m off the floor`);
+
+  const z0 = f.body.translation().z;
+  rig.step(60, { ...NO_KEYS, crouch: true, forward: true });
+  const slow = z0 - f.body.translation().z;
+  rig.step(30);
+  const z1 = f.body.translation().z;
+  rig.step(60, { ...NO_KEYS, forward: true });
+  const fast = z1 - f.body.translation().z;
+  check("crouched, the steps are short", slow < fast * 0.55,
+    `${slow.toFixed(2)} m a second crouched, ${fast.toFixed(2)} standing`);
+  check("and letting go stands you back up", Math.abs(headOf() - soles() - standing) < 0.02,
+    `head ${(headOf() - soles()).toFixed(2)} m`);
+}
+
+async function aVaultGoesOver(): Promise<void> {
+  console.log("\na vault: the jump key, running at something waist high, goes over it");
+  const rig = await buildRig();
+  const f = rig.fighter;
+  const top = LOW_WALL.half.y * 2;
+  const vaultFrom = (at: THREE.Vector3, jumpSteps: number, forward = true) => {
+    rig.place(at);
+    rig.step(20);
+    let peak = 0;
+    let vaulted = false;
+    for (let i = 0; i < 90; i++) {
+      rig.step(1, { ...NO_KEYS, forward, jump: i < jumpSteps });
+      vaulted ||= f.vaulting;
+      peak = Math.max(peak, f.body.translation().y - SWORDSMAN.build.hullCentreY);
+    }
+    return { vaulted, peak, z: f.body.translation().z };
+  };
+  const wall = vaultFrom(new THREE.Vector3(LOW_WALL.at.x, SPAWN.y, LOW_WALL.at.z + 1.2), 20);
+  check("the training room's low wall is vaulted",
+    wall.vaulted && wall.peak > top && wall.z < LOW_WALL.at.z - LOW_WALL.half.z - 0.3 && f.grounded,
+    `soles ${wall.peak.toFixed(2)} m over a ${top.toFixed(2)} m wall, landed ${(LOW_WALL.at.z - wall.z).toFixed(2)} m past its middle`);
+  const block = vaultFrom(new THREE.Vector3(-5.6, SPAWN.y, -11.4 + 1.3), 20);
+  check("and so is the hall's block", block.vaulted && block.z < -11.95,
+    `landed at z ${block.z.toFixed(2)}, past its far face at -11.95`);
+  const pillar = vaultFrom(new THREE.Vector3(-3.9, SPAWN.y, 3.4 + 1.1), 20);
+  check("a pillar is not: that is a jump into stone", !pillar.vaulted,
+    `vaulted ${pillar.vaulted}, peak ${pillar.peak.toFixed(2)} m`);
+  const standing = vaultFrom(new THREE.Vector3(LOW_WALL.at.x, SPAWN.y, LOW_WALL.at.z + 1.2), 20, false);
+  check("and standing still, the key is only a jump", !standing.vaulted,
+    `vaulted ${standing.vaulted}`);
+}
+
+async function theNewKeysAreWhereTheySay(): Promise<void> {
+  console.log("\nthe new keys are where the HUD says");
+  check("C crouches", KEY_MAP.KeyC === "crouch", `C -> ${KEY_MAP.KeyC}`);
+  check("X sheathes and draws, F picks up, H drinks",
+    ACTION_MAP.KeyX === "sheathe" && ACTION_MAP.KeyF === "interact" && ACTION_MAP.KeyH === "drink",
+    `X -> ${ACTION_MAP.KeyX}, F -> ${ACTION_MAP.KeyF}, H -> ${ACTION_MAP.KeyH}`);
+}
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
   await freeArmTracks();
@@ -2849,6 +3154,15 @@ async function run(): Promise<void> {
   await anOpponentGetsOutOfTheWay();
   await crowdingItDoesNotStopIt();
   await theOrcComesAfterYouThroughTheAir();
+
+  await theOtherArmHoldsStill();
+  await theSwordGoesOnYourBack();
+  await aFreeHandTakesThings();
+  await aShieldStopsABlade();
+  await theShieldArmIsSteered();
+  await aCrouchGetsLow();
+  await aVaultGoesOver();
+  await theNewKeysAreWhereTheySay();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

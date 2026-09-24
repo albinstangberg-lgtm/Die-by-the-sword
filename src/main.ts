@@ -3,10 +3,11 @@ import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
 import { createPhysics, GROUP, groups, makeSides } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
-import { Input } from "./input/input";
+import { Input, type Action } from "./input/input";
 import {
-  buildArena, DUMMY_AT, GOBLIN_POST, ORC_POST, SPAWN,
+  buildArena, DUMMY_AT, GOBLIN_POST, ITEM_LAYOUT, ORC_POST, SPAWN,
 } from "./game/arena";
+import { interact, Items, promptFor } from "./game/items";
 import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
 import { Combatant } from "./game/combatant";
@@ -17,7 +18,7 @@ import type { Fighter } from "./game/fighter";
 import { Ai } from "./game/ai";
 import { Impacts } from "./game/impacts";
 import { Trail } from "./game/trail";
-import { Hud } from "./ui/hud";
+import { Hud, type Kit } from "./ui/hud";
 import { Panel, loadTuning } from "./ui/panel";
 
 /**
@@ -84,6 +85,7 @@ async function main(): Promise<void> {
   const trail = new Trail(renderer.scene);
   const impacts = new Impacts(phys, renderer.scene, targets, tuning);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
+  const items = new Items(renderer.scene, ITEM_LAYOUT);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
 
@@ -124,6 +126,9 @@ async function main(): Promise<void> {
   });
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
+      // A shield stops the blade before it reaches anything that bleeds, and
+      // the weight of the blow comes through the arm anyway.
+      if (player.block(i)) { hud.showBlock(i, player.lastBlow); return; }
       if (player.receive(i)) hud.showHurt(i, player.lastBlow);
     });
     f.combatant.onDisarm = (_where, wound) => {
@@ -157,6 +162,32 @@ async function main(): Promise<void> {
   const panel = new Panel(panelEl, tuning, applyTuning);
 
   input.onTogglePanel = () => panel.toggle();
+
+  // One-shot actions happen inside the next fixed step, never in the middle
+  // of an event handler: taking a sword out of the hand is a joint leaving
+  // the world, and that belongs between two steps.
+  const pending: Action[] = [];
+  input.onAction = (a) => pending.push(a);
+  const perform = (a: Action) => {
+    switch (a) {
+      case "sheathe": {
+        const ok = player.arm.sheathed ? player.arm.draw() : player.arm.sheathe();
+        if (ok) hud.showNote(player.arm.sheathed ? "sword on your back" : "sword drawn");
+        break;
+      }
+      case "interact": {
+        const out = interact(player, items);
+        hud.showNote(out.text, !out.ok);
+        break;
+      }
+      case "drink": {
+        const out = player.drink();
+        hud.showNote(out.text, !out.ok);
+        break;
+      }
+    }
+  };
+
   input.onReset = () => {
     player.reset(tuning, SPAWN);
     for (const f of foes) {
@@ -164,6 +195,8 @@ async function main(): Promise<void> {
       f.ai.reset();
     }
     dummy.reset();
+    items.reset();
+    pending.length = 0;
     // The dummy's bodies are all new, so the interpolator's entries point at
     // freed handles; rebuild the whole set rather than leaving stale ones.
     registerBodies();
@@ -285,8 +318,25 @@ async function main(): Promise<void> {
     renderer.follow(fighterPos);
   };
 
+  /** What you carry and how you stand, for the HUD. */
+  const kit = (): Kit => ({
+    sword: arm.disarmed ? "lost" : arm.sheathed ? "back" : "hand",
+    shield: player.hasShield
+      ? (player.fighter.offLimb.elbowOn && player.fighter.offLimb.shoulderOn ? "arm" : "lost")
+      : "none",
+    potions: player.potions,
+    healing: player.healing,
+    stance: player.dead || fighter.down ? "down"
+      : fighter.vaulting ? "vaulting"
+        : !fighter.grounded ? "airborne"
+          : fighter.crouching ? "crouching" : "standing",
+    guarding: input.guardMode,
+    prompt: promptFor(player, items),
+  });
+
   const loop = new Loop({
     fixed: (dt) => {
+      for (const a of pending.splice(0)) perform(a);
       // Mouse deltas are consumed here, not in render: reading them per frame
       // double-counts input whenever one frame spans two physics steps.
       player.act(input, input.keys, tuning, dt);
@@ -302,14 +352,17 @@ async function main(): Promise<void> {
 
       for (const c of everyone) c.arm.updateDerived();
       impacts.update(performance.now());
-      if (tuning.showTrail) trail.sample(arm);
+      // A sword on your back traces nothing; drawn again, its arc starts afresh.
+      if (tuning.showTrail) {
+        if (arm.sheathed) trail.clear(); else trail.sample(arm);
+      }
     },
     render: (alpha, dt) => {
       interp.apply(alpha);
       for (const c of everyone) c.syncMeshes(tuning, alpha);
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
-      hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded);
+      hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded, kit());
       renderer.draw();
     },
   });
