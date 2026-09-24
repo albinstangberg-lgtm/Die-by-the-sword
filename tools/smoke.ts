@@ -42,6 +42,11 @@ const NO_KEYS: Keys = {
   turnLeft: false, turnRight: false, jump: false,
 };
 
+/** An opponent's intents between attacks: on its feet, and committed to nothing. */
+const FOOTWORK: ReadonlySet<string> = new Set(["close", "circle", "backoff", "evade"]);
+/** And every intent in which it is in the fight at all. */
+const FIGHTING: ReadonlySet<string> = new Set([...FOOTWORK, "windup", "strike", "recover"]);
+
 /** A scriptable stand-in for pointer-lock input. */
 class FakeInput implements ArmInput {
   dx = 0; dy = 0; wheel = 0; rollDx = 0;
@@ -1147,24 +1152,34 @@ async function attacksAreTelegraphed(): Promise<void> {
   }
 
   // And the tell is live: the weapon brightens as the windup runs out.
+  //
+  // Held for the whole twenty seconds rather than one attack, because the
+  // gaps between attacks are full of footwork now -- circling, giving ground,
+  // stepping out of the way -- and none of it may light the weapon or name an
+  // attack. The glow means a swing is coming, every time, and only then.
   const rig = await buildRig({}, ORC, foeSpawn(ORC));
   let sawWindup = false;
   let tellAtStart = 1;
   let tellAtEnd = 0;
+  let lied = "";
   for (let i = 0; i < 60 * 20; i++) {
     rig.fight(1);
+    const attacking = rig.ai.intent === "windup" || rig.ai.intent === "strike";
     if (rig.ai.intent === "windup") {
       if (!sawWindup) { sawWindup = true; tellAtStart = rig.ai.tell; }
       tellAtEnd = Math.max(tellAtEnd, rig.ai.tell);
     }
-    if (rig.ai.intent === "close" && sawWindup) break;
+    const named = rig.ai.committed !== null;
+    if (lied === "" && (attacking !== named || (!attacking && rig.ai.tell > 0))) {
+      lied = `intent "${rig.ai.intent}", committed ${rig.ai.committed?.name ?? "nothing"}, ` +
+        `tell ${rig.ai.tell.toFixed(2)} at ${(i / 60).toFixed(1)}s`;
+    }
   }
   check("a windup is a visible state, not an instant",
     sawWindup && tellAtStart < 0.35 && tellAtEnd > 0.7,
     `tell ran ${tellAtStart.toFixed(2)} -> ${tellAtEnd.toFixed(2)} over the windup`);
-  check("nothing is committed while it is not attacking",
-    rig.ai.committed === null || rig.ai.intent === "windup" || rig.ai.intent === "strike",
-    `intent "${rig.ai.intent}", committed ${rig.ai.committed?.name ?? "nothing"}`);
+  check("nothing is committed or lit while it is not attacking", lied === "",
+    lied || "20s of fighting, footwork and all, and the weapon only lit for real attacks");
 }
 
 async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
@@ -2016,12 +2031,25 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
   check("it gets back up on its own", upAfter > 30 && upAfter < 60 * 3,
     upAfter < 0 ? "still down after 4s" : `up after ${(upAfter / 60).toFixed(2)}s`);
 
-  rig.fight(30);
-  const p = rig.foe.position(new THREE.Vector3());
-  check("upright and on its feet again",
-    tiltOf(rig.foe.fighter.body) < 2 && Math.abs(p.y - standing) < 0.04,
+  // Half a second to find its feet, and up to a second more to come back down
+  // if it went up. A goblin whose spear lands planted can lever itself off the
+  // floor taking its guard back up: its drive is an outside force on the hand,
+  // and a goblin's arm is strong enough to lift the goblin. It is rare, and
+  // rarer when it is struck mid-attack than at the guard -- which is where it
+  // spends its time between attacks now.
+  const p = new THREE.Vector3();
+  let settled = -1;
+  for (let i = 0; i < 90 && settled < 0; i++) {
+    rig.fight(1);
+    rig.foe.position(p);
+    if (i >= 29 && tiltOf(rig.foe.fighter.body) < 2 && Math.abs(p.y - standing) < 0.04) {
+      settled = i + 1;
+    }
+  }
+  check("upright and on its feet again", settled > 0,
     `tilt ${tiltOf(rig.foe.fighter.body).toFixed(1)}deg, hull at ${p.y.toFixed(3)} m ` +
-    `against ${standing.toFixed(3)} standing`);
+    `against ${standing.toFixed(3)} standing` +
+    (settled > 0 ? `, ${(settled / 60).toFixed(2)}s after it got up` : " after 1.5s"));
   check("with its sword arm still on its shoulder", shoulderGap(rig.foe) < 0.03,
     `top of the upper arm ${(shoulderGap(rig.foe) * 1000).toFixed(0)} mm from its anchor`);
 
@@ -2054,7 +2082,7 @@ async function aStaggerTakesTheAttackOffIt(): Promise<void> {
   let back = false;
   for (let i = 0; i < 60 * 3 && !back; i++) {
     rig.fight(1);
-    back = rig.ai.intent === "close" || rig.ai.intent === "windup";
+    back = FIGHTING.has(rig.ai.intent);
   }
   check("a middling blow staggers a goblin mid-windup", winding && effect === "stagger",
     `${winding ? "winding up" : "not winding"}, blow ${effect}`);
@@ -2254,6 +2282,267 @@ async function aCorpseLiesStill(): Promise<void> {
     `${drift.toFixed(2)} m from where it died, ${fastest.toFixed(2)} m/s in its sixth second`);
 }
 
+// --- footwork -----------------------------------------------------------------
+
+/** How an opponent spent a stretch of a fight, measured from outside it. */
+interface Bout {
+  /** Seconds in each intent. */
+  time: Map<string, number>;
+  /** Within four metres of you: metres it moved round you, toward you, and away. */
+  around: number;
+  toward: number;
+  away: number;
+  /** How many times it changed which way round you it was going. */
+  turns: number;
+  /** How far from you it was, every step it was within four metres. */
+  ranges: number[];
+  /** And every step of that it spent going round you or giving ground: the distance it chose. */
+  hover: number[];
+  /** The attacks it began, by name. */
+  attacks: string[];
+  /** The intent each step out of the way began from. */
+  evadedFrom: string[];
+  /** Steps of footwork spent pressing to move and not moving. */
+  blocked: number;
+}
+
+/** Turn a fighter toward something, on the turn keys. */
+function faceToward(f: Fighter, dx: number, dz: number, keys: Keys): void {
+  let err = Math.atan2(-dx, -dz) - f.yaw;
+  while (err > Math.PI) err -= Math.PI * 2;
+  while (err < -Math.PI) err += Math.PI * 2;
+  keys.turnLeft = err > 0.06;
+  keys.turnRight = err < -0.06;
+}
+
+/** Where the opponent is from the player, flat: [dx, dz]. */
+function foeFrom(rig: Rig): [number, number] {
+  const me = rig.player.position(new THREE.Vector3());
+  const it = rig.foe.position(new THREE.Vector3());
+  return [it.x - me.x, it.z - me.z];
+}
+
+/** A player who walks straight into the opponent and stays in its face. */
+function crowder(): (rig: Rig) => Keys {
+  const keys = { ...NO_KEYS };
+  return (rig) => {
+    const [dx, dz] = foeFrom(rig);
+    faceToward(rig.fighter, dx, dz, keys);
+    keys.forward = Math.hypot(dx, dz) > 0.75;
+    return keys;
+  };
+}
+
+/**
+ * A player who comes at the opponent and cuts across at it whenever it is
+ * within a sword's length: a wind back to the right and a hard sweep to the
+ * left, once a second. Crude, but it is a real swing of a real arm -- and
+ * it has to walk in, because something that keeps its distance is never
+ * inside a sword's length of a player who stands still.
+ */
+function fencer(): (rig: Rig) => Keys {
+  const keys = { ...NO_KEYS };
+  let left = 0;
+  return (rig) => {
+    const [dx, dz] = foeFrom(rig);
+    faceToward(rig.fighter, dx, dz, keys);
+    keys.forward = Math.hypot(dx, dz) > 1.3;
+    left -= STEP;
+    if (left <= 0 && Math.hypot(dx, dz) < 1.9) left = 1.0;
+    const into = 1.0 - left;
+    const aim = rig.arm.aim;
+    const s = rig.tuning.sensitivity;
+    if (left > 0 && into < 0.45) {
+      rig.input.dx = -(-1.1 - aim.yaw) / s * 0.2;
+      rig.input.dy = -(0.35 - aim.pitch) / s * 0.2;
+    } else if (left > 0 && into < 0.75) {
+      rig.input.dx = -(1.0 - aim.yaw) / s * 0.35;
+      rig.input.dy = -(-0.1 - aim.pitch) / s * 0.2;
+    }
+    return keys;
+  };
+}
+
+/** Fight for a while, with the player doing whatever `drive` says, and keep the books. */
+function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => NO_KEYS): Bout {
+  const bout: Bout = {
+    time: new Map(), around: 0, toward: 0, away: 0, turns: 0,
+    ranges: [], hover: [], attacks: [], evadedFrom: [], blocked: 0,
+  };
+  const me = new THREE.Vector3();
+  const it = new THREE.Vector3();
+  const was = rig.foe.position(new THREE.Vector3());
+  // Killed, the player gets up where the bout began -- not at the spawn, which
+  // may be two rooms away, and leave the rest of the bout to an empty room.
+  rig.player.position(me);
+  const home = new THREE.Vector3(me.x, SPAWN.y, me.z);
+  // One step's worth of its walking pace, metres.
+  const pace = rig.tuning.moveSpeed * rig.foe.fighter.build.scale * STEP;
+  let way = 0;
+  for (let i = 0; i < seconds * 60; i++) {
+    const before = rig.ai.intent;
+    rig.fight(1, drive(rig));
+    const now = rig.ai.intent;
+    bout.time.set(now, (bout.time.get(now) ?? 0) + STEP);
+    if (now === "windup" && before !== "windup") bout.attacks.push(rig.ai.committed!.name);
+    if (now === "evade" && before !== "evade") bout.evadedFrom.push(before);
+    if (rig.player.dead) rig.place(home);
+
+    rig.player.position(me);
+    rig.foe.position(it);
+    const mx = it.x - was.x;
+    const mz = it.z - was.z;
+    was.copy(it);
+    const k = rig.ai.keys;
+    if (FOOTWORK.has(now) && (k.forward || k.back || k.left || k.right)
+      && Math.hypot(mx, mz) < pace * 0.3) bout.blocked++;
+
+    const dx = it.x - me.x;
+    const dz = it.z - me.z;
+    const range = Math.hypot(dx, dz);
+    if (range > 4 || range < 1e-6) continue;
+    bout.ranges.push(range);
+    if (now === "circle" || now === "backoff") bout.hover.push(range);
+    const out = (mx * dx + mz * dz) / range;
+    const round = (mz * dx - mx * dz) / range;
+    if (out > 0) bout.away += out; else bout.toward -= out;
+    bout.around += Math.abs(round);
+    if (Math.abs(round) > pace * 0.35) {
+      const w = Math.sign(round);
+      if (way !== 0 && w !== way) bout.turns++;
+      way = w;
+    }
+  }
+  return bout;
+}
+
+/** The share of its time in the fight that it spent winding up, striking or recovering. */
+function swinging(b: Bout): number {
+  let swing = 0;
+  let all = 0;
+  for (const [intent, t] of b.time) {
+    if (!FIGHTING.has(intent)) continue;
+    all += t;
+    if (!FOOTWORK.has(intent)) swing += t;
+  }
+  return all > 0 ? swing / all : 0;
+}
+
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  return s.length ? s[s.length >> 1] : 0;
+}
+
+async function footworkAsksTheStone(): Promise<void> {
+  console.log("\nfootwork asks the stone before it steps");
+  const rig = await buildRig();
+  rig.step(30);
+  const at = rig.fighter.position(new THREE.Vector3());
+  // The south wall's inner face; walls are 0.4m thick and centred on the line.
+  const wall = ROOMS.training.maxZ - 0.2 - at.z;
+  const south = rig.fighter.clearAlong(0, 1, 5);
+  const north = rig.fighter.clearAlong(0, -1, 5);
+  check("the step probe finds the wall behind you", Math.abs(south - wall) < 0.05,
+    `${south.toFixed(2)} m of floor to the south wall, which is ${wall.toFixed(2)} m off`);
+  check("and open floor where there is nothing", north === 5,
+    `${north.toFixed(2)} m clear of 5 looking north`);
+
+  // Stand in a corner, a metre off two walls with a pillar two paces away, and
+  // let a swordsman go round you. Every step it takes it asks the stone first,
+  // so it turns back at a wall rather than walking into one.
+  const corner = new THREE.Vector3(5.3, SPAWN.y, 11.8);
+  const boxed = await buildRig({}, SWORDSMAN, spawnFor(SWORDSMAN, 0.5, 9.0));
+  boxed.place(corner);
+  const bout = watchBout(boxed, 25);
+  const footwork = [...bout.time].reduce((s, [k, t]) => s + (FOOTWORK.has(k) ? t : 0), 0);
+  check("fought into a corner, it does not walk into the walls",
+    bout.blocked < 30 && bout.around > 3 && bout.attacks.length > 5,
+    `${bout.blocked} of ${Math.round(footwork * 60)} footwork steps went nowhere; ` +
+    `${bout.around.toFixed(1)} m round you, ${bout.attacks.length} attacks`);
+}
+
+async function anOpponentMovesBetweenSwings(): Promise<void> {
+  console.log("\nbetween swings it moves: round you, in and out, and away");
+  // Before it had footwork, forty seconds of this were forty seconds of walk
+  // up, swing, swing again -- nine tenths of it winding up, striking or
+  // recovering, and twenty centimetres of it sideways. Now it goes round you,
+  // and each species goes round you like what it is.
+  const bouts = new Map<string, Bout>();
+  let yours = 0;
+  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+    const rig = await buildRig({}, species, foeSpawn(species));
+    // Where your own sword does its work: the percussion point at full
+    // stretch, flat from your middle -- measured the way an opponent measures
+    // its own.
+    const at = rig.player.position(new THREE.Vector3());
+    const hits = rig.arm.probeStrike(0, 0, 1, 0, rig.tuning, new THREE.Vector3());
+    yours = Math.hypot(hits.x - at.x, hits.z - at.z);
+    const bout = watchBout(rig, 25);
+    bouts.set(species.key, bout);
+    // The old opponent managed under a metre of this in forty seconds.
+    check(`${species.name} goes round you`, bout.around > 1.5,
+      `${bout.around.toFixed(1)} m round you with ${bout.turns} changes of direction, ` +
+      `${bout.away.toFixed(1)} m given, ${bout.attacks.length} attacks in 25s`);
+  }
+  const man = bouts.get("swordsman")!;
+  const orc = bouts.get("orc")!;
+  const goblin = bouts.get("goblin")!;
+  const turns = man.turns + orc.turns + goblin.turns;
+  check("and not always the same way round", turns >= 3,
+    `${turns} changes of direction between the three of them`);
+  const pct = (b: Bout) => `${(swinging(b) * 100).toFixed(0)}%`;
+  check("the orc presses: it spends more of the fight swinging than the goblin",
+    swinging(orc) > swinging(goblin) + 0.05,
+    `swinging ${pct(orc)} of the time, against the goblin's ${pct(goblin)} ` +
+    `(and the man's ${pct(man)})`);
+  // Backing off by choice, not the in-and-out of stepping in to swing: every
+  // one of them does that.
+  const backing = (b: Bout) => b.time.get("backoff") ?? 0;
+  check("the goblin goes round you out of your sword's reach, and backs off more than the orc",
+    median(goblin.hover) > yours + 0.3 && backing(goblin) > backing(orc),
+    `goes round you ${median(goblin.hover).toFixed(2)} m off, where your sword works at ` +
+    `${yours.toFixed(2)}; backed off for ${backing(goblin).toFixed(1)}s to the orc's ` +
+    `${backing(orc).toFixed(1)}s`);
+}
+
+async function anOpponentGetsOutOfTheWay(): Promise<void> {
+  console.log("\nit steps out of a swing it sees coming -- never out of its own");
+  // The goblin, because it is the wary one: it answers more than half the
+  // swings it sees, where the orc answers one in ten. A reaction time after
+  // it sees them, too, so a quick cut has often landed before it moves.
+  const goblin = watchBout(await buildRig({}, GOBLIN, foeSpawn(GOBLIN)), 45, fencer());
+  check("a goblin hops back out of your cuts", goblin.evadedFrom.length >= 1,
+    `${goblin.evadedFrom.length} steps out of the way in 45s of being swung at`);
+  const from = goblin.evadedFrom;
+  check("and never in the middle of an attack of its own",
+    from.every((s) => s === "close" || s === "circle" || s === "backoff"),
+    `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
+}
+
+async function crowdingItDoesNotStopIt(): Promise<void> {
+  console.log("\nwalk into its face and it still fights");
+  // Crowding used to switch an opponent off: it only ever stepped back, and
+  // every attack it had wanted room it never got -- one to six swings in
+  // forty seconds. Now it backs off while it can, and swings at you from
+  // where it is once you have been inside its guard long enough.
+  //
+  // In the cell, which is bare: a player who only walks straight at things
+  // gets stuck on the first pillar between them, and then nobody is crowding
+  // anybody.
+  let shaft = 0;
+  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
+    rig.place(new THREE.Vector3(12.2, SPAWN.y, -5.8));
+    const bout = watchBout(rig, 15, crowder());
+    if (species === GOBLIN) shaft = bout.attacks.filter((a) => a === "shaft sweep").length;
+    check(`${species.name} swings at you from inside its guard`, bout.attacks.length >= 4,
+      `${bout.attacks.length} attacks in 15s with you in its face, median ` +
+      `${median(bout.ranges).toFixed(2)} m off`);
+  }
+  check("inside a goblin's point, it swings the shaft", shaft > 0,
+    `${shaft} shaft sweeps -- the one attack it has up close`);
+}
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
   await freeArmTracks();
@@ -2313,6 +2602,11 @@ async function run(): Promise<void> {
   await knockdownsDoNotWearTheBodyOut();
   await oneSwingIsOneBlow();
   await aCorpseLiesStill();
+
+  await footworkAsksTheStone();
+  await anOpponentMovesBetweenSwings();
+  await anOpponentGetsOutOfTheWay();
+  await crowdingItDoesNotStopIt();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +

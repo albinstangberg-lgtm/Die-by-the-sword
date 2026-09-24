@@ -85,6 +85,12 @@ const COYOTE = 0.09;
 const JUMP_LOCK = 0.14;
 /** How far past the soles the ground probe looks, at human scale. */
 const GROUND_PROBE = 0.1;
+/**
+ * How high off the floor the step probe looks, at human scale: knee height,
+ * which is under the low beam a body walks beneath and level with the block
+ * it would walk into.
+ */
+const STEP_PROBE = 0.45;
 /** How fast the legs fold up once there is nothing to stand on. */
 const TUCK_RATE = 9;
 
@@ -267,6 +273,7 @@ export class Fighter {
   private readonly groundRay: RAPIER.Ray;
   private readonly groundReach: number;
   private readonly sightRay: RAPIER.Ray;
+  private readonly stepRay: RAPIER.Ray;
   private readonly _eye = new THREE.Vector3();
 
   private readonly tmpVec = new THREE.Vector3();
@@ -319,6 +326,7 @@ export class Fighter {
     this.groundRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
     this.groundReach = HULL.height / 2 + GROUND_PROBE * build.scale;
     this.sightRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+    this.stepRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
 
     this.posture = new Posture(build);
     this.mesh.add(this.pelvis);
@@ -1168,6 +1176,37 @@ export class Fighter {
       this.sightRay, dist - 0.15, true,
       undefined, this.side.sightFilter, undefined, this.body,
     ) === null;
+  }
+
+  /**
+   * How much clear floor lies along a flat direction, metres, up to `reach`.
+   *
+   * Knee high, against the same stone that stops sight and nothing that walks.
+   * It is how an opponent asks whether there is room to step somewhere before
+   * it steps there: one that circled you into a pillar would stand against it
+   * treading air until its feet gave up.
+   *
+   * Given a `halfWidth` it asks for a body's width of floor rather than a
+   * line of it -- down the middle and down either flank -- because a single
+   * ray passes a pillar that the shoulder beside it walks straight into. The
+   * flanks sit a little inside that width, so a body already brushing a wall
+   * still finds room to walk along it. `dirX, dirZ` must be a unit vector.
+   */
+  clearAlong(dirX: number, dirZ: number, reach: number, halfWidth = 0): number {
+    const p = this.body.translation();
+    const y = p.y - this.build.hullCentreY + STEP_PROBE * this.build.scale;
+    this.stepRay.dir = { x: dirX, y: 0, z: dirZ };
+    let clear = reach;
+    for (let flank = halfWidth > 0 ? -1 : 0; flank <= (halfWidth > 0 ? 1 : 0); flank++) {
+      const off = flank * halfWidth * 0.8;
+      this.stepRay.origin = { x: p.x - dirZ * off, y, z: p.z + dirX * off };
+      const hit = this.phys.world.castRay(
+        this.stepRay, clear, true,
+        undefined, this.side.sightFilter, undefined, this.body,
+      );
+      if (hit !== null) clear = hit.timeOfImpact;
+    }
+    return clear;
   }
 
   /**
