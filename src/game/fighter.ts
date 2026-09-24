@@ -72,6 +72,21 @@ const UP = new THREE.Vector3(0, 1, 0);
 /** Stride timing: radians of hip swing per metre travelled. */
 const STRIDE = 2.6;
 const STRIDE_SWING = 0.55;
+/**
+ * How fast a stride comes in once the feet are moving, and goes once they
+ * stop, per second.
+ *
+ * The stride is a phase that only advances with distance covered, so a body
+ * that stopped used to stop wherever the phase had got to: one foot in the
+ * air, one knee bent, held like that for as long as it stood there -- and
+ * short steps with pauses between, which is how an opponent moves now, froze
+ * a new pose at every pause. Easing the stride in and out puts the lifted foot
+ * back down and both legs straight under the body within a fifth of a second
+ * of stopping. It comes in faster than it goes: a step that starts with its
+ * legs still standing slides the feet along the floor.
+ */
+const STRIDE_IN = 25;
+const STRIDE_OUT = 10;
 
 /**
  * How long after the feet leave the ground a jump still counts, seconds.
@@ -253,6 +268,8 @@ export class Fighter {
   private turning = 0;
 
   private stridePhase = 0;
+  /** How much of the stride the legs are showing: 0 standing, 1 walking. */
+  private striding = 0;
   private headMesh!: THREE.Object3D;
 
   /** One set of materials for the whole figure, from its palette. */
@@ -817,6 +834,9 @@ export class Fighter {
     const covered = Math.hypot(v.x + knock.x, v.z + knock.z);
     if (this.grounded) this.stridePhase += covered * dt * STRIDE;
     this.gait = covered;
+    const walking = this.grounded && covered > 0.05;
+    this.striding += ((walking ? 1 : 0) - this.striding)
+      * Math.min(1, (walking ? STRIDE_IN : STRIDE_OUT) * dt);
 
     // Stumbling feet catch the body at the rate stepping can, and find their
     // footing again once they have.
@@ -997,6 +1017,7 @@ export class Fighter {
     this.gait = 0;
     this.turning = 0;
     this.tuck += (0 - this.tuck) * Math.min(1, TUCK_RATE * dt);
+    this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
 
     const pace = Math.sqrt(this.build.scale);
     if (this.stance === "down") {
@@ -1353,9 +1374,9 @@ export class Fighter {
 
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
-      const swing = Math.sin(phase) * STRIDE_SWING;
+      const swing = Math.sin(phase) * STRIDE_SWING * this.striding;
       // A knee only bends one way, so the back half of the cycle is flattened.
-      const bend = Math.max(0, -Math.sin(phase - 0.6)) * 0.9;
+      const bend = Math.max(0, -Math.sin(phase - 0.6)) * 0.9 * this.striding;
 
       // Airborne: one knee up, the other trailing. Purely cosmetic -- the legs
       // are kinematic and never carry the jump -- but a figure that keeps
@@ -1626,6 +1647,7 @@ export class Fighter {
     const local = this.build.local;
     this.yaw = 0;
     this.stridePhase = 0;
+    this.striding = 0;
     this.tuck = 0;
     this.coyote = COYOTE;
     this.jumpLock = 0;

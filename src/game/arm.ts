@@ -115,6 +115,13 @@ const ROLL_MIN = -1.8, ROLL_MAX = 1.8;
 const YAW_MIN = -2.5, YAW_MAX = 1.9;
 const PITCH_MIN = -1.35, PITCH_MAX = 1.5;
 
+/** The same limits, for a driver that needs to know where its arm stops. */
+export const ARM_RANGE = {
+  yaw: [YAW_MIN, YAW_MAX],
+  pitch: [PITCH_MIN, PITCH_MAX],
+  roll: [ROLL_MIN, ROLL_MAX],
+} as const;
+
 /**
  * Where the arm is held at rest: see the note on `armYaw` below. The body's
  * posture is measured from the same guard, so at rest it stands square.
@@ -311,10 +318,8 @@ export class Arm {
   private readonly strikePoint: number;
   /** Live total weapon mass, which the panel can change for the player. */
   private weaponMass: number;
-  private glow: THREE.MeshStandardMaterial[] = [];
   /** Dark caps on cut faces, cleared when a reset puts the arm back on. */
   private readonly caps: THREE.Object3D[] = [];
-  private tell = 0;
 
   private shoulderJoint: RAPIER.ImpulseJoint | null = null;
   private elbowJoint: RAPIER.ImpulseJoint | null = null;
@@ -1535,9 +1540,7 @@ export class Arm {
 
     this.group.add(this.upperMesh, this.foreMesh);
 
-    const built = this.weapon.build();
-    this.bladeMesh = built.group;
-    this.glow = built.glow;
+    this.bladeMesh = this.weapon.build();
     this.group.add(this.bladeMesh);
 
     // A hand around the grip, or the weapon grows out of a tapered stump. It
@@ -1549,24 +1552,6 @@ export class Arm {
 
     this.ghostMesh = buildGhostMesh(this.build.scale);
     this.group.add(this.ghostMesh);
-  }
-
-  /**
-   * Light the weapon up while an attack is winding.
-   *
-   * The whole point of a telegraphed attack is that it can be read, and a
-   * figure at four metres is a silhouette -- you can see the arm go back, but
-   * not how far. A weapon that brightens as the windup completes says "now"
-   * from any distance, and says it through the thing that is about to hit you.
-   */
-  setTell(amount: number): void {
-    const a = clamp(amount, 0, 1);
-    if (Math.abs(a - this.tell) < 0.01) return;
-    this.tell = a;
-    for (const m of this.glow) {
-      m.emissive.setHex(0xd8562f);
-      m.emissiveIntensity = a * 0.6;
-    }
   }
 
   /**
@@ -1684,8 +1669,8 @@ export class Arm {
    *
    * Bisection over the pitch range, because the relation runs through an elbow
    * solve and a pole rotation and has no closed form worth writing down. This
-   * is what lets one attack table describe the same swing for a 1.37m goblin
-   * and a 2.11m orc: the table says "a hand's width above level", and level is
+   * is what lets one shape of swing describe the same swing for a 1.37m goblin
+   * and a 2.11m orc: the shape says "a hand's width above level", and level is
    * solved here from whatever body and weapon is actually throwing it.
    */
   solvePitchForHeight(
@@ -1755,8 +1740,8 @@ export class Arm {
    *
    * Bisection because every one of these relations runs through an elbow solve
    * and a pole rotation and has no closed form worth writing down. This is
-   * what lets one attack table describe the same swing for a 1.37m goblin and
-   * a 2.11m orc: the table says "a hand's width above level", and level is
+   * what lets one shape of swing describe the same swing for a 1.37m goblin and
+   * a 2.11m orc: the shape says "a hand's width above level", and level is
    * solved here from whatever body and weapon is actually throwing it.
    */
   private bisect(min: number, max: number, error: (angle: number) => number): number {
@@ -1822,7 +1807,6 @@ export class Arm {
     this.slackenGrip();
     this._handAccel.set(0, 0, 0);
     this._accelPrimed = false;
-    this.setTell(0);
     this.computeGhost(t);
 
     const dir = this._armDir.copy(this._ghostPos).sub(this._shoulder).normalize();

@@ -25,7 +25,7 @@ import {
   GOBLIN, ORC, SWORDSMAN, jointScaleFor, maxHealthFor, type Species,
 } from "../src/game/species";
 import { AXE, SPEAR, SWORD, weaponMassProperties } from "../src/game/weapons";
-import { Ai } from "../src/game/ai";
+import { Ai, type Swing } from "../src/game/ai";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
 import type { Fighter } from "../src/game/fighter";
@@ -42,7 +42,7 @@ const NO_KEYS: Keys = {
   turnLeft: false, turnRight: false, jump: false,
 };
 
-/** An opponent's intents between attacks: on its feet, and committed to nothing. */
+/** An opponent's intents between swings: on its feet, and committed to nothing. */
 const FOOTWORK: ReadonlySet<string> = new Set(["close", "circle", "backoff", "evade"]);
 /** And every intent in which it is in the fight at all. */
 const FIGHTING: ReadonlySet<string> = new Set([...FOOTWORK, "windup", "strike", "recover"]);
@@ -961,11 +961,11 @@ async function airControlIsWeakerThanGround(): Promise<void> {
 
 async function aLegSweepCanBeJumped(): Promise<void> {
   console.log("\nthe orc's leg sweep travels under a jump");
-  // The counter the HUD prints for that attack has to actually be available,
-  // which means two measured numbers meeting: how low the axe travels, and
-  // how high the feet get.
+  // Nothing tells you it is coming but the axe going low, and the answer to it
+  // has to actually be there, which means two measured numbers meeting: how
+  // low the axe travels, and how high the feet get.
   const rig = await buildRig({}, ORC, foeSpawn(ORC));
-  rig.ai.attackOverride = ORC.attacks.find((a) => a.name === "leg sweep")!;
+  rig.ai.cutOverride = "leg sweep";
 
   let lowest = 99;
   for (let i = 0; i < 60 * 12; i++) {
@@ -1140,46 +1140,95 @@ async function eachSpeciesCanFight(): Promise<void> {
   }
 }
 
-async function attacksAreTelegraphed(): Promise<void> {
-  console.log("\nevery attack announces itself before it arrives");
+async function swingsAreReadOffTheArm(): Promise<void> {
+  console.log("\nnothing announces a swing but the arm drawing it back");
+  // Every attack used to be held wound up for a declared length -- three
+  // quarters of a second of glowing axe -- while the fight panel named it and
+  // said how to beat it. Now a swing is made up as it is thrown, aimed at a
+  // part of you, and the only warning is the weapon going back, for as long
+  // as the arm takes to get it there. So that has to happen every time, it has
+  // to mean something -- more weapon, longer -- and nothing else may tell.
+  const whole = new Map<string, number[]>();
+  const everywhere = new Set<string>();
   for (const species of [SWORDSMAN, ORC, GOBLIN]) {
-    const shortest = Math.min(...species.attacks.map((a) => a.windup));
-    check(`${species.name} always gives you a windup`, shortest >= 0.18,
-      `shortest tell ${shortest.toFixed(2)}s across ${species.attacks.length} attacks`);
-    const named = species.attacks.every((a) => a.name.length > 0 && a.counter.length > 0);
-    check(`${species.name}'s attacks are named and answerable`, named,
-      species.attacks.map((a) => a.name).join(", "));
+    const rig = await buildRig({}, species, foeSpawn(species));
+    const swings: Swing[] = [];
+    const drawing: number[] = [];
+    const cycles: number[] = [];
+    let drawn = 0;
+    let t = 0;
+    let cycle = -1;
+    let from = rig.foe.arm.aim;
+    let told = "";
+    let lied = "";
+    for (let i = 0; i < 60 * 30; i++) {
+      const before = rig.ai.intent;
+      rig.fight(1);
+      const now = rig.ai.intent;
+      if (now === "windup" && before !== "windup") {
+        swings.push(rig.ai.committed!);
+        from = rig.foe.arm.aim;
+        t = 0;
+        cycle = 0;
+      }
+      if (now === "windup") t += STEP;
+      if (before === "windup" && now === "strike") {
+        drawing.push(t);
+        const to = rig.foe.arm.aim;
+        const moved = Math.hypot(to.yaw - from.yaw, to.pitch - from.pitch);
+        if (moved > 0.25 || Math.abs(to.reach - from.reach) > 0.08) drawn++;
+      }
+      // Back, through, and on guard again.
+      if (cycle >= 0) {
+        if (now === "windup" || now === "strike" || now === "recover") cycle += STEP;
+        else {
+          if (before === "recover") cycles.push(cycle);
+          cycle = -1;
+        }
+      }
+      const swinging = now === "windup" || now === "strike";
+      if (lied === "" && swinging !== (rig.ai.committed !== null)) {
+        lied = `intent "${now}" with ${rig.ai.committed?.cut.name ?? "nothing"} committed`;
+      }
+      if (told === "" && FIGHTING.has(now) && rig.ai.outlook !== "fighting") {
+        told = `the panel said "${rig.ai.outlook}" while it was in "${now}"`;
+      }
+    }
+    whole.set(species.key, cycles);
+
+    const fastest = Math.min(...drawing);
+    const slowest = Math.max(...drawing);
+    check(`${species.name} draws back before every swing`,
+      drawing.length >= 8 && drawn === drawing.length,
+      `${drawn} of ${drawing.length} swings drew the weapon back first`);
+    check("for as long as its arm takes, not a set time",
+      fastest >= 0.09 && median(drawing) < 0.6 && slowest - fastest > 0.05,
+      `${fastest.toFixed(2)}-${slowest.toFixed(2)}s, median ${median(drawing).toFixed(2)}s`);
+
+    const parts = new Set(swings.map((s) => s.aim));
+    for (const p of parts) everywhere.add(p);
+    const alike = new Set(swings.map((s) =>
+      [s.from.yaw, s.from.pitch, s.from.reach, s.to.yaw, s.to.pitch, s.roll]
+        .map((v) => v.toFixed(3)).join())).size;
+    check("it goes for more of you than one place, and never the same way twice",
+      parts.size >= 2 && alike === swings.length,
+      `${swings.length} swings at your ${[...parts].join(", ")}; ` +
+      `${alike} different ones, in ${plural(new Set(swings.map((s) => s.cut.name)).size, "shape")}`);
+    check("and nothing but the arm gives it away", told === "" && lied === "",
+      told || lied || "30s of fighting: the panel only ever said it was fighting");
   }
 
-  // And the tell is live: the weapon brightens as the windup runs out.
-  //
-  // Held for the whole twenty seconds rather than one attack, because the
-  // gaps between attacks are full of footwork now -- circling, giving ground,
-  // stepping out of the way -- and none of it may light the weapon or name an
-  // attack. The glow means a swing is coming, every time, and only then.
-  const rig = await buildRig({}, ORC, foeSpawn(ORC));
-  let sawWindup = false;
-  let tellAtStart = 1;
-  let tellAtEnd = 0;
-  let lied = "";
-  for (let i = 0; i < 60 * 20; i++) {
-    rig.fight(1);
-    const attacking = rig.ai.intent === "windup" || rig.ai.intent === "strike";
-    if (rig.ai.intent === "windup") {
-      if (!sawWindup) { sawWindup = true; tellAtStart = rig.ai.tell; }
-      tellAtEnd = Math.max(tellAtEnd, rig.ai.tell);
-    }
-    const named = rig.ai.committed !== null;
-    if (lied === "" && (attacking !== named || (!attacking && rig.ai.tell > 0))) {
-      lied = `intent "${rig.ai.intent}", committed ${rig.ai.committed?.name ?? "nothing"}, ` +
-        `tell ${rig.ai.tell.toFixed(2)} at ${(i / 60).toFixed(1)}s`;
-    }
-  }
-  check("a windup is a visible state, not an instant",
-    sawWindup && tellAtStart < 0.35 && tellAtEnd > 0.7,
-    `tell ran ${tellAtStart.toFixed(2)} -> ${tellAtEnd.toFixed(2)} over the windup`);
-  check("nothing is committed or lit while it is not attacking", lied === "",
-    lied || "20s of fighting, footwork and all, and the weapon only lit for real attacks");
+  check("between them they go for your head, your body, your sword arm and your legs",
+    everywhere.size === 4, `went for your ${[...everywhere].join(", ")}`);
+
+  // More weapon, longer. Swung by an arm scaled to the body carrying it, a
+  // metre of ash with 3.65 kg on the end is still slower back, through and
+  // up again than a sword: not by a number anybody wrote down, by its weight.
+  const sword = median(whole.get("swordsman")!);
+  const axe = median(whole.get("orc")!);
+  check("a swing of the axe takes longer than a swing of the sword", axe > sword + 0.1,
+    `back, through and on guard again: a median ${axe.toFixed(2)}s for the orc's axe, ` +
+    `${sword.toFixed(2)}s for the sword`);
 }
 
 async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
@@ -1370,7 +1419,7 @@ async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
   check("and it does not swing at a wall either",
     rig.foe.arm.state.tipSpeed < 1.5 && rig.ai.committed === null,
     `tip ${rig.foe.arm.state.tipSpeed.toFixed(1)} m/s, committed ` +
-    `${rig.ai.committed?.name ?? "nothing"}`);
+    `${rig.ai.committed?.cut.name ?? "nothing"}`);
 
   // Walk into the hall and it is a fight.
   rig.place(new THREE.Vector3(ORC_POST.x, SPAWN.y, ORC_POST.z + 4.5));
@@ -1681,6 +1730,54 @@ async function theKneesBendLikeAPersons(): Promise<void> {
     `up to ${(forward * 100).toFixed(1)}cm ahead`);
   check("no knee ever bends backward", backward < 0.002,
     `at most ${(backward * 100).toFixed(2)}cm behind`);
+}
+
+async function stoppingPutsTheFeetDown(): Promise<void> {
+  console.log("\nstop walking and both feet come down");
+  // The stride is posed from how far the body has walked, so it used to stop
+  // wherever the walking did: stand still mid-step and you stood on one leg,
+  // the other knee bent and its foot a third of a metre off the floor, for as
+  // long as you cared to stand there. Every opponent between two steps of its
+  // footwork did the same. Stopped anywhere in a stride, both feet have to be
+  // back on the floor a moment later, and a body that has never walked stands
+  // on straight legs.
+  const rig = await buildRig();
+  const pelvis = rig.fighter.pelvis;
+  const legs = () => {
+    rig.fighter.applyPose(1);
+    return pelvis.children
+      .filter((c) => c.type === "Object3D" && c !== rig.fighter.chest)
+      .map((hipPivot) => {
+        const knee = hipPivot.children.find((c) => c.type === "Object3D")!;
+        const shin = knee.children[0];
+        const ankle = knee.localToWorld(new THREE.Vector3(0, shin.position.y * 2, 0));
+        return { bend: Math.abs(knee.rotation.x), ankle: ankle.y };
+      });
+  };
+  rig.step(30);
+  const fresh = legs();
+  const freshBend = Math.max(...fresh.map((l) => l.bend));
+
+  let lift = 0;
+  let bend = 0;
+  let midStride = 0;
+  // Stopped at six different points in a stride.
+  for (const walk of [9, 12, 15, 18, 21, 24]) {
+    for (let i = 0; i < walk; i++) rig.step(1, { ...NO_KEYS, forward: true });
+    const [a, b] = legs();
+    midStride = Math.max(midStride, Math.abs(a.ankle - b.ankle));
+    rig.step(20);
+    const [c, d] = legs();
+    lift = Math.max(lift, Math.abs(c.ankle - d.ankle));
+    bend = Math.max(bend, c.bend, d.bend);
+  }
+
+  check("a body that has never walked stands on straight legs", freshBend < 0.05,
+    `knees bent ${freshBend.toFixed(2)} rad at the spawn`);
+  check("stopped mid-stride, both feet are down a third of a second later",
+    midStride > 0.1 && lift < 0.02 && bend < 0.1,
+    `a foot ${(midStride * 100).toFixed(0)}cm up while walking; stopped, ` +
+    `${(lift * 100).toFixed(1)}cm between the feet and knees within ${bend.toFixed(2)} rad`);
 }
 
 async function theBodyAgreesWithItsProbes(): Promise<void> {
@@ -2035,8 +2132,8 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
   // if it went up. A goblin whose spear lands planted can lever itself off the
   // floor taking its guard back up: its drive is an outside force on the hand,
   // and a goblin's arm is strong enough to lift the goblin. It is rare, and
-  // rarer when it is struck mid-attack than at the guard -- which is where it
-  // spends its time between attacks now.
+  // rarer when it is struck mid-swing than at the guard -- which is where it
+  // spends its time between swings now.
   const p = new THREE.Vector3();
   let settled = -1;
   for (let i = 0; i < 90 && settled < 0; i++) {
@@ -2059,37 +2156,38 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
     windup = rig.ai.intent === "windup";
   }
   check("and it comes at you again", windup,
-    windup ? "wound up an attack" : `intent "${rig.ai.intent}" after 6s`);
+    windup ? "drew back for a swing" : `intent "${rig.ai.intent}" after 6s`);
 }
 
-async function aStaggerTakesTheAttackOffIt(): Promise<void> {
-  console.log("\na stagger takes an attack off something light enough to rock");
+async function aStaggerTakesTheSwingOffIt(): Promise<void> {
+  console.log("\na stagger takes a swing off something light enough to rock");
   const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
-  rig.ai.attackOverride = GOBLIN.attacks.find((a) => a.name === "lunge")!;
+  rig.ai.cutOverride = "thrust";
   let wound = false;
   for (let i = 0; i < 60 * 15 && !wound; i++) {
     rig.fight(1);
     wound = rig.ai.intent === "windup";
   }
-  rig.fight(8);
-  const winding = rig.ai.intent === "windup" && rig.ai.tell > 0;
+  // Caught with the spear on its way back: a wind-up is as long as the arm
+  // needs, which for a goblin's is not long, so this does not wait.
+  rig.fight(2);
+  const winding = rig.ai.intent === "windup" && rig.ai.committed !== null;
 
   rig.foe.receive(blowOn(rig, rig.foe, 6, 0.6));
   const effect = rig.foe.lastBlow!.effect;
   rig.fight(1);
-  const after = { intent: rig.ai.intent, committed: rig.ai.committed, tell: rig.ai.tell };
+  const after = { intent: rig.ai.intent, committed: rig.ai.committed };
 
   let back = false;
   for (let i = 0; i < 60 * 3 && !back; i++) {
     rig.fight(1);
     back = FIGHTING.has(rig.ai.intent);
   }
-  check("a middling blow staggers a goblin mid-windup", winding && effect === "stagger",
-    `${winding ? "winding up" : "not winding"}, blow ${effect}`);
-  check("and its attack is gone",
-    after.intent === "reeling" && after.committed === null && after.tell === 0,
-    `intent "${after.intent}", committed ${after.committed?.name ?? "nothing"}, ` +
-    `tell ${after.tell.toFixed(2)}`);
+  check("a middling blow staggers a goblin mid-wind-up", winding && effect === "stagger",
+    `${winding ? "drawing back" : "not drawing back"}, blow ${effect}`);
+  check("and its swing is gone",
+    after.intent === "reeling" && after.committed === null,
+    `intent "${after.intent}", committed ${after.committed?.cut.name ?? "nothing"}`);
   check("until it has its feet back", back, back ? "back at it" : "still reeling after 3s");
 }
 
@@ -2103,8 +2201,8 @@ async function realBlowsAreWeighed(): Promise<void> {
       if (rig.player.dead || !rig.player.receive(i)) return;
       if (i.closingSpeed > 1.2) effects[rig.player.lastBlow!.effect]++;
     });
-    // Forty seconds of it, however many lives that takes: the AI picks its
-    // attacks at random, and an orc that happens to take your head in the
+    // Forty seconds of it, however many lives that takes: the AI makes its
+    // swings up at random, and an orc that happens to take your head in the
     // first few blows would leave too few to count.
     for (let i = 0; i < 60 * 40; i++) {
       rig.fight(1);
@@ -2298,8 +2396,8 @@ interface Bout {
   ranges: number[];
   /** And every step of that it spent going round you or giving ground: the distance it chose. */
   hover: number[];
-  /** The attacks it began, by name. */
-  attacks: string[];
+  /** The swings it began, by the shape each was thrown with. */
+  swings: string[];
   /** The intent each step out of the way began from. */
   evadedFrom: string[];
   /** Steps of footwork spent pressing to move and not moving. */
@@ -2367,7 +2465,7 @@ function fencer(): (rig: Rig) => Keys {
 function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => NO_KEYS): Bout {
   const bout: Bout = {
     time: new Map(), around: 0, toward: 0, away: 0, turns: 0,
-    ranges: [], hover: [], attacks: [], evadedFrom: [], blocked: 0,
+    ranges: [], hover: [], swings: [], evadedFrom: [], blocked: 0,
   };
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
@@ -2384,7 +2482,7 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
     rig.fight(1, drive(rig));
     const now = rig.ai.intent;
     bout.time.set(now, (bout.time.get(now) ?? 0) + STEP);
-    if (now === "windup" && before !== "windup") bout.attacks.push(rig.ai.committed!.name);
+    if (now === "windup" && before !== "windup") bout.swings.push(rig.ai.committed!.cut.name);
     if (now === "evade" && before !== "evade") bout.evadedFrom.push(before);
     if (rig.player.dead) rig.place(home);
 
@@ -2428,6 +2526,10 @@ function swinging(b: Bout): number {
   return all > 0 ? swing / all : 0;
 }
 
+function plural(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 function median(xs: number[]): number {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[s.length >> 1] : 0;
@@ -2456,9 +2558,9 @@ async function footworkAsksTheStone(): Promise<void> {
   const bout = watchBout(boxed, 25);
   const footwork = [...bout.time].reduce((s, [k, t]) => s + (FOOTWORK.has(k) ? t : 0), 0);
   check("fought into a corner, it does not walk into the walls",
-    bout.blocked < 30 && bout.around > 3 && bout.attacks.length > 5,
+    bout.blocked < 30 && bout.around > 3 && bout.swings.length > 5,
     `${bout.blocked} of ${Math.round(footwork * 60)} footwork steps went nowhere; ` +
-    `${bout.around.toFixed(1)} m round you, ${bout.attacks.length} attacks`);
+    `${bout.around.toFixed(1)} m round you, ${bout.swings.length} swings`);
 }
 
 async function anOpponentMovesBetweenSwings(): Promise<void> {
@@ -2482,7 +2584,7 @@ async function anOpponentMovesBetweenSwings(): Promise<void> {
     // The old opponent managed under a metre of this in forty seconds.
     check(`${species.name} goes round you`, bout.around > 1.5,
       `${bout.around.toFixed(1)} m round you with ${bout.turns} changes of direction, ` +
-      `${bout.away.toFixed(1)} m given, ${bout.attacks.length} attacks in 25s`);
+      `${bout.away.toFixed(1)} m given, ${bout.swings.length} swings in 25s`);
   }
   const man = bouts.get("swordsman")!;
   const orc = bouts.get("orc")!;
@@ -2514,7 +2616,7 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
   check("a goblin hops back out of your cuts", goblin.evadedFrom.length >= 1,
     `${goblin.evadedFrom.length} steps out of the way in 45s of being swung at`);
   const from = goblin.evadedFrom;
-  check("and never in the middle of an attack of its own",
+  check("and never in the middle of a swing of its own",
     from.every((s) => s === "close" || s === "circle" || s === "backoff"),
     `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
 }
@@ -2522,7 +2624,7 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
 async function crowdingItDoesNotStopIt(): Promise<void> {
   console.log("\nwalk into its face and it still fights");
   // Crowding used to switch an opponent off: it only ever stepped back, and
-  // every attack it had wanted room it never got -- one to six swings in
+  // every swing it had wanted room it never got -- one to six of them in
   // forty seconds. Now it backs off while it can, and swings at you from
   // where it is once you have been inside its guard long enough.
   //
@@ -2534,13 +2636,13 @@ async function crowdingItDoesNotStopIt(): Promise<void> {
     const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
     rig.place(new THREE.Vector3(12.2, SPAWN.y, -5.8));
     const bout = watchBout(rig, 15, crowder());
-    if (species === GOBLIN) shaft = bout.attacks.filter((a) => a === "shaft sweep").length;
-    check(`${species.name} swings at you from inside its guard`, bout.attacks.length >= 4,
-      `${bout.attacks.length} attacks in 15s with you in its face, median ` +
+    if (species === GOBLIN) shaft = bout.swings.filter((a) => a === "shaft sweep").length;
+    check(`${species.name} swings at you from inside its guard`, bout.swings.length >= 4,
+      `${bout.swings.length} swings in 15s with you in its face, median ` +
       `${median(bout.ranges).toFixed(2)} m off`);
   }
   check("inside a goblin's point, it swings the shaft", shaft > 0,
-    `${shaft} shaft sweeps -- the one attack it has up close`);
+    `${shaft} shaft sweeps -- the one swing it has up close`);
 }
 
 async function run(): Promise<void> {
@@ -2572,7 +2674,7 @@ async function run(): Promise<void> {
   await theAxeIsHarderToSwing();
   await theBestiaryScalesHonestly();
   await eachSpeciesCanFight();
-  await attacksAreTelegraphed();
+  await swingsAreReadOffTheArm();
   await alliesShareAnArenaWithoutCuttingEachOther();
   await resetPutsSeveredLimbsBackOn();
   await everyMovingPartIsInterpolated();
@@ -2586,6 +2688,7 @@ async function run(): Promise<void> {
   await theChestLeadsTheArm();
   await theFeetStayPlantedThenStep();
   await theKneesBendLikeAPersons();
+  await stoppingPutsTheFeetDown();
   await theBodyAgreesWithItsProbes();
   await thePostureIsInterpolated();
 
@@ -2596,7 +2699,7 @@ async function run(): Promise<void> {
 
   await oneBlowThreeBodies();
   await aKnockedDownFighterGetsUp();
-  await aStaggerTakesTheAttackOffIt();
+  await aStaggerTakesTheSwingOffIt();
   await realBlowsAreWeighed();
   await theDummySwingsWhenStruck();
   await knockdownsDoNotWearTheBodyOut();

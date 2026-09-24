@@ -178,8 +178,7 @@ export class Hud {
           this.player.state.knockedDown, this.player.state.reeling,
           ...this.foes.flatMap((f) => [
             Math.round(f.combatant.health), f.combatant.state.disarmed,
-            f.combatant.dead, f.ai.intent, f.ai.committed?.name ?? "",
-            Math.round(f.ai.tell * 8),
+            f.combatant.dead, f.ai.outlook,
             f.combatant.state.knockedDown, f.combatant.state.reeling,
           ]),
         ].join(",")
@@ -282,27 +281,17 @@ export class Hud {
     };
 
     /**
-     * The telegraph, in words.
+     * Whether it has noticed you, and nothing more.
      *
-     * The weapon lighting up says "something is coming"; this says what, and
-     * what to do about it. Once you have learned the three attacks you can
-     * stop reading it -- which is the point of a fixed repertoire.
+     * This line used to name the attack being wound up and say how to beat
+     * it, with a bar filling toward the moment it landed. Nothing says what is
+     * coming now: you read that off its arm.
      */
-    const tell = (f: TrackedFoe) => {
-      const a = f.ai.committed;
-      if (!a || f.combatant.dead) {
-        return `<div class="intent">${f.combatant.name}: ${f.ai.intent}</div>`;
-      }
-      const winding = f.ai.intent === "windup";
-      return `<div class="attack${winding ? " winding" : ""}">
-          <span class="move">${a.name}</span>
-          <span class="counter">${a.counter}</span>
-          <i style="width:${(f.ai.tell * 100).toFixed(0)}%"></i>
-        </div>`;
-    };
+    const outlook = (f: TrackedFoe) =>
+      `<div class="intent">${f.combatant.name}: ${f.ai.outlook}</div>`;
 
     this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}`
-      + this.foes.map((f) => row(f.combatant) + tell(f)).join("");
+      + this.foes.map((f) => row(f.combatant) + outlook(f)).join("");
   }
 
   /** Integrity bars for every joint still holding. */
