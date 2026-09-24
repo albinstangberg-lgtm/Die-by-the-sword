@@ -69,6 +69,35 @@ export interface Attack {
   at?: { min?: number; max?: number };
 }
 
+/**
+ * How a creature moves when it is not swinging.
+ *
+ * The gap between attacks is where a fight is read, and most of what makes
+ * one opponent feel unlike another happens in it. None of this is a way of
+ * moving the player lacks: it steps with the same keys you do, at the same
+ * speed, and sees nothing of you but where you are and where your blade is.
+ */
+export interface Footwork {
+  /**
+   * Seconds it circles, once it is at its distance, before it commits: the
+   * shortest and the longest. Rolled afresh every time, so the gap between
+   * two attacks is not a rhythm you can count.
+   */
+  readonly patience: readonly [number, number];
+  /** Its usual pause between one step and the next, seconds. */
+  readonly settle: number;
+  /**
+   * Chance it steps out of a swing it sees coming, 0..1. Rolled once per
+   * swing, answered a reaction time later, and never while it is committed:
+   * an attack it has started, it finishes.
+   */
+  readonly wariness: number;
+  /** Chance it gives ground after a swing of its own, before anything else. */
+  readonly retreat: number;
+  /** Chance per step, while circling, that it darts in and straight back out. */
+  readonly feint: number;
+}
+
 export interface Species {
   readonly key: string;
   /** How the fight panel names it. */
@@ -84,8 +113,12 @@ export interface Species {
    * body's thickness -- muscle cross-section, which is what force comes from.
    */
   readonly power: number;
-  /** How readily it presses after a swing rather than resetting. */
+  /**
+   * How readily it presses after a swing -- straight into the next one --
+   * rather than going round you or giving ground first.
+   */
   readonly aggression: number;
+  readonly footwork: Footwork;
   /**
    * Distances it wants to fight at, as fractions of its own measured strike
    * reach -- the horizontal distance from its own centre to where its weapon
@@ -137,6 +170,11 @@ export const SWORDSMAN: Species = {
   palette: { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f },
   power: sizedPower(HUMAN_BUILD),
   aggression: 1,
+  // It fences: goes round you, gives ground about as often as it takes it,
+  // and every so often steps in only to see what you do.
+  footwork: {
+    patience: [0.5, 1.5], settle: 0.26, wariness: 0.35, retreat: 0.35, feint: 0.12,
+  },
   range: { close: 0.68, strike: 1.0, far: 1.26 },
   attacks: [
     {
@@ -193,6 +231,12 @@ export const ORC: Species = {
   power: sizedPower(ORC_BUILD),
   // It presses. Backing off is not in it.
   aggression: 1.15,
+  // It stalks rather than circles: a heavy step, a long plant, and never long
+  // before the axe goes up. It does not feint -- everything it starts, it
+  // means -- and it gets out of the way of very little.
+  footwork: {
+    patience: [0.25, 0.9], settle: 0.42, wariness: 0.1, retreat: 0.1, feint: 0,
+  },
   // It keeps its distance more than a swordsman does: an axe wants room.
   range: { close: 0.78, strike: 1.0, far: 1.24 },
   attacks: [
@@ -244,6 +288,12 @@ export const GOBLIN: Species = {
   palette: { cloth: 0x5c4a2f, skin: 0x8a9a53, mark: 0xd8b64a },
   power: sizedPower(GOBLIN_BUILD, 1.8),
   aggression: 0.85,
+  // Never still. It skips about at the end of its spear, darts in to make you
+  // flinch, and hops back from most of what you swing at it: a goblin that
+  // stands and takes a sword cut is a dead goblin.
+  footwork: {
+    patience: [0.6, 1.8], settle: 0.14, wariness: 0.6, retreat: 0.55, feint: 0.22,
+  },
   // It thrusts rather than sweeps, so it fights at arm's length and hates
   // anything closer.
   range: { close: 0.86, strike: 1.04, far: 1.3 },

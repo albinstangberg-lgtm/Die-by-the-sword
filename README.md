@@ -22,7 +22,7 @@ floor does not move an orc.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 172 checks, no browser needed
+npm run smoke    # headless physics harness — 187 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -498,6 +498,62 @@ Edges and points ask different questions of it. An **edge** wants to know where
 its arc will cross, so it solves for pitch. A **point** wants to be aimed, which
 takes both angles — and both ends of the thrust (see the findings below).
 
+### Between attacks
+
+An opponent used to walk up to you, stop, and swing, and swing again. Nine
+tenths of a fight went on winding up, striking and recovering, and in forty
+seconds of it the orc moved twenty centimetres sideways. The gaps between
+attacks are footwork now:
+
+- **It circles.** Short steps round you, a pause between each, at the edge of
+  its own reach — drifting in or out only as far as it takes to stay there. It
+  keeps going the same way round more often than not, and more often to its
+  own right: your left, away from your sword hand.
+- **It waits for its moment, never for the same time twice.** How long it goes
+  round before committing is rolled afresh every time, so the gap between two
+  attacks is not a rhythm you can count. When the moment comes it steps in to
+  where its weapon does its work — which you see — and winds up there.
+- **It gives ground.** After a swing it presses straight into another, backs
+  off a step or two on a slant, or goes round, in proportions that are the
+  creature's own.
+- **It feints with its feet, never with its weapon.** A dart in and straight
+  back out, the weapon at the guard throughout: a question put to your nerve,
+  not a tell that lies. The glow still means a swing is coming, every time, and
+  only then.
+- **It gets out of the way.** A swing of yours that comes at it is noticed
+  once, weighed once against how wary a creature it is, and answered — if at
+  all — a reaction time later, 0.12 to 0.22 seconds, by which point a quick
+  cut has already landed. What it steps out of is a slow one, a big one, and
+  the second of two. Never while it is committed: an attack it has started, it
+  finishes, and its recovery is still the window its windup bought you.
+- **Crowd it and it fights.** Inside its guard it backs off while it can.
+  Pinned against stone, or pressed for more than 0.6 seconds, it swings at you
+  from where it stands with whatever works at that distance — for a goblin,
+  the shaft.
+- **It looks where it puts its feet.** Every step asks the stone first, knee
+  high and a body wide, so it turns back at a wall instead of walking into one,
+  and on its way to you it steps round a pillar rather than into it.
+- **It swings at what it can see.** Memory brings it round a pillar after you;
+  only sight lets it commit.
+
+None of this is a way of moving you lack. It steps on the same keys you do —
+its sidestep is Q and E too — at the same speed, and it sees nothing of you but
+where you are and where your blade is.
+
+Each creature does it like what it is, from a `footwork` block beside its
+attacks:
+
+| | goes round you for | between steps | steps out of a swing it sees coming | gives ground after its own |
+|---|---|---|---|---|
+| **orc** | 0.25–0.9s | a long plant | one in ten | one in ten — and never feints |
+| **goblin** | 0.6–1.8s | hardly at all | six in ten | more than half |
+| **swordsman** | 0.5–1.5s | a beat | one in three | one in three |
+
+So the orc stalks: a heavy step, a long plant, and never long before the axe
+goes up — it spends most of a fight swinging. The goblin never stops moving: it
+goes round you nearly two metres off, where your sword does its work at 1.1, and
+hops back from what you swing at it. You have to go and get it.
+
 ### The jump
 
 Space. The take-off speed is derived from the jump height you ask for and the
@@ -515,7 +571,7 @@ travelling along the ground.
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Twenty-five things the physics taught us
+## Thirty things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -746,7 +802,46 @@ else by the next cut: the scripted swing that takes an arm off needed
 twenty-one tries instead of nine. It takes a blow like a punching bag now, and
 its mount drags, and the arm comes off in nine again.
 
-And two about the harness rather than the game:
+**Crowding switched an opponent off.** Its only answer to being inside its
+guard was a step back, and every attack in its table wanted room it never got:
+walk into an orc and stay there, and it swung three times in forty seconds. The
+goblin's shaft sweep, written for exactly that distance, had never been thrown
+at all — its band of distances lay wholly inside the one at which the goblin
+stopped attacking. Backing off is still the first answer; pressed for more than
+0.6 seconds, or with stone at its back, it swings from where it stands with
+whatever the table has for that distance.
+
+**A single ray passes a pillar that a shoulder walks into.** Footwork asks the
+floor before it steps, and the first probe was one knee-high line from the
+middle of the body. An opponent whose line to you cleared a pillar by a hand's
+width walked its shoulder into it anyway, stood there with the stone between
+you, and — sight gone, memory spent — went back to its post. It looks down both
+flanks as well now, and steps round what is in the way. It also no longer swings
+on memory: circling put pillars between opponents and their targets often
+enough that one wound up and struck at you through the stone.
+
+**How fast a blade is going does not say whether it is coming.** An opponent
+first watched for your sword moving fast near it, and your sword moves fast
+near it whenever you move: a body's velocity is set outright each step and the
+arm lags it, then catches up, so starting a walk or a sidestep whips the tip to
+seven or eight metres a second relative to you, and a sidestep while turning to
+nine. An opponent flinched at footsteps: a swordsman crowded by a player who
+never once swung stepped out of the way of him three to five times in forty
+seconds, and spent on that the rest it needs between dodges. A threshold high
+enough to ignore all that ignored every overhead chop as well. What a cut does that footwork does not is come *at*
+something: the blade's speed toward the watcher, against the body carrying it,
+passed 5 m/s once for each of nine cuts and nine chops, and not once in
+thirty-six seconds of shuffling, sidestepping and turning.
+
+**In reach is not where a weapon works.** Given footwork, the swordsman went
+round you at the edge of its reach and swung the moment you were inside it — so
+nearly nine swings in ten came from the last hand's width, with the tip, and
+fewer than half of them drew blood. Thrown from further in, nine in ten did.
+Now, when its moment comes, it steps in to where its weapon does its work and
+swings from there: fewer swings than the old opponent threw, and each doing 5.4
+points of damage to their 3.1.
+
+And three about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
 aim by the whole measured error, on both axes, including the part of the error
@@ -768,6 +863,16 @@ much of the test's work. Measured on where the spear *points*, on the same
 physics, the butt-held spear lagged by 0.81: never a fifth. The test now
 measures the direction and asks for a tenth; the claim was true, just smaller
 than the number that proved it.
+
+**The scripted player is part of the test.** The footwork checks roll dice, so
+they were run across dozens of seeds before their numbers were set, and three
+of the failures that turned up had nothing to do with the opponent. The player
+that crowds it walked into a pillar and stayed there while the goblin backed
+round it. A player it killed got up two rooms away, and the rest of the bout was
+an empty room. And the player that swings at it swung only at what came within
+a sword's length — which is exactly what a goblin that keeps its distance never
+does. Each could have been made to pass by loosening a number, and would then
+have been measuring nothing.
 
 ## Tuning
 
@@ -839,6 +944,16 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **An opponent sometimes steps out of your swing.** It saw it start, and moved
+  a reaction time later — so a quick cut usually lands and a slow, big one often
+  does not. Never in the middle of an attack of its own. The goblin does it
+  most; the orc hardly ever.
+- **An opponent sometimes darts in and straight back out without swinging.**
+  That is a feint with its feet. Its weapon lights up only for a real attack.
+- **The goblin backs away when you come for it.** It goes round you out of your
+  reach and gives ground as you close. Pin it against a wall, or stay in its
+  face, and it swings the shaft at you — the one attack it has up close, and a
+  poor one.
 - **At the very end of a cross-body cut the blade drifts a few degrees back
   toward your left shoulder.** With the elbow kept out of the ribs the forearm
   points back over it; the wrist bends the blade onto the line you aimed along,
@@ -890,7 +1005,7 @@ src/
     motion.ts        the two filters: intent that must not lag, bodies that should
     arena.ts         three rooms built to be hit, and the doors between them
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
-    ai.ts            the opponent's brain — mouse deltas, nothing more
+    ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
     cutting.ts       swept-segment hit detection: how a weapon finds flesh
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
@@ -905,7 +1020,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 172 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 187 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -955,6 +1070,18 @@ goblin's spear never move you at all; that your own real swings never move an
 orc; that the dummy swings from a blow and settles before the next; that a
 blade through two parts of a body carries one swing's weight; and that a corpse
 comes to rest where it fell.
+
+And it holds the opponents to their footwork: that between swings each one goes
+round you — metres of it, where the old one managed centimetres — and not
+always the same way round; that the orc spends more of a fight swinging than
+the others, while the goblin goes round you out of your sword's reach and gives
+more ground; that the goblin steps out of cuts it sees coming, and never out of
+the middle of an attack of its own; that crowded, every one of them still
+swings, and the goblin swings its shaft; that the step probe finds the wall
+behind you and open floor where there is nothing; and that a swordsman fought
+into a corner turns back at the walls instead of walking into them. And, for
+twenty seconds of real fighting, that the weapon lights and an attack is named
+only while one is actually coming.
 
 ## Stack
 
