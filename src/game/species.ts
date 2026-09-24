@@ -140,6 +140,29 @@ export interface Footwork {
   readonly retreat: number;
   /** Chance per step, while circling, that it darts in and straight back out. */
   readonly feint: number;
+  /**
+   * Chance a step round you is a half-step in or out across the edge of its
+   * reach instead: the rocking that means you are never sure whether the next
+   * step in is the one it swings from.
+   */
+  readonly rock: number;
+  /**
+   * Chance it gives ground as you come at it, step for step, rather than stand
+   * -- and standing, it meets you: it swings as you walk into its reach.
+   * Whatever it does, it follows you when you back off.
+   */
+  readonly give: number;
+  /**
+   * Chance per step round you that it steps inside your reach on purpose,
+   * guard up, holds there a beat, and steps back out: a target offered to draw
+   * a swing out of you, and out of the way of it, and in on the miss.
+   */
+  readonly bait: number;
+  /**
+   * Chance it makes you pay for a swing that came at it and missed: steps in
+   * and swings while your weapon is on its way back. Rolled once a miss.
+   */
+  readonly counter: number;
 }
 
 export interface Species {
@@ -222,6 +245,7 @@ export const SWORDSMAN: Species = {
   // and every so often steps in only to see what you do.
   footwork: {
     patience: [0.5, 1.5], settle: 0.26, wariness: 0.35, retreat: 0.35, feint: 0.12,
+    rock: 0.4, give: 0.5, bait: 0.15, counter: 0.7,
   },
   range: { close: 0.68, strike: 1.0, far: 1.26 },
   // Your body, mostly, and everything else as often as each other -- your
@@ -292,6 +316,7 @@ export const ORC: Species = {
   // means -- and it gets out of the way of very little.
   footwork: {
     patience: [0.25, 0.9], settle: 0.42, wariness: 0.1, retreat: 0.1, feint: 0,
+    rock: 0.12, give: 0.1, bait: 0, counter: 0.5,
   },
   // It keeps its distance more than a swordsman does: an axe wants room.
   range: { close: 0.78, strike: 1.0, far: 1.24 },
@@ -368,6 +393,7 @@ export const GOBLIN: Species = {
   // stands and takes a sword cut is a dead goblin.
   footwork: {
     patience: [0.6, 1.8], settle: 0.14, wariness: 0.6, retreat: 0.55, feint: 0.22,
+    rock: 0.35, give: 0.8, bait: 0.12, counter: 0.45,
   },
   // It thrusts rather than sweeps, so it fights at arm's length and hates
   // anything closer.

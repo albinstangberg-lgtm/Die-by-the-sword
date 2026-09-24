@@ -46,6 +46,13 @@ import type { Aim, Cut, Leap, Span, Species } from "./species";
  * through the same four keys yours do -- its sidestep is Q and E too -- so it
  * has no way of moving that you have not.
  *
+ * And it moves in and out as well as round: half-steps across the edge of its
+ * reach, back as you come at it and after you as you go, and now and then a
+ * step inside your reach on purpose, to draw a swing out of you -- and a swing
+ * of yours that comes at it and misses is the moment it steps in. So is your
+ * weapon knocked aside by its own; its own knocked aside by yours, the swing
+ * it was throwing is gone (see `Impacts.clash`).
+ *
  * Its jump is yours as well. Something that leaps (see `Leap`) and has just
  * lost you out of its reach runs at you with its weapon going up and comes
  * down on you out of the air, on your key, from a jump its legs could make.
@@ -254,6 +261,48 @@ const DODGE_REST = 0.9;
  */
 const RIPOSTE = 0.35;
 
+// --- in and out ---------------------------------------------------------------
+
+/**
+ * A half-step in or out, as a share of its shortest step: enough to cross the
+ * edge of its reach and come back, not enough to go anywhere.
+ */
+const HALF: Span = [0.6, 0.9];
+
+/**
+ * How fast you have to be coming at it, or going away from it, before it
+ * counts as you stepping in or out, m/s. Well clear of what swinging a sword
+ * does to the body holding it, which is a tenth of this.
+ */
+const ADVANCE = 1;
+
+/**
+ * Baiting: how far inside your reach it stands, as a share of it, and how long
+ * it stands there, seconds -- and how readily it gets out of the way of what
+ * that draws, whatever its usual wariness. That is what it is there for.
+ *
+ * The reach it reads is your arm and weapon laid end to end (`strikeLength`),
+ * and a guard holds a blade angled up out of the hand, not straight on: your
+ * sword reads 1.26 m and does its work at 1.11. Three quarters of the first is
+ * a hand's width inside the second.
+ */
+const BAIT_DEPTH = 0.75;
+const BAIT_HOLD: Span = [0.35, 0.7];
+const BAIT_WARY = 0.9;
+
+/**
+ * How long a swing of yours that came at it and missed leaves you open,
+ * seconds: the time it has to step in and make you pay for it.
+ */
+const OPENING = 0.6;
+
+/**
+ * How much of an arm's strength a knock on its weapon has to have taken
+ * before it counts: its own, and the swing it was throwing is gone; yours,
+ * and that is an opening. See `Arm.jolt`.
+ */
+const KNOCKED = 0.2;
+
 // --- swinging -----------------------------------------------------------------
 
 /**
@@ -460,6 +509,14 @@ export class Ai implements ArmInput {
   cutOverride: string | null = null;
   aimOverride: Aim | null = null;
 
+  /**
+   * What its feet have done in and out, counted: half-steps across the edge
+   * of its reach, answers to your stepping in (given ground, or met you) and
+   * out (followed), steps into your reach to draw a swing, and misses of
+   * yours it made you pay for. For the harness; nothing you are shown reads it.
+   */
+  readonly tally = { rockIn: 0, rockOut: 0, gives: 0, meets: 0, follows: 0, baits: 0, punishes: 0 };
+
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
 
   private dx = 0;
@@ -549,6 +606,36 @@ export class Ai implements ArmInput {
   /** How fast the gap between you is closing, m/s, and how much of that is you coming at it. */
   private closing = 0;
   private coming = 0;
+  /**
+   * You, stepping: 1 coming at it, -1 going away, 0 neither -- how long you
+   * have been at it, how long it takes to see, and whether it has answered.
+   */
+  private yourMove = 0;
+  private moveFor = 0;
+  private moveReact = 0;
+  private answered = false;
+  /** Its answer: giving ground step for step, standing to meet you, or following you out. */
+  private giving = false;
+  private meeting = false;
+  private following = false;
+  /** Standing inside your reach on purpose, to draw a swing. */
+  private baiting = false;
+  /** Which way its last half-step across the edge of its reach went: 1 in, -1 out. */
+  private rockDir = 1;
+  /** How far from your middle your weapon does its work, metres, as far as it can see. */
+  private yourReach = 0;
+  /** Seconds left of the opening a swing of yours that missed has given it. */
+  private opening = 0;
+  /** Whether your weapon, and its own, had been knocked as of the last step. */
+  private yoursKnocked = false;
+  /** Its own weapon knocked, and its arm not yet got over it: no swing starts. */
+  private knocked = false;
+  /**
+   * When a swing of yours began coming at it: its health then, for whether
+   * that one landed, and whether it was standing in your reach to draw it.
+   */
+  private hpBefore = 0;
+  private drawn = false;
 
   constructor(readonly species: Species) {
     const [lo, hi] = species.cuts[0].roll;
@@ -671,6 +758,14 @@ export class Ai implements ArmInput {
     }
 
     this.measure(self, foe, t);
+    // Its own weapon knocked aside: whatever it was drawing back for or
+    // throwing is gone -- the arm is not its own for the moment -- and it
+    // starts nothing new until it is. The time its guard takes to come back
+    // up behind a weak arm is your opening.
+    this.knocked = self.arm.jarred > KNOCKED;
+    if (this.knocked && (this.state === "windup" || this.state === "strike")) {
+      this.begin("recover", 0);
+    }
     const close = this.strikeReach * this.species.range.close;
     const strike = this.strikeReach * this.species.range.strike;
     const far = this.strikeReach * this.species.range.far;
@@ -693,6 +788,8 @@ export class Ai implements ArmInput {
       this.closing = mine.x * ux + mine.z * uz + this.coming;
     }
 
+    this.readYou(foe, dt);
+
     this.checkSnag(t, dt);
     this.crowd = range < close ? this.crowd + dt : 0;
     this.watch(self, foe, dt);
@@ -709,6 +806,10 @@ export class Ai implements ArmInput {
         this.guard();
         if (this.lashOut(self, range, close)) break;
         if (this.leapAt(self, range)) break;
+        if (this.punish(range, close, inner, outer)) break;
+        // Coming in to go round you, it answers your feet too. Pressing, it
+        // has nothing to answer with but the swing it is already bringing.
+        if (this.patience > 0 && range <= outer * 1.2 && this.answer(range, close, inner)) break;
         if (this.patience > 0 && range <= outer) {
           this.circle(this.patience);
           break;
@@ -731,11 +832,12 @@ export class Ai implements ArmInput {
 
       case "circle":
         // Looking for its moment: short steps round you at the edge of its
-        // reach, a pause between each, in or out only as far as it takes to
-        // stay there.
+        // reach, a pause between each, and in and out across that edge --
+        // answering your feet, and now and then offering you a target.
         this.guard();
         if (this.lashOut(self, range, close)) break;
         if (this.leapAt(self, range)) break;
+        if (this.punish(range, close, inner, outer)) break;
         if (range > outer * 1.4) {
           // You have backed out of its circle. It comes after you, and carries
           // on waiting once it has you again.
@@ -744,15 +846,20 @@ export class Ai implements ArmInput {
           this.hold(1, 0);
           break;
         }
-        if (this.timer <= 0) {
-          // Its moment. It swings from here if its weapon works from here;
-          // otherwise it steps in to where it does, and swings from there.
+        // Its moment -- but not in the middle of offering you a target: that
+        // runs its course, in and back out, and a bait that ended in a swing
+        // from inside your reach whenever its patience happened to run out
+        // was not an offer at all.
+        if (this.timer <= 0 && !this.baiting) {
+          // It swings from here if its weapon works from here; otherwise it
+          // steps in to where it does, and swings from there.
           this.patience = 0;
           this.hold(0, 0);
           if (this.canSwing(range, close, inner)) this.commit(range);
           else this.begin("close", 0);
           break;
         }
+        if (this.answer(range, close, inner)) break;
         if (this.walk(dt)) this.nextStep(self, range, inner, outer);
         break;
 
@@ -760,6 +867,7 @@ export class Ai implements ArmInput {
         // Giving ground: a step or two back, usually on a slant, until it is
         // out past its own reach. Then it goes round.
         this.guard(0.25);
+        if (this.punish(range, close, inner, outer)) break;
         if (this.walk(dt)) {
           if (range >= outer || this.timer <= 0) this.circle(this.rollPatience());
           else this.retreat(self);
@@ -1005,7 +1113,7 @@ export class Ai implements ArmInput {
   private leapAt(self: Combatant, range: number): boolean {
     const leap = this.species.leap;
     if (leap === undefined || this.leapRest > 0 || this.sinceNear > leap.memory) return false;
-    if (!this.squared || !this.sighted || !self.fighter.grounded) return false;
+    if (!this.squared || !this.sighted || !self.fighter.grounded || this.knocked) return false;
     if (this.cutOverride !== null && this.cutOverride !== leap.cut) return false;
     const f = range / this.strikeReach;
     if (f < leap.at.min || f > leap.at.max) return false;
@@ -1130,7 +1238,7 @@ export class Ai implements ArmInput {
 
   /** Where its weapon works, squared up to you, and able to see what it swings at. */
   private canSwing(range: number, close: number, near: number): boolean {
-    return range <= near && range >= close && this.squared && this.sighted;
+    return range <= near && range >= close && this.squared && this.sighted && !this.knocked;
   }
 
   /**
@@ -1144,7 +1252,7 @@ export class Ai implements ArmInput {
    * at all.
    */
   private lashOut(self: Combatant, range: number, close: number): boolean {
-    if (range >= close || !this.squared || !this.sighted) return false;
+    if (range >= close || !this.squared || !this.sighted || this.knocked) return false;
     const roomBehind = this.roomFor(self, -1, 0, this.pace * STRIDE[0]);
     if (this.crowd < CROWD && roomBehind) return false;
     this.hold(0, 0);
@@ -1405,19 +1513,62 @@ export class Ai implements ArmInput {
       return;
     }
 
+    this.baiting = false;
     const fw = this.species.footwork;
     const settle = fw.settle * (0.5 + Math.random());
+
+    // Answering your feet (see `answer`): back as you come, after you as you go.
+    // Straight back, and without a pause, while there is floor for it: on a
+    // slant it gave you only two thirds of each step, and at a goblin's pace
+    // against yours that gave you nearly all the ground you came for.
+    if (this.giving && this.yourMove > 0) {
+      const time = this.stride();
+      const move = this.roomFor(self, -1, 0, this.pace * time)
+        ? { fwd: -1, side: 0 } : this.findRoom(self, -1, this.side, this.pace * time);
+      if (move !== null && move.fwd < 0) {
+        if (move.side !== 0) this.side = move.side;
+        this.step = { fwd: move.fwd, side: move.side, time, settle: 0 };
+        return;
+      }
+      // Stone at its back: it stops giving ground, and meets you instead.
+      this.giving = false;
+      this.meeting = true;
+    }
+    if (this.following && this.yourMove < 0 && range > inner) {
+      const time = this.stride();
+      if (this.roomFor(self, 1, 0, this.pace * time)) {
+        this.step = { fwd: 1, side: 0, time, settle: 0.04 };
+        return;
+      }
+    }
+
     const fwd = range > outer ? 1 : range < inner ? -1 : 0;
 
     if (fwd === 0 && Math.random() < WATCH) {
       this.step = { fwd: 0, side: 0, time: 0, settle: settle * 2 };
       return;
     }
+    if (fwd >= 0 && this.bait(self, range)) return;
     if (fwd >= 0 && Math.random() < fw.feint
       && this.roomFor(self, -1, 0, this.pace * DART * 1.3)) {
       this.step = { fwd: 1, side: 0, time: DART, settle: 0.04 };
       this.queue.push({ fwd: -1, side: 0, time: DART * 1.3, settle });
       return;
+    }
+    // A half-step straight in or out across the edge of its reach, the other
+    // way from the last one -- in, out, in -- unless it has drifted out of its
+    // band, when it is the way back. It had drifted, most of the time: a step
+    // round a circle always carries it further off, and while only a body
+    // squarely in its band rocked, the swordsman never once stepped out.
+    if (Math.random() < fw.rock) {
+      const dir = fwd !== 0 ? fwd : -this.rockDir;
+      this.rockDir = dir;
+      const time = STRIDE[0] * draw(HALF);
+      if (this.roomFor(self, dir, 0, this.pace * time)) {
+        this.step = { fwd: dir, side: 0, time, settle: settle * 0.6 };
+        if (dir > 0) this.tally.rockIn++; else this.tally.rockOut++;
+        return;
+      }
     }
 
     if (Math.random() < REVERSE) this.side = -this.side;
@@ -1460,9 +1611,22 @@ export class Ai implements ArmInput {
   private watch(self: Combatant, foe: Combatant, dt: number): void {
     this.rest = Math.max(0, this.rest - dt);
     const threat = this.threat(self, foe);
-    if (threat && !this.threatened && this.rest <= 0 && this.flinch < 0
-      && LOOSE.has(this.state) && Math.random() < this.species.footwork.wariness) {
-      this.flinch = REACT[0] + Math.random() * (REACT[1] - REACT[0]);
+    // Standing in your reach to draw a swing, it is ready for the swing.
+    const wary = this.baiting
+      ? Math.max(BAIT_WARY, this.species.footwork.wariness) : this.species.footwork.wariness;
+    if (threat && !this.threatened) {
+      this.hpBefore = self.health;
+      this.drawn = this.baiting;
+      if (this.rest <= 0 && this.flinch < 0 && LOOSE.has(this.state) && Math.random() < wary) {
+        this.flinch = REACT[0] + Math.random() * (REACT[1] - REACT[0]);
+      }
+    }
+    // A swing of yours has come at it and gone by, and it is none the worse:
+    // your weapon is on its way back, and you are open -- if it takes it.
+    // Having stood in your reach to draw that swing, it always does.
+    if (!threat && this.threatened && self.health >= this.hpBefore && !self.fighter.reeling
+      && (this.drawn || Math.random() < this.species.footwork.counter)) {
+      this.opening = OPENING;
     }
     this.threatened = threat;
 
@@ -1593,6 +1757,110 @@ export class Ai implements ArmInput {
   private stand(): void {
     this.step = { fwd: 0, side: 0, time: 0, settle: 0 };
     this.queue.length = 0;
+    this.baiting = false;
+  }
+
+  /**
+   * What it can see of you besides where you are: whether you are stepping in
+   * or out, and how far your weapon reaches. Anyone could read the same.
+   */
+  private readYou(foe: Combatant, dt: number): void {
+    this.opening = Math.max(0, this.opening - dt);
+    // Your weapon knocked aside is an opening as plain as a miss, and it
+    // takes it every time. It can see your arm give, as you can see its.
+    const yours = this.sighted && foe.arm.jarred > KNOCKED;
+    if (yours && !this.yoursKnocked) this.opening = OPENING;
+    this.yoursKnocked = yours;
+    if (this.sighted) this.yourReach = foe.arm.strikeLength;
+    const move = !this.sighted ? 0 : this.coming > ADVANCE ? 1 : this.coming < -ADVANCE ? -1 : 0;
+    if (move === this.yourMove) {
+      this.moveFor += dt;
+      return;
+    }
+    this.yourMove = move;
+    this.moveFor = 0;
+    this.moveReact = draw(REACT);
+    this.answered = false;
+    this.giving = false;
+    this.meeting = false;
+    this.following = false;
+  }
+
+  /**
+   * You are stepping in, or out, and it answers -- a reaction time later, once
+   * each time you start. Coming in, you are given ground step for step, or met:
+   * it stands, and swings as you walk into its reach. Going out, you are
+   * followed, rather than left to set the distance yourself. True if it swung.
+   */
+  private answer(range: number, close: number, inner: number): boolean {
+    if (this.meeting && this.canSwing(range, close, inner)) {
+      this.meeting = false;
+      this.hold(0, 0);
+      this.commit(range);
+      return true;
+    }
+    if (this.yourMove === 0 || this.answered || this.moveFor < this.moveReact) return false;
+    this.answered = true;
+    if (this.yourMove < 0) {
+      this.following = true;
+      this.tally.follows++;
+    } else if (Math.random() < this.species.footwork.give) {
+      this.giving = true;
+      this.tally.gives++;
+    } else {
+      this.meeting = true;
+      this.tally.meets++;
+    }
+    // Whatever its feet were about to do, they do this instead: see `nextStep`,
+    // which only a body going round you takes its steps from.
+    if (this.state === "close" && !this.meeting) this.circle(Math.max(this.patience, 0.3));
+    else this.stand();
+    return false;
+  }
+
+  /**
+   * Step inside your reach on purpose, guard up, hold there a beat, and step
+   * back out: a target offered, to draw a swing. It gets out of the way of
+   * what that draws more readily than of anything else (see `watch`), and a
+   * swing of yours that misses leaves you open to it (see `punish`). Not at an
+   * empty hand, not from so far off it would be a charge, and not with no
+   * floor to come back out on.
+   */
+  private bait(self: Combatant, range: number): boolean {
+    if (this.yourReach <= 0 || Math.random() >= this.species.footwork.bait) return false;
+    const inBy = range - this.yourReach * BAIT_DEPTH;
+    if (inBy < 0.1 * this.species.build.scale || inBy > this.pace * 0.5) return false;
+    if (!this.roomFor(self, 1, 0, inBy) || !this.roomFor(self, -1, 0, inBy)) return false;
+    // A step at pace covers pace x time, easing and all: what it loses
+    // getting going it makes up coasting to a stop.
+    const time = inBy / this.pace;
+    this.baiting = true;
+    this.tally.baits++;
+    this.step = { fwd: 1, side: 0, time, settle: draw(BAIT_HOLD) };
+    this.queue.push({ fwd: -1, side: 0, time: time * 1.2, settle: this.species.footwork.settle });
+    return true;
+  }
+
+  /**
+   * A swing of yours came at it and missed: step in and make you pay while
+   * your weapon is still on its way back. From where it reaches you it swings
+   * now; from anywhere it would still be going round you, it steps in and
+   * swings.
+   */
+  private punish(range: number, close: number, inner: number, outer: number): boolean {
+    if (this.opening <= 0 || !this.squared || !this.sighted || this.knocked) return false;
+    if (range < close || range > outer * 1.4) return false;
+    this.opening = 0;
+    this.patience = 0;
+    this.tally.punishes++;
+    this.stand();
+    if (range <= inner) {
+      this.hold(0, 0);
+      this.commit(range);
+    } else {
+      this.begin("close", 0);
+    }
+    return true;
   }
 
   private stride(): number {
@@ -1855,6 +2123,19 @@ export class Ai implements ArmInput {
     this.leapRest = 0;
     this.closing = 0;
     this.coming = 0;
+    this.yourMove = 0;
+    this.moveFor = 0;
+    this.answered = false;
+    this.giving = false;
+    this.meeting = false;
+    this.following = false;
+    this.baiting = false;
+    this.rockDir = 1;
+    this.yourReach = 0;
+    this.opening = 0;
+    this.drawn = false;
+    this.yoursKnocked = false;
+    this.knocked = false;
     this.idle();
   }
 }
