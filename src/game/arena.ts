@@ -12,8 +12,8 @@ import type { ItemLayout } from "./items";
  * subjects apart:
  *
  *   the training room   where you start. The practice dummy and four pillars,
- *                       and nothing else in the room to confuse what you are
- *                       measuring.
+ *                       and along the west side the things to learn your feet
+ *                       on: a low wall to vault and a ledge to climb.
  *   the hall            through the north door. The orc, and the scenery a
  *                       big swing gets caught on.
  *   the cell            through the east door of the hall. The goblin, in a
@@ -75,6 +75,15 @@ export const GOBLIN_POST = new THREE.Vector3(12.4, 0, -8.2);
  * floor. The hall's block is the other thing low enough to vault.
  */
 export const LOW_WALL = { at: new THREE.Vector3(-5.4, 0, 6.6), half: new THREE.Vector3(0.9, 0.43, 0.2) };
+
+/**
+ * Something to climb: a stone ledge in the training room's south-west corner,
+ * a metre and a half up -- over a head, under a reach -- with a crate against
+ * its east face to go up by in two. `at` is the middle of each footprint, on
+ * the floor.
+ */
+export const LEDGE = { at: new THREE.Vector3(-5.4, 0, 11.9), half: new THREE.Vector3(0.9, 0.75, 0.9) };
+export const CRATE = { at: new THREE.Vector3(-4.1, 0, 12.35), half: new THREE.Vector3(0.4, 0.45, 0.45) };
 
 /**
  * Where the things lying about are put down.
@@ -233,6 +242,12 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   // Something to vault.
   box("low wall", stone, LOW_WALL.half.x, LOW_WALL.half.y, LOW_WALL.half.z,
     LOW_WALL.at.x, LOW_WALL.half.y, LOW_WALL.at.z);
+
+  // Something to climb, and something to climb it by.
+  box("ledge", stone, LEDGE.half.x, LEDGE.half.y, LEDGE.half.z,
+    LEDGE.at.x, LEDGE.half.y, LEDGE.at.z);
+  box("crate", timber, CRATE.half.x, CRATE.half.y, CRATE.half.z,
+    CRATE.at.x, CRATE.half.y, CRATE.at.z);
 
   // --- the north door, and the hall behind it ---
   //

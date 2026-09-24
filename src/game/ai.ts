@@ -335,7 +335,7 @@ interface Step {
 export class Ai implements ArmInput {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, jump: false, crouch: false,
+    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false,
   };
 
   private state: State = "waiting";

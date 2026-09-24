@@ -50,6 +50,8 @@ const SHIELD_POLE = { back: -0.25, down: 0.55, out: 1.0 };
 /** The same reach limits as the sword arm, as fractions of the arm's own length. */
 const MIN_REACH_FRACTION = 0.517;
 const REACH_MARGIN = 0.08;
+/** And a hand being taken to a hold may straighten nearer to full, as the sword hand's may. */
+const GUIDE_MARGIN = 0.02;
 
 /**
  * Aims, chest-relative: yaw about the chest's own facing (positive is out to
@@ -111,6 +113,12 @@ export class OffArm {
   private readonly _want = [OFF_REST.yaw, OFF_REST.pitch];
   /** Being steered this step. */
   steered = false;
+  /**
+   * A world point the hand is being taken to instead of its aim, and how far
+   * over to it, 0..1: a hold on a ledge. See `guide`.
+   */
+  private readonly guideAt = new THREE.Vector3();
+  private guideWeight = 0;
 
   /** Last step's targets, for the speed they are moving at. */
   private primed = false;
@@ -186,6 +194,20 @@ export class OffArm {
     }
   }
 
+  /**
+   * Take the hand to a world point instead of its aim, `weight` of the way,
+   * or back to the aim with null -- under the same drive, so it gets there
+   * if the arm can. How a climb puts the hand on the ledge.
+   */
+  guide(at: THREE.Vector3 | null, weight = 1): void {
+    if (!at) {
+      this.guideWeight = 0;
+      return;
+    }
+    this.guideAt.copy(at);
+    this.guideWeight = clamp(weight, 0, 1);
+  }
+
   /** The aim as it stands, chest-relative. For the harness. */
   get aimNow(): Readonly<OffAim> {
     return this.aim;
@@ -208,7 +230,7 @@ export class OffArm {
    */
   private solve(
     yaw: number, pitch: number, reachFraction: number, t: Tuning,
-    shielded = this.shieldPart !== null,
+    shielded = this.shieldPart !== null, guided = false,
   ): void {
     const f = this.fighter;
     f.offShoulderWorld(this._shoulder);
@@ -221,12 +243,24 @@ export class OffArm {
     let reach = this.minReach + (this.maxReach - this.minReach) * clamp(reachFraction, 0, 1);
     this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
 
+    // A hand going to a hold goes there instead, as far as the arm reaches.
+    const w = guided ? this.guideWeight : 0;
+    const hi = this.maxReach
+      + (this.build.armLength - GUIDE_MARGIN * this.build.scale - this.maxReach) * w;
+    if (w > 0) {
+      this._ghost.lerp(this.guideAt, w);
+      dir.copy(this._ghost).sub(this._shoulder);
+      reach = clamp(dir.length(), this.minReach, hi);
+      dir.normalize();
+      this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
+    }
+
     // A hand steered into the body goes on its surface instead.
     const margin = t.clearance * this.build.scale;
     if (margin > 0
       && pushOut(this._ghost, this.handRadius, f.trunkCapsules(f.posture.pose), margin)) {
       dir.copy(this._ghost).sub(this._shoulder);
-      reach = clamp(dir.length(), this.minReach, this.maxReach);
+      reach = clamp(dir.length(), this.minReach, hi);
       dir.normalize();
       this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
     }
@@ -307,7 +341,7 @@ export class OffArm {
     this._want[0] = this.aim.yaw;
     this._want[1] = this.aim.pitch;
     this.track.step(this._want, t.flickSpeed, t.flickAccel, dt);
-    this.solve(this.track.pos[0], this.track.pos[1], this.aim.reach, t);
+    this.solve(this.track.pos[0], this.track.pos[1], this.aim.reach, t, this.shieldPart !== null, true);
 
     for (const b of [l.upper, l.fore]) {
       b.resetForces(false);
@@ -514,6 +548,7 @@ export class OffArm {
   /** After the body has been on the floor: take the arm back up from where it hangs. */
   regain(): void {
     this.limp = false;
+    this.guideWeight = 0;
     this.primed = false;
     this.track.snap([this.aim.yaw, this.aim.pitch]);
   }
@@ -523,6 +558,7 @@ export class OffArm {
     this.dropShield();
     this.limp = false;
     this.steered = false;
+    this.guideWeight = 0;
     Object.assign(this.aim, OFF_REST);
     this.settle(t);
   }

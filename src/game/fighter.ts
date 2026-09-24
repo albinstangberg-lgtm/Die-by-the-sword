@@ -11,7 +11,7 @@ import {
 import type { WoundEnd } from "./blood";
 import { CROUCH_DROP, Pose, Posture, type PostureDrive } from "./posture";
 import { wrap, type Capsule } from "./clearance";
-import { smoothstep } from "./motion";
+import { clamp, smoothstep } from "./motion";
 import { emptyBlow, judgeBlow, type Blow } from "./balance";
 import type { Impact } from "./impacts";
 
@@ -121,19 +121,22 @@ const STEP_PROBE = 0.45;
 /** How fast the legs fold up once there is nothing to stand on. */
 const TUCK_RATE = 9;
 
-// --- crouching and vaulting ---------------------------------------------------
+// --- crouching, climbing and vaulting -------------------------------------------
 //
 // A crouch is the posture's (see `Pose.sink`): the hips sink and everything
 // above them goes with them, and the legs bend under them so the feet stay on
 // the floor. The hull does not change -- it is invisible and no blade finds
 // it -- so what a crouch takes out of the way of a swing is the body you can
-// see and cut.
+// see and cut. A stoop is a crouch taken further, bowed over, for a hand that
+// has to get to the floor: see `stoop`.
 //
-// A vault is a jump that has something to go over. Running at a thing between
-// knee and chest high, the jump key takes the body up, over and down the far
-// side instead of straight up, driven there the way a body is walked and got
-// up off the floor -- by its velocity, never placed -- so anything in the way
-// still has its say.
+// A climb is a jump that has somewhere to go. At a ledge between a knee and
+// as high as hands can reach, the jump key with the body moving at it takes
+// it up the face and onto the top; the vault key takes a body over something
+// between a knee and a chest instead, and down the far side. Both are driven
+// the way a body is walked and got up off the floor -- by its velocity along
+// a path, never placed -- so anything in the way still has its say, and both
+// put the hands on the stone: see `handhold`.
 
 /** How fast a crouched body walks, as a share of standing. */
 const CROUCH_SPEED = 0.45;
@@ -151,6 +154,32 @@ const VAULT_TIME = 0.62;
 const VAULT_SPEED = 7;
 /** Points along a vault's path: enough that following them reads as a curve. */
 const VAULT_POINTS = 24;
+
+/** How far ahead of the middle of the body a ledge may be, to be climbed: an arm's length. */
+const CLIMB_REACH = 0.95;
+/**
+ * How high its top may be, from the soles: from a knee -- below that it is a
+ * step -- to as high as hands that have jumped for it can get a grip.
+ */
+const CLIMB_LOW = 0.5;
+const CLIMB_HIGH = 2.2;
+/** How much of its top there must be to stand on, front to back. */
+const CLIMB_DEPTH = 0.3;
+/** How far past its edge the body goes to stand. */
+const CLIMB_ON = 0.12;
+/**
+ * How long a climb takes, seconds at human scale: a moment to get the hands
+ * on, and more for every metre of it.
+ */
+const CLIMB_TIME = 0.45;
+const CLIMB_PER_METRE = 0.35;
+/** Points up the face; half as many again over the edge. */
+const CLIMB_POINTS = 16;
+/** How far apart the hands take hold of a ledge, either side of the middle. */
+const HOLD_SPREAD = 0.2;
+
+/** A stoop's crouch, as a share of an ordinary one's depth. How far it bows over is the posture's. */
+const STOOP_SINK = 1.4;
 
 // --- planted feet -------------------------------------------------------------
 //
@@ -344,10 +373,23 @@ export class Fighter {
   /** The hips' collider, which a crouch carries down with them. */
   private pelvisCollider!: RAPIER.Collider;
   /**
-   * A vault under way: where it goes, as a path of hull centres with the
-   * distance along it to each, and how far through it the body is, seconds.
+   * A vault or a climb under way: where it goes, as a path of hull centres
+   * with the distance along it to each, how far through it the body is,
+   * seconds, and where on the stone the hands go, left then right.
    */
-  private vault: { path: THREE.Vector3[]; along: number[]; time: number; duration: number } | null = null;
+  private traverse: {
+    kind: "vault" | "climb";
+    path: THREE.Vector3[]; along: number[]; time: number; duration: number;
+    hold: [THREE.Vector3, THREE.Vector3];
+  } | null = null;
+  private readonly _hold = { left: new THREE.Vector3(), right: new THREE.Vector3(), weight: 0 };
+
+  /**
+   * How far down to reach, 0 standing to 1 all the way: past a crouch, and
+   * bowed over, for a hand that has to get to the floor. Set by whatever is
+   * doing the reaching -- a pick-up -- and not by any key.
+   */
+  stoop = 0;
   private readonly downRay: RAPIER.Ray;
 
   /** On its feet, on the floor, or getting up off it. */
@@ -822,12 +864,12 @@ export class Fighter {
     this.grounded = this.probeGround();
     this.coyote = this.grounded ? COYOTE : Math.max(0, this.coyote - dt);
     this.jumpLock = Math.max(0, this.jumpLock - dt);
-    const crouch = keys.crouch ? 1 : 0;
+    const crouch = Math.max(keys.crouch ? 1 : 0, STOOP_SINK * clamp(this.stoop, 0, 1));
 
-    // Going over something: the feet are off the floor and nothing anyone
-    // asks of them reaches them until the far side.
-    if (this.vault) {
-      this.stepVault(dt);
+    // Going over something, or up it: the feet are off the floor and nothing
+    // anyone asks of them reaches them until the far side, or the top.
+    if (this.traverse) {
+      this.stepTraverse(dt);
       this.finishStep(drive, t, dt, 0);
       return;
     }
@@ -861,13 +903,20 @@ export class Fighter {
     // The take-off speed that clears `jumpHeight` under the world's gravity,
     // rather than a hand-picked impulse: turning gravity down then floats the
     // same jump instead of firing you into the ceiling.
-    if (keys.jump && footed && this.coyote > 0 && this.jumpLock <= 0) {
-      this.coyote = 0;
-      this.jumpLock = JUMP_LOCK;
-      this.grounded = false;
-      // Running at something low enough to go over, the same key goes over it.
-      if (keys.forward && this.beginVault()) {
-        this.stepVault(dt);
+    // Going over something is its own key, and only ever goes over: with
+    // nothing in front to vault, it does nothing.
+    const takeOff = footed && this.coyote > 0 && this.jumpLock <= 0;
+    if (keys.vault && takeOff && this.beginVault()) {
+      this.leaveGround();
+      this.stepTraverse(dt);
+      this.finishStep(drive, t, dt, 0);
+      return;
+    }
+    if (keys.jump && takeOff) {
+      this.leaveGround();
+      // Moving at a ledge, the same key climbs it.
+      if (keys.forward && this.beginClimb()) {
+        this.stepTraverse(dt);
         this.finishStep(drive, t, dt, 0);
         return;
       }
@@ -917,16 +966,23 @@ export class Fighter {
     this.finishStep(drive, t, dt, crouch);
   }
 
+  private leaveGround(): void {
+    this.coyote = 0;
+    this.jumpLock = JUMP_LOCK;
+    this.grounded = false;
+  }
+
   /** What every step on its feet ends with: the posture, and the legs under it. */
   private finishStep(drive: PostureDrive | null, t: Tuning, dt: number, crouch: number): void {
-    this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch);
+    this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch,
+      this.traverse ? 0 : clamp(this.stoop, 0, 1));
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
   }
 
   // ---------------------------------------------------------------------------
-  // Vaulting
+  // Vaulting and climbing
   // ---------------------------------------------------------------------------
 
   /** Crouching: the hips more than halfway down. */
@@ -936,12 +992,37 @@ export class Fighter {
 
   /** Going over something. */
   get vaulting(): boolean {
-    return this.vault !== null;
+    return this.traverse?.kind === "vault";
+  }
+
+  /** Going up onto something. */
+  get climbing(): boolean {
+    return this.traverse?.kind === "climb";
   }
 
   /** How far a crouch has lowered everything above the hips, metres. */
   get sink(): number {
     return this.posture.pose.sink;
+  }
+
+  /**
+   * Where the hands go on the stone while going over or up something, left
+   * then right, world, and how far they have been handed over to it, 0..1;
+   * null when there is nothing to hold. The arms take it as a guide (see
+   * Combatant.act): a hand with nothing in it goes and takes hold, and lets
+   * go again as the body comes over the top. Reused: read it straight away.
+   */
+  get handhold(): { left: THREE.Vector3; right: THREE.Vector3; weight: number } | null {
+    const tr = this.traverse;
+    if (!tr) return null;
+    const f = Math.min(1, tr.time / tr.duration);
+    const h = this._hold;
+    h.weight = tr.kind === "climb"
+      ? smoothstep(0, 0.2, f) * (1 - smoothstep(0.62, 0.92, f))
+      : smoothstep(0, 0.12, f) * (1 - smoothstep(0.4, 0.62, f));
+    h.left.copy(tr.hold[0]);
+    h.right.copy(tr.hold[1]);
+    return h;
   }
 
   /**
@@ -986,10 +1067,7 @@ export class Fighter {
     const floor = this.surfaceAt(p.x + dx * land, p.z + dz * land, soles + 0.4 * s);
     if (floor === null || Math.abs(floor - soles) > 0.15 * s) return false;
     const over = top + VAULT_CLEAR * s;
-    this.stepRay.origin = { x: p.x, y: over + this.build.hull.height * 0.75, z: p.z };
-    this.stepRay.dir = { x: dx, y: 0, z: dz };
-    if (this.phys.world.castRay(this.stepRay, land, true,
-      undefined, this.side.sightFilter, undefined, this.body) !== null) return false;
+    if (this.blocked(p.x, over + this.build.hull.height * 0.75, p.z, dx, 0, dz, land)) return false;
 
     // The path, as hull centres: up off the floor while closing on it, over
     // its top with the soles clear of it the whole way from its near edge to
@@ -998,31 +1076,129 @@ export class Fighter {
     const clearFrom = far + r * 0.6;
     const lift = over - soles;
     const path: THREE.Vector3[] = [];
-    const along: number[] = [];
-    let total = 0;
     for (let i = 0; i <= VAULT_POINTS; i++) {
       const x = (land * i) / VAULT_POINTS;
       const h = x < rise ? lift * smoothstep(0, rise, x)
         : x <= clearFrom ? lift
           : lift * (1 - smoothstep(clearFrom, land, x));
-      const pt = new THREE.Vector3(p.x + dx * x, p.y + h, p.z + dz * x);
-      if (i > 0) total += pt.distanceTo(path[i - 1]);
-      path.push(pt);
-      along.push(total);
+      path.push(new THREE.Vector3(p.x + dx * x, p.y + h, p.z + dz * x));
     }
-    const duration = Math.max(VAULT_TIME * Math.sqrt(s), total / VAULT_SPEED);
-    this.vault = { path, along, time: 0, duration };
-    this.knock.set(0, 0, 0);
+    // A hand planted on its top as the body goes over.
+    this.begin("vault", path, VAULT_TIME * Math.sqrt(s), near + 0.12 * s, top);
     return true;
   }
 
   /**
-   * A step of the vault: the body's velocity set to carry it to where the
-   * path has it next step. The pace eases in and out along the path, and the
-   * speed is capped, so whatever it runs into gets its say.
+   * Is there a ledge to climb straight ahead, and if so, start up it.
+   *
+   * Asked of the stone as a vault is: a face within an arm's length, a top
+   * between a knee and as high as a jump gets the hands, enough of it past
+   * the edge to stand on, and nothing in the way going up or overhead once
+   * there. A wall is no ledge -- looked down on from over its top, the ray
+   * starts inside it -- and neither is a pillar, which has no top to stand on
+   * within reach.
    */
-  private stepVault(dt: number): void {
-    const v = this.vault!;
+  private beginClimb(): boolean {
+    const s = this.build.scale;
+    const p = this.body.translation();
+    const soles = p.y - this.build.hullCentreY;
+    const r = this.build.hull.radius;
+    const dx = -Math.sin(this.yaw);
+    const dz = -Math.cos(this.yaw);
+
+    const near = this.clearAlong(dx, dz, CLIMB_REACH * s);
+    if (near >= CLIMB_REACH * s) return false;
+    const edge = near + 0.06 * s;
+    const top = this.surfaceAt(p.x + dx * edge, p.z + dz * edge, soles + (CLIMB_HIGH + 0.25) * s);
+    if (top === null) return false;
+    const height = top - soles;
+    if (height < CLIMB_LOW * s || height > CLIMB_HIGH * s) return false;
+
+    // Flat past the edge for a body's width, or at least enough to balance on.
+    const step = 0.06 * s;
+    let flat = 0;
+    for (let d = edge + step; d <= edge + 2 * (r + CLIMB_ON * s); d += step) {
+      const y = this.surfaceAt(p.x + dx * d, p.z + dz * d, top + 0.3 * s);
+      if (y === null || Math.abs(y - top) > 0.12 * s) break;
+      flat = d - edge;
+    }
+    if (flat + 0.06 * s < CLIMB_DEPTH * s) return false;
+    const on = edge + Math.min(flat / 2, r + CLIMB_ON * s);
+
+    // Up the face, close in against it, and nothing overhead all the way up;
+    // then over the edge, with room on top for a whole body.
+    const rise = Math.max(0, near - r - 0.03 * s);
+    const hull = this.build.hull.height;
+    const up = top + this.build.hullCentreY + 0.05 * s;
+    const fromX = p.x + dx * rise;
+    const fromZ = p.z + dz * rise;
+    if (this.blocked(fromX, p.y, fromZ, 0, 1, 0, up + hull / 2 - p.y)) return false;
+    for (const y of [top + 0.25 * s, top + hull * 0.9]) {
+      if (this.blocked(fromX, y, fromZ, dx, 0, dz, on - rise + r)) return false;
+    }
+
+    const path: THREE.Vector3[] = [];
+    const climb = up - p.y;
+    for (let i = 0; i <= CLIMB_POINTS; i++) {
+      const f = i / CLIMB_POINTS;
+      path.push(new THREE.Vector3(
+        p.x + dx * rise * smoothstep(0, 0.5, f), p.y + climb * smoothstep(0, 1, f),
+        p.z + dz * rise * smoothstep(0, 0.5, f)));
+    }
+    const stand = top + this.build.hullCentreY + 0.01 * s;
+    for (let i = 1; i <= CLIMB_POINTS / 2; i++) {
+      const f = smoothstep(0, 1, i / (CLIMB_POINTS / 2));
+      const x = rise + (on - rise) * f;
+      path.push(new THREE.Vector3(p.x + dx * x, up + (stand - up) * f, p.z + dz * x));
+    }
+    const human = height / s;
+    this.begin("climb", path, (CLIMB_TIME + CLIMB_PER_METRE * human) * Math.sqrt(s),
+      near + 0.08 * s, top);
+    return true;
+  }
+
+  /**
+   * Set a traverse going along a path of hull centres, at no less than
+   * `minTime` seconds and no faster than a body can be driven, with the hands
+   * to hold on at the edge `edge` metres ahead, on a top at `top`.
+   */
+  private begin(
+    kind: "vault" | "climb", path: THREE.Vector3[], minTime: number, edge: number, top: number,
+  ): void {
+    const along = [0];
+    for (let i = 1; i < path.length; i++) along.push(along[i - 1] + path[i].distanceTo(path[i - 1]));
+    const duration = Math.max(minTime, along[along.length - 1] / VAULT_SPEED);
+    const s = this.build.scale;
+    const p = this.body.translation();
+    const sin = Math.sin(this.yaw);
+    const cos = Math.cos(this.yaw);
+    const at = new THREE.Vector3(p.x - sin * edge, top + 0.03 * s, p.z - cos * edge);
+    const spread = HOLD_SPREAD * s;
+    const hold: [THREE.Vector3, THREE.Vector3] = [
+      at.clone().add(new THREE.Vector3(-cos * spread, 0, sin * spread)),
+      at.clone().add(new THREE.Vector3(cos * spread, 0, -sin * spread)),
+    ];
+    this.traverse = { kind, path, along, time: 0, duration, hold };
+    this.knock.set(0, 0, 0);
+  }
+
+  /** Is there stone along a ray, within `reach`? */
+  private blocked(
+    x: number, y: number, z: number, dx: number, dy: number, dz: number, reach: number,
+  ): boolean {
+    this.stepRay.origin = { x, y, z };
+    this.stepRay.dir = { x: dx, y: dy, z: dz };
+    return this.phys.world.castRay(this.stepRay, reach, true,
+      undefined, this.side.sightFilter, undefined, this.body) !== null;
+  }
+
+  /**
+   * A step of a vault or a climb: the body's velocity set to carry it to
+   * where the path has it next step. The pace eases in and out along the
+   * path, and the speed is capped, so whatever it runs into gets its say.
+   */
+  private stepTraverse(dt: number): void {
+    const v = this.traverse!;
     v.time += dt;
     const done = v.time >= v.duration;
     const u = smoothstep(0, 1, Math.min(1, v.time / v.duration));
@@ -1044,7 +1220,7 @@ export class Fighter {
     this.tuck += (1 - this.tuck) * Math.min(1, TUCK_RATE * 1.5 * dt);
     this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
     if (done) {
-      this.vault = null;
+      this.traverse = null;
       this.jumpLock = JUMP_LOCK;
     }
   }
@@ -1167,7 +1343,7 @@ export class Fighter {
    * the blow if it was hit high, its feet along it if it was hit low.
    */
   private knockDown(blow: Blow): void {
-    this.vault = null;
+    this.traverse = null;
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
@@ -1197,7 +1373,7 @@ export class Fighter {
    * dead head forever.
    */
   collapse(): void {
-    this.vault = null;
+    this.traverse = null;
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
@@ -1779,18 +1955,45 @@ export class Fighter {
    * the waist pivot, as the posture places everything on the chest -- in
    * world space. Through the hull's whole rotation, not only its facing, so it
    * stays on the chest of a body lying on the floor.
+   *
+   * `lead` is how far ahead to look, seconds: where the chest will be once
+   * the hull has carried it that far at the speed it is going. Something
+   * placed on the chest before a step, for the step to move it to, has to be
+   * sent to where the chest will be after it -- sent to where it is, it
+   * arrives a step behind, and a sword on the back of a body at a run rode
+   * five centimetres out of its scabbard.
    */
   chestFrameWorld(
     local: THREE.Vector3, localQ: THREE.Quaternion,
+    outP: THREE.Vector3, outQ: THREE.Quaternion, lead = 0,
+  ): void {
+    const pose = this.posture.pose;
+    const r = this.body.rotation();
+    const hull = _qHull.set(r.x, r.y, r.z, r.w);
+    const p = this.body.translation();
+    const v = lead > 0 ? this.body.linvel() : ZERO;
+    this.posture.chestPoint(pose, outP.copy(local), outP)
+      .applyQuaternion(hull)
+      .add(_pHull.set(p.x + v.x * lead, p.y + v.y * lead, p.z + v.z * lead));
+    outQ.copy(hull).multiply(this.posture.chestQuat(pose, _qChest)).multiply(localQ);
+  }
+
+  /** The other way: a world point and orientation in the chest's own frame, as it is now. */
+  chestFrameLocal(
+    world: THREE.Vector3, worldQ: THREE.Quaternion,
     outP: THREE.Vector3, outQ: THREE.Quaternion,
   ): void {
     const pose = this.posture.pose;
     const r = this.body.rotation();
     const hull = _qHull.set(r.x, r.y, r.z, r.w);
     const p = this.body.translation();
-    this.posture.chestPoint(pose, outP.copy(local), outP)
-      .applyQuaternion(hull).add(_pHull.set(p.x, p.y, p.z));
-    outQ.copy(hull).multiply(this.posture.chestQuat(pose, _qChest)).multiply(localQ);
+    const chest = this.posture.chestQuat(pose, _qChest);
+    const into = _qInto.copy(hull).multiply(chest).invert();
+    outP.set(world.x - p.x, world.y - p.y, world.z - p.z)
+      .applyQuaternion(_qInv.copy(hull).invert());
+    outP.y -= this.posture.waistY - pose.sink;
+    outP.applyQuaternion(_qInv.copy(chest).invert());
+    outQ.copy(into).multiply(worldQ);
   }
 
   /** The off arm's two bodies, and whether each is still jointed on. */
@@ -1922,7 +2125,7 @@ export class Fighter {
       leg.step = -1;
     }
     // On its feet, whatever it was doing on the floor.
-    this.vault = null;
+    this.traverse = null;
     this.stance = "up";
     this.stanceTime = 0;
     this.lying = 0;
@@ -2016,6 +2219,9 @@ const _spin = new THREE.Vector3();
 const _pRise = new THREE.Vector3();
 const _qRise = new THREE.Quaternion();
 const _qTurn = new THREE.Quaternion();
+const _qInto = new THREE.Quaternion();
+const _qInv = new THREE.Quaternion();
+const ZERO = { x: 0, y: 0, z: 0 } as const;
 const _qHull = new THREE.Quaternion();
 const _pVault = new THREE.Vector3();
 const _qChest = new THREE.Quaternion();

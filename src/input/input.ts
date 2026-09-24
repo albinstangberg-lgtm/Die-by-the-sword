@@ -18,8 +18,10 @@ export interface Keys {
   right: boolean;
   turnLeft: boolean;
   turnRight: boolean;
-  /** Jump -- or, running at something waist high, vault it. */
+  /** Jump -- or, moving at a ledge, climb it. */
   jump: boolean;
+  /** Vault whatever is in front, between a knee and a chest high. */
+  vault: boolean;
   /** Held: sink onto bent knees. */
   crouch: boolean;
 }
@@ -55,6 +57,7 @@ export const KEY_MAP: Record<string, keyof Keys> = {
   KeyQ: "left",
   KeyE: "right",
   Space: "jump",
+  KeyV: "vault",
   KeyC: "crouch",
   // The arrow keys stay live as an alias; some people reach for them first.
   ArrowLeft: "turnLeft",
@@ -64,7 +67,7 @@ export const KEY_MAP: Record<string, keyof Keys> = {
 export class Input {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, jump: false, crouch: false,
+    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false,
   };
 
   /** Mouse travel since the last `consumeMouse()`, in pixels. */

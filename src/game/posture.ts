@@ -133,6 +133,15 @@ export const CROUCH_DROP = 0.38;
 const CROUCH_LEAN = 0.22;
 /** Quick, but a body's weight still has to go down and come back up. */
 const CROUCH_OMEGA = 13;
+/**
+ * A stoop, all the way: how far further it bows the chest over the crouch it
+ * goes down into, radians, and how far it lets the sword shoulder down and
+ * forward, metres at human scale -- a hand going to the floor takes the
+ * shoulder blade with it.
+ */
+const STOOP_LEAN = 0.9;
+const STOOP_DROP = 0.06;
+const STOOP_REACH = 0.05;
 
 // --- gaze ---------------------------------------------------------------------
 
@@ -217,6 +226,8 @@ export class Posture {
   private readonly gazeYawS = new Spring(GAZE_OMEGA, GAZE_ZETA);
   private readonly gazePitchS = new Spring(GAZE_OMEGA, GAZE_ZETA);
   private readonly sinkS = new Spring(CROUCH_OMEGA);
+  /** How far over the body is bowed this step, 0..1: see `update`. */
+  private stoop = 0;
 
   /** Hull-local height of the waist: the pivot the chest turns and bends about. */
   readonly waistY: number;
@@ -290,7 +301,7 @@ export class Posture {
     // A crouch is the legs', not the aim's: a held aim settles at whatever
     // height the body is at now, with the lean the crouch gives it.
     out.sink = this.pose.sink;
-    out.lean += this.crouchLean(out.sink);
+    out.lean += this.crouchLean(out.sink) + STOOP_LEAN * this.stoop;
     return out;
   }
 
@@ -310,6 +321,7 @@ export class Posture {
     }
     for (const s of [this.twist, this.hips, this.leanS, this.bendS,
       this.protractS, this.elevateS, this.gazeYawS, this.gazePitchS, this.sinkS]) s.reset(0);
+    this.stoop = 0;
     this.gazeYaw = this.gazePitch = this.gazeRoll = 0;
   }
 
@@ -324,12 +336,13 @@ export class Posture {
    * -- and the body relaxes back to square. `focus` overrides what the head
    * looks at; `hullYaw` and `hullPos` place the hull, for turning world points
    * into the body's own frame. `crouch` is how far down the legs want to be,
-   * 0 standing and 1 all the way.
+   * 0 standing and 1 an ordinary crouch -- a stoop goes further -- and `stoop`
+   * how far over the body bows to get a hand to the floor, 0..1.
    */
   update(
     drive: PostureDrive | null, focus: THREE.Vector3 | null,
     hullYaw: number, hullPos: { x: number; y: number; z: number },
-    t: Tuning, dt: number, crouch = 0,
+    t: Tuning, dt: number, crouch = 0, stoop = 0,
   ): void {
     this.prev.copy(this.pose);
     const k = t.secondaryMotion;
@@ -357,7 +370,8 @@ export class Posture {
     const pose = this.pose;
     pose.pelvis = this.hips.step(this.hipsFor(twistT, t), dt);
     pose.spine = clamp(chest - pose.pelvis, -SPINE_MAX, SPINE_MAX);
-    pose.lean = this.leanS.step(leanT + this.crouchLean(pose.sink), dt);
+    this.stoop = stoop;
+    pose.lean = this.leanS.step(leanT + this.crouchLean(pose.sink) + STOOP_LEAN * stoop, dt);
     pose.bend = this.bendS.step(bendT, dt);
 
     let protractT = 0;
@@ -368,8 +382,9 @@ export class Posture {
         SHRUG_STRAIN * drive.strain * drive.strain
         + clamp(SHRUG_ACCEL * drive.accel.y, -0.012, 0.018));
     }
-    pose.protract = this.protractS.step(protractT, dt);
-    pose.elevate = this.elevateS.step(elevateT, dt);
+    const s = this.build.scale;
+    pose.protract = this.protractS.step(protractT + STOOP_REACH * s * stoop, dt);
+    pose.elevate = this.elevateS.step(elevateT - STOOP_DROP * s * stoop, dt);
 
     this.updateGaze(focus ?? drive?.look ?? null, hullYaw, hullPos, t, dt);
   }
