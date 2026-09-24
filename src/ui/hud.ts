@@ -6,6 +6,25 @@ import type { Ai } from "../game/ai";
 import { cutDamage } from "../game/damage";
 import type { Blow, Knock } from "../game/balance";
 
+/**
+ * What you are carrying and how you are standing, once a frame. Everything
+ * here changes rarely, so it is only redrawn when it does.
+ */
+export interface Kit {
+  /** Where the sword is. */
+  sword: "hand" | "back" | "lost";
+  /** Whether there is a shield on the off arm, or an arm to put one on. */
+  shield: "none" | "arm" | "lost";
+  potions: number;
+  /** Drinking one: health still to come back. */
+  healing: number;
+  stance: "standing" | "crouching" | "vaulting" | "airborne" | "down";
+  /** The left button is held: the mouse is on the other arm. */
+  guarding: boolean;
+  /** What F would do right now, or null. */
+  prompt: string | null;
+}
+
 /** One opponent and the brain driving it, as the fight panel needs them. */
 export interface TrackedFoe {
   combatant: Combatant;
@@ -73,6 +92,10 @@ export class Hud {
   private dummy: Dummy | null = null;
   private rollHint!: HTMLElement;
   private jumpHint!: HTMLElement;
+  private guardHint!: HTMLElement;
+  private kitEl!: HTMLElement;
+  private promptEl: HTMLElement;
+  private lastKitSig = "";
 
   constructor(root: HTMLElement, impactEl: HTMLElement) {
     this.root = root;
@@ -97,19 +120,33 @@ export class Hud {
         <dl>
           <dt>mouse</dt><dd>sword arm</dd>
           <dt>right-drag</dt><dd data-f="rollhint">roll edge</dd>
+          <dt>left-drag</dt><dd data-f="guardhint">other arm / shield</dd>
           <dt>wheel</dt><dd>reach</dd>
           <dt>W / S</dt><dd>forward, back</dd>
           <dt>A / D</dt><dd>turn</dd>
           <dt>Q / E</dt><dd>sidestep</dd>
-          <dt>Space</dt><dd data-f="jumphint">jump</dd>
+          <dt>Space</dt><dd data-f="jumphint">jump &middot; vault</dd>
+          <dt>C</dt><dd>crouch</dd>
+          <dt>X</dt><dd>sheathe / draw</dd>
+          <dt>F</dt><dd>pick up</dd>
+          <dt>H</dt><dd>drink a potion</dd>
           <dt>Tab</dt><dd>tuning panel</dd>
           <dt>R</dt><dd>reset</dd>
           <dt>Esc</dt><dd>release mouse</dd>
         </dl>
       </section>
       <section>
+        <h2>Kit</h2>
+        <dl data-f="kit"></dl>
+      </section>
+      <section>
         <dl><dt>frame</dt><dd data-f="fps">0.0 ms</dd></dl>
       </section>`;
+
+    this.promptEl = document.createElement("div");
+    this.promptEl.id = "prompt";
+    this.promptEl.className = "overlay";
+    document.body.appendChild(this.promptEl);
 
     this.fightEl = document.createElement("div");
     this.fightEl.id = "fight";
@@ -133,11 +170,15 @@ export class Hud {
     this.fps = f("fps");
     this.rollHint = f("rollhint");
     this.jumpHint = f("jumphint");
+    this.guardHint = f("guardhint");
+    this.kitEl = f("kit");
     this.errBar = b("err");
     this.satBar = b("sat");
   }
 
-  update(s: ArmState, frameMs: number, rolling = false, grounded = true): void {
+  update(
+    s: ArmState, frameMs: number, rolling = false, grounded = true, kit: Kit | null = null,
+  ): void {
     this.err.textContent = `${s.trackingError.toFixed(3)} m`;
     this.sat.textContent = `${Math.round(s.saturation * 100)}%`;
     this.tip.textContent = `${s.tipSpeed.toFixed(1)} m/s`;
@@ -154,8 +195,10 @@ export class Hud {
 
     // Air control is a fraction of ground control, so knowing you are off the
     // floor matters: you cannot take a jump back.
-    this.jumpHint.textContent = grounded ? "jump" : "AIRBORNE";
+    this.jumpHint.textContent = grounded ? "jump · vault" : "AIRBORNE";
     this.jumpHint.style.color = grounded ? "" : "var(--ink)";
+
+    if (kit) this.updateKit(kit);
 
     // 0.25m of lag is a lot: at that point the blade is visibly not where you
     // asked for it, which is exactly when the mechanic is doing its job.
@@ -187,6 +230,56 @@ export class Hud {
       this.lastFightSig = fsig;
       this.refreshFight();
     }
+  }
+
+  /** The kit readout, the other arm's hint, and the prompt for F. */
+  private updateKit(kit: Kit): void {
+    const shielded = kit.shield === "arm";
+    this.guardHint.textContent = kit.guarding ? (shielded ? "SHIELD" : "OTHER ARM")
+      : shielded ? "shield" : "other arm / shield";
+    this.guardHint.style.color = kit.guarding ? "var(--ink)" : "";
+
+    const sig = [kit.sword, kit.shield, kit.potions, Math.ceil(kit.healing), kit.stance,
+      kit.prompt ?? ""].join("|");
+    if (sig === this.lastKitSig) return;
+    this.lastKitSig = sig;
+
+    const sword = { hand: "in hand", back: "on your back", lost: "lost" }[kit.sword];
+    const shield = { none: "none", arm: "on your arm", lost: "lost with the arm" }[kit.shield];
+    const potions = kit.healing > 0
+      ? `${kit.potions} &middot; +${Math.ceil(kit.healing)} coming`
+      : String(kit.potions);
+    this.kitEl.innerHTML = `
+      <dt>sword</dt><dd>${sword}</dd>
+      <dt>shield</dt><dd>${shield}</dd>
+      <dt>potions</dt><dd>${potions}</dd>
+      <dt>stance</dt><dd>${kit.stance}</dd>`;
+
+    this.promptEl.textContent = kit.prompt ?? "";
+    this.promptEl.classList.toggle("shown", kit.prompt !== null);
+  }
+
+  /** A line of news in the impact readout: a pickup, a drink, a refusal. */
+  showNote(text: string, bad = false): void {
+    if (!text) return;
+    this.impactEl.innerHTML = `<div class="quality${bad ? " none" : " note"}">${text}</div>`;
+    this.impactEl.classList.remove("fade");
+    clearTimeout(this.fadeTimer);
+    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1800);
+  }
+
+  /**
+   * A blade stopped on your shield: what it was, how hard it came, and what
+   * its weight did to you anyway.
+   */
+  showBlock(i: Impact, blow: Blow | null = null): void {
+    const rocked = blow !== null && blow.effect !== "none";
+    this.impactEl.innerHTML = `
+      <div class="quality block">blocked &mdash; ${i.closingSpeed.toFixed(1)} m/s on ${i.what}</div>
+      ${rocked ? knockLine(blow!, blow!.effect === "down" ? "you are knocked down" : KNOCK_TEXT[blow!.effect]) : ""}`;
+    this.impactEl.classList.remove("fade");
+    clearTimeout(this.fadeTimer);
+    this.fadeTimer = window.setTimeout(() => this.impactEl.classList.add("fade"), 1400);
   }
 
   /**

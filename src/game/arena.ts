@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physics";
 import type { Targets } from "./targets";
+import type { ItemLayout } from "./items";
 
 /**
  * Three rooms and the doors between them.
@@ -66,6 +67,35 @@ export const DUMMY_AT = new THREE.Vector3(2.9, 0, 5.4);
 /** Each opponent's post, at floor level. Spawn heights are their own hulls'. */
 export const ORC_POST = new THREE.Vector3(-1.8, 0, -9.8);
 export const GOBLIN_POST = new THREE.Vector3(12.4, 0, -8.2);
+
+/**
+ * A waist-high wall along the training room's west side, end on to the wall
+ * so it can be vaulted north or south: the one thing in that room to practise
+ * going over. Out of the way of the dummy, the pillars and the middle of the
+ * floor. The hall's block is the other thing low enough to vault.
+ */
+export const LOW_WALL = { at: new THREE.Vector3(-5.4, 0, 6.6), half: new THREE.Vector3(0.9, 0.43, 0.2) };
+
+/**
+ * Where the things lying about are put down.
+ *
+ * A potion by the rack in the training room, to learn on; two in the hall,
+ * one behind the block; one at the back of the cell. The shield lies in the
+ * hall's far corner, past the orc -- it has to be earned there -- and the
+ * rack stands against the training room's east wall, with a shield on it to
+ * take down and hang back up whenever you like.
+ */
+export const ITEM_LAYOUT: ItemLayout = {
+  potions: [
+    new THREE.Vector3(5.2, 0, 12.2),
+    new THREE.Vector3(-6.6, 0, -12.9),
+    new THREE.Vector3(6.6, 0, -1.0),
+    new THREE.Vector3(16.3, 0, -11.8),
+  ],
+  shield: new THREE.Vector3(6.6, 0, -13.1),
+  // Its face toward the room, which is -X from the east wall: a quarter turn.
+  rack: { at: new THREE.Vector3(6.05, 0, 11.4), facing: Math.PI / 2 },
+};
 
 /**
  * The thin post: the tunnelling test case. If CCD is off, you cut air.
@@ -199,6 +229,10 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   for (const [px, pz] of [[-3.9, 3.4], [3.9, 3.4], [-3.9, 9.9], [3.9, 9.9]] as const) {
     box("pillar", stone, 0.38, 2.1, 0.38, px, 2.1, pz);
   }
+
+  // Something to vault.
+  box("low wall", stone, LOW_WALL.half.x, LOW_WALL.half.y, LOW_WALL.half.z,
+    LOW_WALL.at.x, LOW_WALL.half.y, LOW_WALL.at.z);
 
   // --- the north door, and the hall behind it ---
   //

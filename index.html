@@ -97,6 +97,18 @@
       #impact .dmg { color: #e6c15a; }
       #impact .dmg.none { color: var(--dim); }
       #impact .quality.sever { color: #d8562f; }
+      #impact .quality.block { color: #9fc2e6; }
+      #impact .quality.note { color: #e6c15a; }
+      #impact .quality.none { color: var(--dim); }
+
+      /* What F would do, when there is something in reach. */
+      #prompt {
+        bottom: 18%; left: 50%; transform: translateX(-50%); z-index: 10;
+        padding: 0.35rem 0.8rem; border: 1px solid var(--line);
+        background: rgba(18, 17, 15, 0.6); letter-spacing: 0.08em;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.95); opacity: 0; transition: opacity 150ms;
+      }
+      #prompt.shown { opacity: 1; }
       /* What the blow did to the body, and the weight that decided it. */
       #impact .knock { letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
       #impact .knock > span { text-transform: none; letter-spacing: 0; }
@@ -150,7 +162,8 @@
         <h1>Die by the Sword</h1>
         <p>Move the mouse to move your sword arm. It is a physical limb, not an animation: it has weight, it lags, and it will bury itself in the walls.</p>
         <p><strong>W</strong> and <strong>S</strong> walk. <strong>A</strong> and <strong>D</strong> turn &mdash; the mouse is your arm, not the camera. <strong>Q</strong> and <strong>E</strong> sidestep, <strong>Space</strong> jumps.</p>
-        <p>Hold the <strong>right button</strong> and move left or right to roll the cutting edge.</p>
+        <p>Hold the <strong>right button</strong> and move left or right to roll the cutting edge. Hold the <strong>left button</strong> to move your other arm instead &mdash; and the shield on it, once you have one.</p>
+        <p><strong>X</strong> puts your sword on your back and takes it out again; a sheathed sword leaves a hand free, and <strong>F</strong> picks things up with it. <strong>H</strong> drinks a potion, <strong>C</strong> crouches, and <strong>Space</strong> running at something waist high vaults it. A shield hangs on the rack by the wall.</p>
         <p>An orc with an axe and a goblin with a spear are across the room. Neither will tell you what it is about to do. Watch the weapon: every swing starts with it going back, and the heavier it is the longer that takes. Read it, then be somewhere else.</p>
         <div class="cue">Click to take the blade</div>
       </div>

@@ -9,7 +9,7 @@ import {
   stumpCap,
 } from "./skin";
 import type { WoundEnd } from "./blood";
-import { Pose, Posture, type PostureDrive } from "./posture";
+import { CROUCH_DROP, Pose, Posture, type PostureDrive } from "./posture";
 import { wrap, type Capsule } from "./clearance";
 import { smoothstep } from "./motion";
 import { emptyBlow, judgeBlow, type Blow } from "./balance";
@@ -24,8 +24,10 @@ import type { Impact } from "./impacts";
  *
  *   torso, pelvis   colliders on the hull itself, posed by the posture layer:
  *                   the hips turn and the chest turns, leans and bends on top
- *   head, off-arm   real jointed bodies, held in place by weak PD controllers,
+ *   head            a real jointed body, held in place by a weak PD controller,
  *                   severable exactly as the practice dummy's limbs are
+ *   off arm         real jointed bodies too, severable the same way, and
+ *                   driven by a hand of their own (offarm.ts)
  *   legs            kinematic: posed by a walk cycle, hittable, never simulated
  *
  * That split is the whole trick. A skeleton made of jointed limbs that has to
@@ -49,11 +51,21 @@ export interface Palette {
 export const PLAYER_PALETTE: Palette = { cloth: 0x6b4a3a, skin: 0xa8826a, mark: 0xd8cbb4 };
 export const FOE_PALETTE: Palette = { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f };
 
-/** How hard the head and off-arm are held in their pose. */
+/**
+ * How hard the head is held in its pose. The off arm is driven on its own now:
+ * see offarm.ts.
+ */
 const HEAD_KP = 26, HEAD_KD = 3.2;
-const OFF_ARM_KP = 9, OFF_ARM_KD = 1.4;
 /** Clamped like the sword arm's drive: no controller here gets unbounded authority. */
 const POSE_MAX_TORQUE = 40;
+/**
+ * And held inside what an explicit step on the body's inertia can take:
+ * stiffness under 0.7·I/dt², damping under 1.5·I/dt, as the sword arm bounds
+ * its roll. The head's damping was two thirds over that, and it buzzed about its
+ * own vertical at 15 rad/s, flipping every step at the torque clamp.
+ */
+const STIFFNESS_LIMIT = 0.7;
+const DAMPING_LIMIT = 1.5;
 
 /**
  * The trunk as the sword arm keeps out of it: the body you can see, not the
@@ -108,6 +120,37 @@ const GROUND_PROBE = 0.1;
 const STEP_PROBE = 0.45;
 /** How fast the legs fold up once there is nothing to stand on. */
 const TUCK_RATE = 9;
+
+// --- crouching and vaulting ---------------------------------------------------
+//
+// A crouch is the posture's (see `Pose.sink`): the hips sink and everything
+// above them goes with them, and the legs bend under them so the feet stay on
+// the floor. The hull does not change -- it is invisible and no blade finds
+// it -- so what a crouch takes out of the way of a swing is the body you can
+// see and cut.
+//
+// A vault is a jump that has something to go over. Running at a thing between
+// knee and chest high, the jump key takes the body up, over and down the far
+// side instead of straight up, driven there the way a body is walked and got
+// up off the floor -- by its velocity, never placed -- so anything in the way
+// still has its say.
+
+/** How fast a crouched body walks, as a share of standing. */
+const CROUCH_SPEED = 0.45;
+/** How far ahead of the middle of the body something may start, to be vaulted: a running stride. */
+const VAULT_REACH = 1.3;
+/** How high it may stand, from the soles: over a knee and under a chest. */
+const VAULT_LOW = 0.35;
+const VAULT_HIGH = 1.15;
+/** How deep it may be, front to back. */
+const VAULT_DEPTH = 1.5;
+/** How far over its top the soles clear it. */
+const VAULT_CLEAR = 0.1;
+/** How long a vault takes at human scale, seconds, and the fastest it may be driven, m/s. */
+const VAULT_TIME = 0.62;
+const VAULT_SPEED = 7;
+/** Points along a vault's path: enough that following them reads as a curve. */
+const VAULT_POINTS = 24;
 
 // --- planted feet -------------------------------------------------------------
 //
@@ -298,6 +341,15 @@ export class Fighter {
   private readonly _q2 = new THREE.Quaternion();
   private readonly _v = new THREE.Vector3();
 
+  /** The hips' collider, which a crouch carries down with them. */
+  private pelvisCollider!: RAPIER.Collider;
+  /**
+   * A vault under way: where it goes, as a path of hull centres with the
+   * distance along it to each, and how far through it the body is, seconds.
+   */
+  private vault: { path: THREE.Vector3[]; along: number[]; time: number; duration: number } | null = null;
+  private readonly downRay: RAPIER.Ray;
+
   /** On its feet, on the floor, or getting up off it. */
   private stance: Stance = "up";
   /** Seconds since the stance last changed. */
@@ -344,6 +396,7 @@ export class Fighter {
     this.groundReach = HULL.height / 2 + GROUND_PROBE * build.scale;
     this.sightRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
     this.stepRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: -1 });
+    this.downRay = new rapier.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 });
 
     this.posture = new Posture(build);
     this.mesh.add(this.pelvis);
@@ -399,7 +452,7 @@ export class Fighter {
     });
     hips.scale.set(1.1, 1, 0.92);
     this.pelvisY = local((STANDING.hip + STANDING.waist) / 2);
-    this.rigidPart("pelvis", "hips", SEGMENT.pelvis,
+    this.pelvisCollider = this.rigidPart("pelvis", "hips", SEGMENT.pelvis,
       this.pelvisY, 0, hips, this.pelvis, 0);
 
     this.buildTrunkFill();
@@ -769,6 +822,15 @@ export class Fighter {
     this.grounded = this.probeGround();
     this.coyote = this.grounded ? COYOTE : Math.max(0, this.coyote - dt);
     this.jumpLock = Math.max(0, this.jumpLock - dt);
+    const crouch = keys.crouch ? 1 : 0;
+
+    // Going over something: the feet are off the floor and nothing anyone
+    // asks of them reaches them until the far side.
+    if (this.vault) {
+      this.stepVault(dt);
+      this.finishStep(drive, t, dt, 0);
+      return;
+    }
 
     // Staggering, the feet are busy keeping the body up and go nowhere they
     // are asked. Turning is the upper body's, and survives it.
@@ -787,8 +849,10 @@ export class Fighter {
     if (len > 0) {
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
+      // Crouched, the steps are short.
+      const low = Math.min(1, this.posture.pose.sink / (CROUCH_DROP * this.build.scale));
       v.set((ix * cos + iz * sin) / len, 0, (-ix * sin + iz * cos) / len)
-        .multiplyScalar(t.moveSpeed * this.build.scale);
+        .multiplyScalar(t.moveSpeed * this.build.scale * (1 - (1 - CROUCH_SPEED) * low));
     }
 
     const current = this.body.linvel();
@@ -798,10 +862,16 @@ export class Fighter {
     // rather than a hand-picked impulse: turning gravity down then floats the
     // same jump instead of firing you into the ceiling.
     if (keys.jump && footed && this.coyote > 0 && this.jumpLock <= 0) {
-      vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
       this.coyote = 0;
       this.jumpLock = JUMP_LOCK;
       this.grounded = false;
+      // Running at something low enough to go over, the same key goes over it.
+      if (keys.forward && this.beginVault()) {
+        this.stepVault(dt);
+        this.finishStep(drive, t, dt, 0);
+        return;
+      }
+      vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
     }
 
     const knock = this.knock;
@@ -844,10 +914,147 @@ export class Fighter {
     if (k > 0) knock.multiplyScalar(Math.max(0, k - STUMBLE * Math.abs(t.gravity) * dt) / k);
     this.reel = Math.max(0, this.reel - dt);
 
-    this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt);
+    this.finishStep(drive, t, dt, crouch);
+  }
+
+  /** What every step on its feet ends with: the posture, and the legs under it. */
+  private finishStep(drive: PostureDrive | null, t: Tuning, dt: number, crouch: number): void {
+    this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch);
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Vaulting
+  // ---------------------------------------------------------------------------
+
+  /** Crouching: the hips more than halfway down. */
+  get crouching(): boolean {
+    return this.posture.pose.sink > 0.5 * CROUCH_DROP * this.build.scale;
+  }
+
+  /** Going over something. */
+  get vaulting(): boolean {
+    return this.vault !== null;
+  }
+
+  /** How far a crouch has lowered everything above the hips, metres. */
+  get sink(): number {
+    return this.posture.pose.sink;
+  }
+
+  /**
+   * Is there something to vault straight ahead, and if so, start going over it.
+   *
+   * Asked of the stone, the same stone that stops sight and footwork: knee
+   * high within a stride, a top between a knee and a chest when looked down
+   * on, a far side within a pace and a half, and floor to land on past it
+   * with nothing overhead on the way. A wall fails the top -- looked down on
+   * from chest height, the ray starts inside it -- and a gap between two
+   * things fails the far side.
+   */
+  private beginVault(): boolean {
+    const s = this.build.scale;
+    const p = this.body.translation();
+    const soles = p.y - this.build.hullCentreY;
+    const r = this.build.hull.radius;
+    const dx = -Math.sin(this.yaw);
+    const dz = -Math.cos(this.yaw);
+
+    const near = this.clearAlong(dx, dz, VAULT_REACH * s);
+    if (near >= VAULT_REACH * s) return false;
+
+    const top = this.surfaceAt(p.x + dx * (near + 0.06 * s), p.z + dz * (near + 0.06 * s),
+      soles + VAULT_HIGH * s + 0.05 * s);
+    if (top === null) return false;
+    const height = top - soles;
+    if (height < VAULT_LOW * s || height > VAULT_HIGH * s) return false;
+
+    // Walk along its top until it falls away: that is the far side.
+    const step = 0.08 * s;
+    let far = -1;
+    for (let d = near + 0.06 * s; d <= near + VAULT_DEPTH * s; d += step) {
+      const y = this.surfaceAt(p.x + dx * d, p.z + dz * d, top + 0.3 * s);
+      if (y === null || y < soles + 0.15 * s) { far = d; break; }
+      if (y > top + 0.2 * s) return false;       // it gets taller: a wall behind it
+    }
+    if (far < 0) return false;
+
+    // Somewhere to land, level with where it started, and nothing overhead.
+    const land = far + r + 0.3 * s;
+    const floor = this.surfaceAt(p.x + dx * land, p.z + dz * land, soles + 0.4 * s);
+    if (floor === null || Math.abs(floor - soles) > 0.15 * s) return false;
+    const over = top + VAULT_CLEAR * s;
+    this.stepRay.origin = { x: p.x, y: over + this.build.hull.height * 0.75, z: p.z };
+    this.stepRay.dir = { x: dx, y: 0, z: dz };
+    if (this.phys.world.castRay(this.stepRay, land, true,
+      undefined, this.side.sightFilter, undefined, this.body) !== null) return false;
+
+    // The path, as hull centres: up off the floor while closing on it, over
+    // its top with the soles clear of it the whole way from its near edge to
+    // its far one, and down the other side.
+    const rise = Math.max(0.05 * s, near - r);
+    const clearFrom = far + r * 0.6;
+    const lift = over - soles;
+    const path: THREE.Vector3[] = [];
+    const along: number[] = [];
+    let total = 0;
+    for (let i = 0; i <= VAULT_POINTS; i++) {
+      const x = (land * i) / VAULT_POINTS;
+      const h = x < rise ? lift * smoothstep(0, rise, x)
+        : x <= clearFrom ? lift
+          : lift * (1 - smoothstep(clearFrom, land, x));
+      const pt = new THREE.Vector3(p.x + dx * x, p.y + h, p.z + dz * x);
+      if (i > 0) total += pt.distanceTo(path[i - 1]);
+      path.push(pt);
+      along.push(total);
+    }
+    const duration = Math.max(VAULT_TIME * Math.sqrt(s), total / VAULT_SPEED);
+    this.vault = { path, along, time: 0, duration };
+    this.knock.set(0, 0, 0);
+    return true;
+  }
+
+  /**
+   * A step of the vault: the body's velocity set to carry it to where the
+   * path has it next step. The pace eases in and out along the path, and the
+   * speed is capped, so whatever it runs into gets its say.
+   */
+  private stepVault(dt: number): void {
+    const v = this.vault!;
+    v.time += dt;
+    const done = v.time >= v.duration;
+    const u = smoothstep(0, 1, Math.min(1, v.time / v.duration));
+    const want = u * v.along[v.along.length - 1];
+    let i = 1;
+    while (i < v.along.length - 1 && v.along[i] < want) i++;
+    const a = v.along[i - 1];
+    const b = v.along[i];
+    const target = _pVault.lerpVectors(v.path[i - 1], v.path[i], b > a ? (want - a) / (b - a) : 1);
+
+    const p = this.body.translation();
+    const vel = target.set(target.x - p.x, target.y - p.y, target.z - p.z).multiplyScalar(1 / dt);
+    if (vel.length() > VAULT_SPEED * 1.5) vel.setLength(VAULT_SPEED * 1.5);
+    this.body.setLinvel({ x: vel.x, y: done ? Math.min(0, vel.y) : vel.y, z: vel.z }, true);
+
+    this.grounded = false;
+    this.coyote = 0;
+    this.gait = 0;
+    this.tuck += (1 - this.tuck) * Math.min(1, TUCK_RATE * 1.5 * dt);
+    this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
+    if (done) {
+      this.vault = null;
+      this.jumpLock = JUMP_LOCK;
+    }
+  }
+
+  /** The height of whatever stone lies under a point, looking down from `fromY`; null if nothing within 3m. */
+  private surfaceAt(x: number, z: number, fromY: number): number | null {
+    this.downRay.origin = { x, y: fromY, z };
+    const hit = this.phys.world.castRay(
+      this.downRay, 3, true, undefined, this.side.sightFilter, undefined, this.body);
+    return hit === null ? null : fromY - hit.timeOfImpact;
   }
 
   // ---------------------------------------------------------------------------
@@ -960,6 +1167,7 @@ export class Fighter {
    * the blow if it was hit high, its feet along it if it was hit low.
    */
   private knockDown(blow: Blow): void {
+    this.vault = null;
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
@@ -982,12 +1190,14 @@ export class Fighter {
    * Down for good. The same fall as a knockdown with no blow behind it, and no
    * getting up: nothing will call `update` on this body again.
    *
-   * Which is also why the head and the off arm have to let go here. They are
-   * held by torques that `holdPose` clears and reapplies every step, and
-   * Rapier keeps a torque until it is cleared: with nothing calling it any
-   * more, the last one would go on twisting a dead head forever.
+   * Which is also why the head and the off arm have to let go here. The head
+   * is held by a torque that `holdPose` clears and reapplies every step, the
+   * off arm by its own drive, and Rapier keeps a force until it is cleared:
+   * with nothing calling them any more, the last push would go on twisting a
+   * dead head forever.
    */
   collapse(): void {
+    this.vault = null;
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
@@ -1006,9 +1216,9 @@ export class Fighter {
    *
    * The body is not driven at all while it lies there: it is a dynamic body
    * with its locks off, and wherever the blow and the floor put it is where it
-   * is. The legs, the posture and the held head and off arm carry on, so what
-   * lies there is still a body -- and the legs, being kinematic, have to be
-   * told where it has fallen or they would stay standing without it.
+   * is. The legs, the posture and the held head carry on, so what lies there
+   * is still a body -- and the legs, being kinematic, have to be told where it
+   * has fallen or they would stay standing without it. The arms hang limp.
    */
   private updateDown(t: Tuning, dt: number): void {
     this.stanceTime += dt;
@@ -1135,6 +1345,8 @@ export class Fighter {
     this.collider.setTranslationWrtParent({ x: centre.x, y: centre.y, z: centre.z });
     const q = this.posture.chestQuat(pose, this._q);
     this.collider.setRotationWrtParent({ x: q.x, y: q.y, z: q.z, w: q.w });
+    // The hips go down into a crouch with everything above them.
+    this.pelvisCollider.setTranslationWrtParent({ x: 0, y: this.pelvisY - pose.sink, z: 0 });
 
     const head = this.parts.find((p) => p.name === "head");
     if (head?.joint) {
@@ -1169,7 +1381,8 @@ export class Fighter {
     const p = this.body.translation();
     const { standing: STANDING, segment: SEGMENT } = this.build;
     return out.set(
-      p.x, p.y + this.build.local(STANDING.crown) - SEGMENT.head.radius, p.z);
+      p.x, p.y + this.build.local(STANDING.crown) - SEGMENT.head.radius - this.posture.pose.sink,
+      p.z);
   }
 
   /**
@@ -1231,49 +1444,39 @@ export class Fighter {
   }
 
   /**
-   * Weak PD keeping head and off-arm in a living posture rather than limp.
+   * Weak PD keeping the head in a living posture rather than limp.
    *
-   * Both are held relative to the CHEST, not the hull, so they turn and lean
-   * with it; the head then turns on top of that toward whatever the posture's
-   * gaze has found. Being PD targets rather than placements, both arrive a
-   * little late and a little past -- which is the secondary motion.
+   * Held relative to the CHEST, not the hull, so it turns and leans with it,
+   * and then turns on top of that toward whatever the posture's gaze has
+   * found. Being a PD target rather than a placement, it arrives a little
+   * late and a little past -- which is the secondary motion.
+   *
+   * The off arm used to be held here the same way, and was the thing that
+   * flopped: see offarm.ts, which drives it now.
    */
   private holdPose(_dt: number): void {
+    if (this.severed("head")) return;
     const hullRot = this.body.rotation();
     this._q2.set(hullRot.x, hullRot.y, hullRot.z, hullRot.w)
       .multiply(this.posture.chestQuat(this.posture.pose, this._q));
-
-    if (!this.severed("head")) {
-      const p = this.posture;
-      this._q.copy(this._q2).multiply(
-        this._qe.setFromEuler(this._euler.set(p.gazePitch, p.gazeYaw, p.gazeRoll, "YXZ")));
-      this.alignTo(this.head, this._q, HEAD_KP, HEAD_KD);
-    }
-    // The off arm rests slightly forward and across, the way a free hand sits
-    // when the other one is holding a sword.
-    if (!this.severed("offShoulder")) {
-      this._q.copy(this._q2).multiply(
-        this._qFromEuler(-0.35, 0, 0.22));
-      this.alignTo(this.offUpper, this._q, OFF_ARM_KP, OFF_ARM_KD);
-    }
-    if (!this.severed("offElbow") && !this.severed("offShoulder")) {
-      this._q.copy(this._q2).multiply(this._qFromEuler(-0.95, 0, 0.1));
-      this.alignTo(this.offFore, this._q, OFF_ARM_KP, OFF_ARM_KD);
-    }
+    const p = this.posture;
+    this._q.copy(this._q2).multiply(
+      this._qe.setFromEuler(this._euler.set(p.gazePitch, p.gazeYaw, p.gazeRoll, "YXZ")));
+    this.alignTo(this.head, this._q, HEAD_KP, HEAD_KD);
   }
 
   private readonly _euler = new THREE.Euler();
   private readonly _qe = new THREE.Quaternion();
-  private _qFromEuler(x: number, y: number, z: number): THREE.Quaternion {
-    // The limbs' local +Y points down the limb, so the rest pose is a half
-    // turn about X with the posture applied on top.
-    return this._qe.setFromEuler(this._euler.set(Math.PI + x, y, z));
-  }
 
   /** Clamped angular PD pulling a body toward a world orientation. */
   private alignTo(body: RAPIER.RigidBody, target: THREE.Quaternion,
                   kp: number, kd: number): void {
     body.resetTorques(false);
+    const i = body.principalInertia();
+    const least = Math.min(i.x, i.y, i.z);
+    const dt = this.phys.world.timestep;
+    kp = Math.min(kp, (STIFFNESS_LIMIT * least) / (dt * dt));
+    kd = Math.min(kd, (DAMPING_LIMIT * least) / dt);
     const r = body.rotation();
     const err = new THREE.Quaternion(r.x, r.y, r.z, r.w).invert().premultiply(target);
     if (err.w < 0) err.set(-err.x, -err.y, -err.z, -err.w);
@@ -1372,6 +1575,17 @@ export class Fighter {
 
     this.plantFeet(teleport, dt);
 
+    // A crouch bends both legs so the feet stay on the floor under the sunk
+    // hips: the two-bone solve for a foot straight below the hip, the hip
+    // flexing forward and the knee folding back.
+    const { segment: SEGMENT } = this.build;
+    const l1 = SEGMENT.thigh.length;
+    const l2 = SEGMENT.shin.length;
+    const reach = Math.max(0.35 * (l1 + l2), l1 + l2 - this.posture.pose.sink);
+    const crouchHip = Math.acos(Math.min(1, (l1 * l1 + reach * reach - l2 * l2) / (2 * l1 * reach)));
+    const crouchKnee = Math.PI
+      - Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + l2 * l2 - reach * reach) / (2 * l1 * l2))));
+
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
       const swing = Math.sin(phase) * STRIDE_SWING * this.striding;
@@ -1390,8 +1604,9 @@ export class Fighter {
 
       leg.prevHip = leg.hip;
       leg.prevKnee = leg.knee;
-      leg.hip = swing + (tuckHip - swing) * this.tuck + STEP_HIP * lift;
-      leg.knee = bend + (tuckKnee - bend) * this.tuck + STEP_KNEE * lift;
+      const bent = 1 - this.tuck;
+      leg.hip = swing + (tuckHip - swing) * this.tuck + STEP_HIP * lift + crouchHip * bent;
+      leg.knee = bend + (tuckKnee - bend) * this.tuck + STEP_KNEE * lift + crouchKnee * bent;
       // Knocked down, the legs go slack -- and straighten again on the way up.
       if (this.sprawl > 1e-3) {
         const [hip, knee] = leg.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
@@ -1528,6 +1743,7 @@ export class Fighter {
   /** Set the hips, the chest and the sword shoulder's ball to a posture. */
   private placeTrunk(pose: Pose): void {
     this.pelvis.rotation.y = pose.pelvis;
+    this.pelvis.position.y = -pose.sink;
     this.chest.rotation.set(-pose.lean, pose.spine, pose.bend, "YXZ");
     this.posture.clavicle(pose, this.shoulderBall.position).add(this.swordShoulderRest);
   }
@@ -1546,6 +1762,52 @@ export class Fighter {
    */
   shoulderWorldFor(pose: Pose, out: THREE.Vector3): THREE.Vector3 {
     return this.hullToWorld(this.posture.swordShoulder(pose, out), out);
+  }
+
+  /**
+   * The off shoulder in world space: the joint the off arm hangs from, where
+   * the posture has carried it this step.
+   */
+  offShoulderWorld(out: THREE.Vector3): THREE.Vector3 {
+    const { standing: STANDING } = this.build;
+    return this.hullToWorld(
+      this.onChest(-STANDING.shoulderX, this.build.local(STANDING.shoulder), out), out);
+  }
+
+  /**
+   * A point and an orientation given in the chest's own frame -- relative to
+   * the waist pivot, as the posture places everything on the chest -- in
+   * world space. Through the hull's whole rotation, not only its facing, so it
+   * stays on the chest of a body lying on the floor.
+   */
+  chestFrameWorld(
+    local: THREE.Vector3, localQ: THREE.Quaternion,
+    outP: THREE.Vector3, outQ: THREE.Quaternion,
+  ): void {
+    const pose = this.posture.pose;
+    const r = this.body.rotation();
+    const hull = _qHull.set(r.x, r.y, r.z, r.w);
+    const p = this.body.translation();
+    this.posture.chestPoint(pose, outP.copy(local), outP)
+      .applyQuaternion(hull).add(_pHull.set(p.x, p.y, p.z));
+    outQ.copy(hull).multiply(this.posture.chestQuat(pose, _qChest)).multiply(localQ);
+  }
+
+  /** The off arm's two bodies, and whether each is still jointed on. */
+  get offLimb(): {
+    upper: RAPIER.RigidBody; fore: RAPIER.RigidBody; shoulderOn: boolean; elbowOn: boolean;
+  } {
+    return {
+      upper: this.offUpper,
+      fore: this.offFore,
+      shoulderOn: !this.severed("offShoulder"),
+      elbowOn: !this.severed("offElbow"),
+    };
+  }
+
+  /** The off forearm's mesh, which anything strapped to the forearm hangs from. */
+  get offForeMesh(): THREE.Object3D {
+    return this.parts.find((p) => p.name === "offElbow")!.mesh;
   }
 
   /**
@@ -1573,8 +1835,8 @@ export class Fighter {
     chest.forward.set(0, 0, -1).applyQuaternion(chestQ).applyAxisAngle(UP, this.yaw);
 
     const hipHalf = Math.max(0.01, SEGMENT.pelvis.length / 2 - SEGMENT.pelvis.radius);
-    this.hullToWorld(_end.set(0, this.pelvisY - hipHalf, 0), hips.a);
-    this.hullToWorld(_end.set(0, this.pelvisY + hipHalf, 0), hips.b);
+    this.hullToWorld(_end.set(0, this.pelvisY - pose.sink - hipHalf, 0), hips.a);
+    this.hullToWorld(_end.set(0, this.pelvisY - pose.sink + hipHalf, 0), hips.b);
     hips.radius = SEGMENT.pelvis.radius * TRUNK_FIT;
     hips.flat = HIPS_FLAT;
     hips.forward.set(0, 0, -1).applyAxisAngle(UP, this.yaw + pose.pelvis);
@@ -1660,6 +1922,7 @@ export class Fighter {
       leg.step = -1;
     }
     // On its feet, whatever it was doing on the floor.
+    this.vault = null;
     this.stance = "up";
     this.stanceTime = 0;
     this.lying = 0;
@@ -1753,6 +2016,10 @@ const _spin = new THREE.Vector3();
 const _pRise = new THREE.Vector3();
 const _qRise = new THREE.Quaternion();
 const _qTurn = new THREE.Quaternion();
+const _qHull = new THREE.Quaternion();
+const _pVault = new THREE.Vector3();
+const _qChest = new THREE.Quaternion();
+const _pHull = new THREE.Vector3();
 
 /** Drive a kinematic body from wherever its mesh has been posed to. */
 function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = false): void {

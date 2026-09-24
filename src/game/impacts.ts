@@ -161,6 +161,12 @@ export class Impacts {
    */
   private sweepBlades(now: number): void {
     for (const entry of new Set(this.blades.values())) {
+      // A weapon on its owner's back cuts nothing, and when it comes back out
+      // it must not sweep from the back to the hand through whatever is between.
+      if (entry.arm.sheathed) {
+        entry.cutter.reset();
+        continue;
+      }
       entry.cutter.sweep(this._swept);
       for (const hit of this._swept) {
         const last = this.lastAt.get(hit.collider.handle);
