@@ -617,10 +617,21 @@ noticed you, sight alone keeps it coming. So you can stand in the training room
 and look through the door at an orc that has not seen you yet, and walk through
 that door and find that it has.
 
-Losing sight does not stop a fight dead either: it keeps coming for two and a
-half seconds after the line breaks, which is about one pillar's worth. An
-opponent that downed tools every time you stepped behind something would be
-trivial to beat and absurd to watch.
+Losing sight does not stop a fight dead either, but it knows no more of you
+than it saw. For four tenths of a second after the line breaks — about one
+pillar's worth — it carries on as it was, squared up to where you were. Past
+that it goes to look: to where it last saw you, on a little the way you were
+going, and a look round from there. If it still has not found you, it walks back
+to its post the way it came — it drops a mark every metre on the way out and
+keeps only the corners, so the way back goes through the door and not into the
+wall beside it — and turns to face the way it stood. The fight panel says
+`waiting` again once it has given you up.
+
+It used to keep coming for two and a half seconds after the line broke, and for
+all of them it knew where you actually were. Step through the door out of the
+orc's hall and along the other side of the wall, and it walked most of the way
+across its hall toward you, into the stone, and gave up there — wherever there
+was — and waited against the wall.
 
 ## The bestiary
 
@@ -837,8 +848,8 @@ swings are footwork now:
 - **It looks where it puts its feet.** Every step asks the stone first, knee
   high and a body wide, so it turns back at a wall instead of walking into one,
   and on its way to you it steps round a pillar rather than into it.
-- **It swings at what it can see.** Memory brings it round a pillar after you;
-  only sight lets it commit.
+- **It swings at what it can see.** Out of sight it goes to where it last saw
+  you and looks round from there; only sight lets it commit.
 
 None of this is a way of moving you lack. It steps on the same keys you do —
 its sidestep is Q and E too — at the same speed, and it sees nothing of you but
@@ -1446,6 +1457,10 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **An opponent that loses you goes to look, then goes home.** It walks to
+  where it last saw you, a little further the way you were going, and looks
+  round. It does not know where you went, only where you were. If it finds
+  nothing, it walks back to its post the way it came.
 - **An opponent sometimes steps out of your swing.** It saw it start, and moved
   a reaction time later — so a quick cut usually lands and a slow, big one often
   does not. Never in the middle of a swing of its own. The goblin does it

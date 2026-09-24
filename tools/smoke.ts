@@ -1781,6 +1781,56 @@ async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
     `peak tip ${peakTip.toFixed(1)} m/s`);
 }
 
+async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
+  console.log("\nan opponent that loses you looks where it saw you, then goes home");
+  const rig = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const where = () => rig.foe.position(new THREE.Vector3());
+  const flat = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
+
+  // It sees you in its hall, and then you are on the far side of the wall
+  // into the training room. It used to know where for two and a half seconds
+  // after, and walked most of the way across its hall toward you, into the
+  // wall.
+  const seenAt = new THREE.Vector3(ORC_POST.x + 3, SPAWN.y, ORC_POST.z + 3.5);
+  rig.place(seenAt);
+  rig.fight(60);
+  rig.place(new THREE.Vector3(-4, SPAWN.y, 3));
+  let north = -Infinity;
+  let nearest = Infinity;
+  for (let i = 0; i < 60 * 15; i++) {
+    rig.fight(1);
+    north = Math.max(north, where().z);
+    nearest = Math.min(nearest, flat(where(), seenAt));
+  }
+  check("lost behind a wall, it goes to where it saw you and not to you",
+    nearest < 0.8 && north < seenAt.z + 1,
+    `came within ${nearest.toFixed(2)} m of where it saw you, ` +
+    `and no further toward the wall than z ${north.toFixed(2)}`);
+  check("finds nothing there, and goes back to its post",
+    rig.ai.intent === "waiting" && flat(where(), ORC_POST) < 0.3,
+    `intent "${rig.ai.intent}", ${flat(where(), ORC_POST).toFixed(2)} m from its post`);
+
+  // Now lead it out of its hall and into the training room, and vanish. The
+  // straight line home from there runs into the wall beside the door.
+  const led = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const at = () => led.foe.position(new THREE.Vector3());
+  led.place(new THREE.Vector3(0, SPAWN.y, -3));
+  led.fight(150);
+  led.fight(132, { ...NO_KEYS, back: true });
+  led.fight(90);
+  const followed = at().z;
+  led.place(new THREE.Vector3(GOBLIN_POST.x, SPAWN.y, GOBLIN_POST.z + 2));
+  led.fight(60 * 20);
+  const yaw = led.foe.fighter.yaw;
+  const facing = Math.abs(Math.atan2(Math.sin(yaw), Math.cos(yaw)));
+  check("backed out through the door, it follows you through", followed > 1,
+    `it got to z ${followed.toFixed(2)}, the training-room side of the door`);
+  check("and lost there, it goes home the way it came, and faces the way it stood",
+    led.ai.intent === "waiting" && flat(at(), ORC_POST) < 0.3 && facing < 0.1,
+    `intent "${led.ai.intent}", ${flat(at(), ORC_POST).toFixed(2)} m from its post, ` +
+    `${(facing * 180 / Math.PI).toFixed(0)}deg off how it stood`);
+}
+
 async function severingBleeds(): Promise<void> {
   console.log("\na severed joint bleeds from both faces");
   const rig = await buildRig();
@@ -3812,6 +3862,7 @@ async function run(): Promise<void> {
   await everyMovingPartIsInterpolated();
   await theTestingAreaIsThreeRooms();
   await anOpponentWaitsUntilItSeesYou();
+  await anOpponentLooksWhereItLastSawYou();
   await severingBleeds();
 
   await theArmKeepsOutOfItsOwnChest();

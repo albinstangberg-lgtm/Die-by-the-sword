@@ -49,6 +49,11 @@ import type { Aim, Cut, Leap, Span, Species } from "./species";
  * Its jump is yours as well. Something that leaps (see `Leap`) and has just
  * lost you out of its reach runs at you with its weapon going up and comes
  * down on you out of the air, on your key, from a jump its legs could make.
+ *
+ * And it knows no more of you than it has seen. Lose it -- behind a pillar,
+ * through a door -- and all it has is where you were and which way you were
+ * going: it goes there, on a little the way you went, and looks round. Still
+ * nothing, and it goes back to its post the way it came.
  */
 
 /** How fast the AI is allowed to move its hand, in pixels of mouse per second. */
@@ -75,14 +80,64 @@ const CHEST = 0.72;
 const SNAG_TIME = 0.5;
 
 /**
- * How long it keeps coming after losing sight of you, seconds.
+ * How long it goes on fighting where it last saw you, seconds, before it goes
+ * to look for you.
  *
  * Not zero, and the reason is the pillars: stepping behind one mid-fight
- * breaks the line for a few frames, and an opponent that downed tools every
- * time that happened would be trivial to beat and absurd to watch. Long
- * enough to cover a pillar, short enough that leaving the room ends it.
+ * breaks the line for a few frames, and an opponent that broke off every time
+ * that happened would be absurd to watch. For that long it carries on as it
+ * was, squared up to where you were.
+ *
+ * Where you WERE. It used to keep coming for two and a half seconds after the
+ * line broke, and for all of them it knew where you actually were -- through
+ * the stone -- and turned to follow you along the far side of the wall.
  */
-const MEMORY = 2.5;
+const GLIMPSE = 0.4;
+
+/**
+ * Having got to where it last saw you, how far on it goes the way you were
+ * heading, metres at human size -- through the door you went through, past
+ * the pillar -- and the longest it gives that, seconds, if something is in the
+ * way. Then how long it stands and looks round for you, seconds.
+ */
+const FOLLOW = 1.5;
+const FOLLOW_TIME = 1.2;
+const SEARCH: Span = [1.6, 2.6];
+
+/**
+ * How far to either side it looks round, radians, and how long one look there
+ * and back takes, seconds -- slow enough that its turn keeps up.
+ */
+const SWEEP = 0.9;
+const SWEEP_TIME = 2.4;
+
+/** How fast you have to have been going for it to follow the way you went, m/s. */
+const MOVING = 0.5;
+
+/**
+ * The longest it looks for you, seconds since it last saw you, before it gives
+ * you up whatever it is doing: the bound for somewhere it cannot get to.
+ */
+const HUNT = 12;
+
+/**
+ * How near somewhere it walks to has to be before it is there, metres at human
+ * size -- and nearer for its post, where it means to stand.
+ */
+const ARRIVE = 0.4;
+const HOME = 0.15;
+
+/**
+ * How far off its line to somewhere it may be and still walk, radians -- on a
+ * slant past the first -- rather than turn on the spot first. At full pace it
+ * turns a circle over two metres across, so somewhere near it and well off to
+ * one side is somewhere it would go round rather than get to.
+ */
+const SLANT = 0.4;
+const TURN_FIRST = 1.2;
+
+/** How far it walks between the marks it leaves for the way home, metres at human size. */
+const CRUMB = 1;
 
 /**
  * How near you have to be before it takes an interest, metres.
@@ -327,7 +382,12 @@ function copy(out: THREE.Vector3, p: { x: number; y: number; z: number }): THREE
 type State =
   | "close" | "circle" | "backoff" | "evade"
   | "windup" | "leap" | "strike" | "recover" | "free" | "beaten"
-  | "waiting" | "reeling" | "down";
+  | "waiting" | "reeling" | "down" | "hunt" | "return";
+
+/** How far into looking for you it has got. See `search`. */
+type Leg = "go" | "follow" | "look";
+
+const ZERO = { x: 0, y: 0, z: 0 } as const;
 
 /**
  * The states in which it is loose on its feet -- committed to nothing -- and
@@ -426,8 +486,31 @@ export class Ai implements ArmInput {
   private snag = 0;
   /** Seconds its weapon has been all but still in this part of a swing. See `STALLED`. */
   private stall = 0;
-  /** Seconds of "I know where you are" left. Zero means it holds its post. */
-  private seen = 0;
+  /** Whether it is after you: it has noticed you and not yet given you up. */
+  private engaged = false;
+  /** Seconds since it last saw you. */
+  private lost = Infinity;
+  /**
+   * All it has of you once it cannot see you: where you were, your middle and
+   * your eyes, and which way you were going, the last time it could.
+   */
+  private readonly _lastSeen = new THREE.Vector3();
+  private readonly _lastChest = new THREE.Vector3();
+  private readonly _lastEyes = new THREE.Vector3();
+  private readonly _heading = new THREE.Vector3();
+  /** Where it is going on to, the way you went. */
+  private readonly _goal = new THREE.Vector3();
+  private leg: Leg = "go";
+  /** Which way it looks round from, and which way first. */
+  private lookYaw = 0;
+  private sweep = 1;
+  /**
+   * The way home: its post first, where it stood before it noticed you, then
+   * the corners of the way it has come since. See `mark`.
+   */
+  private readonly trail: THREE.Vector3[] = [];
+  /** The way it faced at its post. */
+  private postYaw = 0;
 
   /** The step it is taking, and any it has already decided to take after it. */
   private step: Step = { fwd: 0, side: 0, time: 0, settle: 0 };
@@ -483,7 +566,7 @@ export class Ai implements ArmInput {
    * on its arm, where anybody's is.
    */
   get outlook(): "waiting" | "fighting" | "beaten" {
-    if (this.state === "waiting") return "waiting";
+    if (this.state === "waiting" || this.state === "return") return "waiting";
     return this.state === "beaten" ? "beaten" : "fighting";
   }
 
@@ -516,13 +599,18 @@ export class Ai implements ArmInput {
       this.flinch = -1;
       return;
     }
-    if (this.state === "down") this.engage();
+    if (this.state === "down") this.resume();
 
     self.position(this._self);
-    foe.position(this._foe);
-    const toFoe = this._foe.clone().sub(this._self);
-    const range = Math.hypot(toFoe.x, toFoe.z);
+    // Where it stands before anything has happened is its post.
+    if (this.trail.length === 0) {
+      this.trail.push(this._self.clone());
+      this.postYaw = self.fighter.yaw;
+    }
     this.pace = t.moveSpeed * this.species.build.scale;
+    this.timer -= dt;
+    this.clock += dt;
+    this.keys.jump = false;
 
     // An animal that cannot see you does not come for you.
     //
@@ -531,40 +619,43 @@ export class Ai implements ArmInput {
     // knew, through the stone, exactly where you were standing. One ray, the
     // same one either of them could cast, and it is also what makes a doorway
     // worth something: step into the light and the thing in the next room
-    // starts moving.
-    const sighted = self.sees(foe);
-    if (sighted && (this.seen > 0 || range < NOTICE)) this.seen = MEMORY;
-    else this.seen = Math.max(0, this.seen - dt);
-    this.sighted = sighted;
+    // starts moving. From here on `_foe` is where it believes you are.
+    this.look(self, foe, dt);
+    const toFoe = this._foe.clone().sub(this._self);
+    const range = Math.hypot(toFoe.x, toFoe.z);
 
     // Once it has seen you it watches you -- not its own blade, which is what
     // the player's fighter watches. A head turned toward you is the first
-    // thing that says it has noticed, from further off than any weapon tell.
-    self.fighter.focus = this.seen > 0 ? foe.fighter.eyeWorld(this._gaze) : null;
+    // thing that says it has noticed, from further off than any weapon tell;
+    // out of sight, it watches where you were.
+    self.fighter.focus = this.engaged ? this._gaze.copy(this._lastEyes) : null;
 
-    if (this.seen <= 0) {
-      // Holding its post. It does not track you, it does not turn, and it
-      // keeps its weapon where a waiting animal keeps it.
-      if (this.state !== "waiting") this.begin("waiting", 0);
-      this.idle();
+    if (!this.engaged) {
+      // Holding its post, or on its way back to it. It does not track you,
+      // and it keeps its weapon where a waiting animal keeps it.
       this.want = { yaw: 0.3, pitch: -0.12, reach: 0.55, roll: 0 };
-      this.steerArm(self, t, dt);
-      this._was.copy(this._self);
       this.sinceNear = Infinity;
+      this.checkSnag(t, dt);
+      if (this.state === "free") this.getFree();
+      else this.goHome(self);
+      this.steerArm(self, t, dt);
       return;
     }
-    if (this.state === "waiting") this.engage();
+    if (this.state === "waiting" || this.state === "return") this.engage();
+    this.mark(self);
 
     this.face(self, toFoe);
-    this.timer -= dt;
-    this.clock += dt;
     this.stall = self.arm.state.tipSpeed < STALLED ? this.stall + dt : 0;
 
-    // Disarmed: no weapon, no plan. It backs away rather than pretending.
+    // Disarmed: no weapon, no plan. It backs away rather than pretending, and
+    // once it has lost you, it goes home.
     if (self.arm.disarmed) {
-      this.state = "beaten";
-      this.hold(range < 3.0 && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
-      this.keys.jump = false;
+      if (this.lost >= GLIMPSE) {
+        this.giveUp();
+      } else {
+        this.state = "beaten";
+        this.hold(range < 3.0 && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
+      }
       this.steerArm(self, t, dt);
       return;
     }
@@ -594,18 +685,21 @@ export class Ai implements ArmInput {
     this.leapRest = Math.max(0, this.leapRest - dt);
     if (range > 1e-6) {
       const mine = self.fighter.body.linvel();
-      const yours = foe.fighter.body.linvel();
+      // Out of sight you are standing where you were.
+      const yours = this.sighted ? foe.fighter.body.linvel() : ZERO;
       const ux = toFoe.x / range;
       const uz = toFoe.z / range;
       this.coming = -(yours.x * ux + yours.z * uz);
       this.closing = mine.x * ux + mine.z * uz + this.coming;
     }
-    // Its feet leave the floor for one step at a time, and only in a leap.
-    this.keys.jump = false;
 
     this.checkSnag(t, dt);
     this.crowd = range < close ? this.crowd + dt : 0;
     this.watch(self, foe, dt);
+
+    // Out of sight for longer than a pillar hides you, and it goes to look.
+    // Not out of a swing: one it has started it finishes, at where you were.
+    if (this.lost >= GLIMPSE && LOOSE.has(this.state)) this.hunt();
 
     switch (this.state) {
       case "close": {
@@ -624,29 +718,14 @@ export class Ai implements ArmInput {
           this.commit(range);
           break;
         }
-        let fwd = range > strike ? 1 : range < close ? -1 : 0;
+        const fwd = range > strike ? 1 : range < close ? -1 : 0;
         // From further off than it can reach, it comes in on a slant when there
         // is floor for one. The slant is checked every step, not once, so it
         // straightens up rather than walk into the side of a doorway.
-        let side = fwd > 0 && this.weave !== 0 && range < WEAVE_IN
+        const side = fwd > 0 && this.weave !== 0 && range < WEAVE_IN
           && range > far * WEAVE_OUT && this.roomFor(self, 1, this.weave, this.pace * 0.5)
           ? this.weave : 0;
-        // Something in the way -- a pillar between you, the block -- and it goes
-        // round rather than into it: on a slant, or sideways, until the way is
-        // clear. No pathfinding, only a body that looks where it puts its feet;
-        // before it did, a pillar on the line to you could hold it long enough
-        // to lose sight of you, and it went back to its post.
-        if (fwd !== 0 && !this.roomFor(self, fwd, side, this.pace * LOOK)) {
-          const move = this.findRoom(
-            self, fwd, side !== 0 ? side : this.side, this.pace * LOOK);
-          if (move !== null) {
-            fwd = move.fwd;
-            side = move.side;
-            // And it keeps going round the same side until it is past.
-            if (side !== 0) this.side = side;
-          }
-        }
-        this.hold(fwd, side);
+        this.detour(self, fwd, side);
         break;
       }
 
@@ -786,19 +865,25 @@ export class Ai implements ArmInput {
         break;
 
       case "free":
-        // Caught on something. Pull the hand in and low and give ground --
-        // which is exactly what a player does with a blade planted in a wall,
-        // and works for the same reason: a folded arm has leverage a straight
-        // one does not.
-        this.want = {
-          yaw: this.level.yaw + 0.2, pitch: this.level.pitch - 0.9, reach: 0, roll: 0,
-        };
-        this.hold(-1, 0);
-        if (this.timer <= 0) this.engage();
+        this.getFree();
+        break;
+
+      case "hunt":
+        // Gone to look for you. See `search`.
+        this.guard();
+        if (this.sighted) {
+          this.engage();
+          this.hold(0, 0);
+        } else if (this.lost >= HUNT) {
+          this.giveUp();
+        } else {
+          this.search(self);
+        }
         break;
 
       case "beaten":
       case "waiting":
+      case "return":
       case "down":
         this.idle();
         break;
@@ -1097,6 +1182,201 @@ export class Ai implements ArmInput {
   }
 
   /**
+   * What it knows of where you are: what it can see of you or, failing that,
+   * the last it saw. Leaves `_foe` at whichever that is.
+   */
+  private look(self: Combatant, foe: Combatant, dt: number): void {
+    foe.position(this._foe);
+    const near = Math.hypot(this._foe.x - this._self.x, this._foe.z - this._self.z) < NOTICE;
+    this.sighted = (this.engaged || near) && self.sees(foe);
+    if (this.sighted) {
+      this.engaged = true;
+      this.lost = 0;
+      this._lastSeen.copy(this._foe);
+      const v = foe.fighter.body.linvel();
+      this._heading.set(v.x, 0, v.z);
+      this.chest(foe, this._lastChest);
+      foe.fighter.eyeWorld(this._lastEyes);
+    } else {
+      this.lost += dt;
+      this._foe.copy(this._lastSeen);
+    }
+  }
+
+  /** Back to it after something that took it out of its footwork. */
+  private resume(): void {
+    if (this.engaged) this.engage();
+    else this.begin("return", 0);
+  }
+
+  /**
+   * Caught on something. Pull the hand in and low and give ground -- which is
+   * exactly what a player does with a blade planted in a wall, and works for
+   * the same reason: a folded arm has leverage a straight one does not.
+   */
+  private getFree(): void {
+    this.want = {
+      yaw: this.level.yaw + 0.2, pitch: this.level.pitch - 0.9, reach: 0, roll: 0,
+    };
+    this.hold(-1, 0);
+    if (this.timer <= 0) this.resume();
+  }
+
+  /**
+   * Go and look for you: given twice as long as walking there would take, and
+   * a second over, to go round what is in the way -- and no longer, or it
+   * would go on trying for somewhere it cannot get to, like the top of the
+   * ledge.
+   */
+  private hunt(): void {
+    this.stand();
+    const d = Math.hypot(this._lastSeen.x - this._self.x, this._lastSeen.z - this._self.z);
+    this.begin("hunt", 1 + (2 * d) / this.pace);
+    this.leg = "go";
+  }
+
+  /** On to the next part of looking for you, with this long for it. */
+  private onLeg(leg: Leg, seconds: number): void {
+    this.leg = leg;
+    this.clock = 0;
+    this.timer = seconds;
+  }
+
+  /**
+   * Looking for you: to where it last saw you, then on a little the way you
+   * were going, then a look round from there. It sees nothing of you it could
+   * not -- the same ray it always casts decides when it has found you -- and
+   * looking round does not help it see: turning is what it looks like.
+   */
+  private search(self: Combatant): void {
+    const scale = this.species.build.scale;
+    switch (this.leg) {
+      case "go": {
+        if (this.timer > 0 && this.walkTo(self, this._lastSeen)) return;
+        // There, or as near as it is getting, and you are not.
+        this.hold(0, 0);
+        const speed = Math.hypot(this._heading.x, this._heading.z);
+        this.sweep = Math.random() < 0.5 ? 1 : -1;
+        if (speed < MOVING) {
+          this.lookYaw = self.fighter.yaw;
+          this.onLeg("look", draw(SEARCH));
+          return;
+        }
+        // Which way were you going? On that way, as far as there is floor.
+        const ux = this._heading.x / speed;
+        const uz = this._heading.z / speed;
+        this.lookYaw = Math.atan2(-ux, -uz);
+        const body = self.fighter.build.hull.radius;
+        const on = self.fighter.clearAlong(ux, uz, FOLLOW * scale + body, body) - body;
+        this._goal.set(this._self.x + ux * on, this._self.y, this._self.z + uz * on);
+        if (on > ARRIVE * scale) this.onLeg("follow", FOLLOW_TIME);
+        else this.onLeg("look", draw(SEARCH));
+        return;
+      }
+      case "follow":
+        this.gazeAt(self, this.lookYaw);
+        if (this.timer > 0 && this.walkTo(self, this._goal)) return;
+        this.onLeg("look", draw(SEARCH));
+        return;
+      case "look": {
+        // Its head goes round a little ahead of its chest.
+        const round = (lead: number) => this.lookYaw
+          + this.sweep * SWEEP * Math.sin((2 * Math.PI * (this.clock + lead)) / SWEEP_TIME);
+        this.hold(0, 0);
+        this.turnTo(self, round(0));
+        this.gazeAt(self, round(0.25));
+        if (this.timer <= 0) this.giveUp();
+        return;
+      }
+    }
+  }
+
+  /** Look along a heading, from its own eyes. */
+  private gazeAt(self: Combatant, yaw: number): void {
+    self.fighter.eyeWorld(this._gaze);
+    this._gaze.x -= Math.sin(yaw) * 4;
+    this._gaze.z -= Math.cos(yaw) * 4;
+  }
+
+  /** It has lost you, and looked, and it has had enough. */
+  private giveUp(): void {
+    this.engaged = false;
+    this.stand();
+    this.idle();
+    this.begin("return", 0);
+  }
+
+  /**
+   * Back to its post the way it came, and turn to face the way it stood
+   * there. Once it faces that way it is waiting again, as if nothing had
+   * happened.
+   *
+   * The way it came, not the straight line: that goes through a wall as often
+   * as not, and a body that only looks where it puts its feet can find its
+   * way round a pillar but not round a wall to the door in it.
+   */
+  private goHome(self: Combatant): void {
+    if (this.state === "waiting") {
+      this.idle();
+      return;
+    }
+    if (this.state !== "return") this.begin("return", 0);
+    const trail = this.trail;
+    // Straight to any mark nearer home it can walk to from here.
+    while (trail.length > 1 && this.reaches(self, trail[trail.length - 2])) trail.pop();
+    if (this.walkTo(self, trail[trail.length - 1], trail.length > 1 ? ARRIVE : HOME)) return;
+    if (trail.length > 1) {
+      trail.pop();
+      return;
+    }
+    this.turnTo(self, this.postYaw);
+    if (!this.keys.turnLeft && !this.keys.turnRight) this.begin("waiting", 0);
+  }
+
+  /**
+   * Leave a mark for the way home: one every metre it walks while it is after
+   * you, keeping only the corners. A mark it could walk past straight from
+   * here, to the one before it, is not a corner.
+   */
+  private mark(self: Combatant): void {
+    if (!self.fighter.grounded) return;
+    const trail = this.trail;
+    const last = trail[trail.length - 1];
+    const walked = Math.hypot(this._self.x - last.x, this._self.z - last.z);
+    if (walked < CRUMB * this.species.build.scale) return;
+    while (trail.length > 1 && this.reaches(self, trail[trail.length - 2])) trail.pop();
+    trail.push(this._self.clone());
+  }
+
+  /** Is there a body's width of clear floor from here straight to there? */
+  private reaches(self: Combatant, p: THREE.Vector3): boolean {
+    const dx = p.x - this._self.x;
+    const dz = p.z - this._self.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1e-6) return true;
+    return self.fighter.clearAlong(dx / d, dz / d, d, self.fighter.build.hull.radius) >= d;
+  }
+
+  /**
+   * A step toward somewhere, turning to face it: on a slant while it comes
+   * round, and on the spot first if it is well off to one side. See `SLANT`.
+   * True while it is on its way, false once it is there.
+   */
+  private walkTo(self: Combatant, p: THREE.Vector3, within = ARRIVE): boolean {
+    const dx = p.x - this._self.x;
+    const dz = p.z - this._self.z;
+    if (Math.hypot(dx, dz) < within * this.species.build.scale) {
+      this.hold(0, 0);
+      return false;
+    }
+    // Off to its left is a positive turn, and a step to its left is -1.
+    const off = this.turnTo(self, Math.atan2(-dx, -dz));
+    if (Math.abs(off) > TURN_FIRST) this.hold(0, 0);
+    else this.detour(self, 1, Math.abs(off) > SLANT ? -Math.sign(off) : 0);
+    return true;
+  }
+
+  /**
    * Its next step round you.
    *
    * Mostly sideways, and mostly the same way round as the last, so it reads as
@@ -1261,6 +1541,26 @@ export class Ai implements ArmInput {
     return null;
   }
 
+  /**
+   * Take a step, or -- something in the way, a pillar between you, the block
+   * -- go round rather than into it: on a slant, or sideways, until the way is
+   * clear. No pathfinding, only a body that looks where it puts its feet;
+   * before it did, a pillar on the line to you could hold it long enough to
+   * lose sight of you, and it gave you up.
+   */
+  private detour(self: Combatant, fwd: number, side: number): void {
+    if (fwd !== 0 && !this.roomFor(self, fwd, side, this.pace * LOOK)) {
+      const move = this.findRoom(self, fwd, side !== 0 ? side : this.side, this.pace * LOOK);
+      if (move !== null) {
+        fwd = move.fwd;
+        side = move.side;
+        // And it keeps going round the same side until it is past.
+        if (side !== 0) this.side = side;
+      }
+    }
+    this.hold(fwd, side);
+  }
+
   /** Carry on with the step it is taking. True once it, and its pause, are done. */
   private walk(dt: number): boolean {
     const s = this.step;
@@ -1375,9 +1675,11 @@ export class Ai implements ArmInput {
    *
    * Only what it can see of you: your head, the middle of your chest, the
    * forearm your sword is in, and the nearer of your thighs. A part that is no
-   * longer there to aim at -- an arm you have lost -- leaves your chest.
+   * longer there to aim at -- an arm you have lost -- leaves your chest. Out
+   * of sight, all it has is where your middle was.
    */
   private target(foe: Combatant, aim: Aim, out: THREE.Vector3): THREE.Vector3 {
+    if (!this.sighted) return out.copy(this._lastChest);
     const f = foe.fighter;
     switch (aim) {
       case "head": {
@@ -1405,7 +1707,12 @@ export class Ai implements ArmInput {
       case "body":
         break;
     }
-    // The middle of your chest, wherever a crouch has taken it.
+    return this.chest(foe, out);
+  }
+
+  /** The middle of your chest, wherever a crouch has taken it. */
+  private chest(foe: Combatant, out: THREE.Vector3): THREE.Vector3 {
+    const f = foe.fighter;
     return out.set(
       this._foe.x,
       this._foe.y - f.build.hullCentreY + f.build.standing.crown * CHEST - f.sink,
@@ -1445,19 +1752,24 @@ export class Ai implements ArmInput {
     this.keys.jump = false;
   }
 
-  /** Turn toward the foe using the same turn keys the player has. */
+  /** Turn toward the foe. */
   private face(self: Combatant, toFoe: THREE.Vector3): void {
     // Torso-forward is -Z, so the yaw that points at a direction d is
     // atan2(-d.x, -d.z).
-    const wanted = Math.atan2(-toFoe.x, -toFoe.z);
-    let err = wanted - self.fighter.yaw;
-    while (err > Math.PI) err -= Math.PI * 2;
-    while (err < -Math.PI) err += Math.PI * 2;
+    const err = this.turnTo(self, Math.atan2(-toFoe.x, -toFoe.z));
+    this.squared = Math.abs(err) < SQUARE;
+  }
 
+  /**
+   * Turn toward a heading using the same turn keys the player has. Returns
+   * how far it still has to turn, radians, positive to its left.
+   */
+  private turnTo(self: Combatant, yaw: number): number {
+    const err = wrapPi(yaw - self.fighter.yaw);
     const dead = 0.06;
     this.keys.turnLeft = err > dead;
     this.keys.turnRight = err < -dead;
-    this.squared = Math.abs(err) < SQUARE;
+    return err;
   }
 
   /**
@@ -1502,7 +1814,11 @@ export class Ai implements ArmInput {
   reset(): void {
     this.state = "waiting";
     this.timer = 0;
-    this.seen = 0;
+    this.engaged = false;
+    this.lost = Infinity;
+    this.leg = "go";
+    // Its post is wherever it next stands.
+    this.trail.length = 0;
     this.dx = 0;
     this.dy = 0;
     this.wheel = 0;
