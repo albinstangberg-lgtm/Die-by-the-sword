@@ -23,12 +23,15 @@ And now there is a second arm worth having: it holds still, it can carry a
 shield you steer with the other mouse button, and the sword can go on your
 back — the hand takes it there, over the shoulder — to leave a hand free for
 a potion, which you walk over, get down to and take. You can crouch under a
-cut, climb a ledge, and vault what is waist high.
+cut, climb a ledge, and vault what is waist high. And a body is a body to the
+end: it walks at the hips and chest and breathes standing still, a fighter who
+loses a sword arm curls over the stump and holds it, and one that dies goes
+limp where it stands and comes down in a heap.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 254 checks, no browser needed
+npm run smoke    # headless physics harness — 266 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -161,6 +164,17 @@ instead.
   the hips take their share slowly underneath, and the feet stay planted while
   the hips turn over them — until they are wound up too far, and then the
   leading foot steps, then the other.
+- **The trunk walks with the legs, and breathes.** Walking, the hips turn about
+  six degrees with each stride and the chest turns back against them, the way
+  arms swing against legs; the hip over the swinging leg drops while the chest
+  stays level; the body dips three centimetres as the feet spread and rises as
+  they pass; and it leans into walking forward and out of backing up. Standing,
+  the chest and shoulders rise and fall with a slow breath. None of it is
+  simulated — it is the stride's own phase, shaped — and it is placed through
+  the same pose as the chest's collider, the neck and the sword shoulder, so
+  the arm walks with the chest you can see rather than beside it. The legs
+  take the hips' turn and tilt back out at the hip, so the feet stay where
+  they were going.
 
 Three rules keep all of it from costing the arm anything. What makes room for
 the arm — the chest's turn, the hips, the shoulder sliding round the ribs —
@@ -170,7 +184,8 @@ acceleration and the drive's strain, and those are clamped small and sprung, so
 they can nudge the shoulder but never steer your aim. Your aim stays in the
 hull's frame, so turning the chest moves the shoulder and nothing else: the
 hand still goes where you pointed. And a held aim settles into one posture, so
-the probes an opponent aims with solve against the body it will actually have. Set `torso lead`, `secondary motion`
+the probes an opponent aims with solve against the body it will actually have;
+walking and breathing are motion, and are left out of it. Set `torso lead`, `secondary motion`
 and `clearance` to 0 in the panel to get the old rigid block back and see what
 it was doing.
 
@@ -356,6 +371,35 @@ Which hits bleed and which throw sparks is not a lookup of names. Flesh is what
 the blade is allowed to cut — the other team's bodies and the practice dummy,
 the same collision groups its sweep looks for — and anything else it meets is
 stone or steel.
+
+### Losing the sword arm
+
+Cut through the shoulder or the elbow and the arm is gone for the rest of the
+fight. The body curls round the wound: it leans over it, bends toward that
+side, turns that shoulder forward and in, hunches it, and gives a little at the
+knees. The other hand goes to it and holds it — the socket, or what is left of
+the upper arm, held in against the ribs rather than left to swing — and stays
+there while an opponent backs away from you. It is steered the way a climb
+steers a hand onto a ledge, at a point on the body rather than on the stump,
+which swings: a hand sent after the stump itself flailed. A short arm grips
+the stump higher up; a goblin's shoulders are wide for its reach.
+
+A hand on a ledge, a shield on that arm, or a player steering it with the left
+button keeps it; everything else, the wound gets.
+
+### Dying
+
+A body with nobody in it goes limp — all of it. The walking capsule that held
+it up is switched off, the hips come away from the chest on a waist that bends,
+and the legs stop being posed and are simulated, on hips and knees that only go
+the way a person's do. The head, both arms and the weapon hang from the joints
+they always had, the neck given a range so a dead head cannot turn right round.
+Nothing is placed and nothing is driven: it goes on the way the killing blow
+sent it, over the way a blow high or low puts a body over, a little way off
+true whatever hit it, and the floor does the rest. The meshes are the living
+figure's, turned each frame to lie as the bodies do, so the belt, the hip and
+knee balls and the feet come down with it. A reset stands it back up whole,
+with nothing left over in the world.
 
 ## The other arm, and what you carry
 
@@ -808,7 +852,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Forty-four things the physics taught us
+## Forty-eight things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1198,6 +1242,37 @@ dead, under a metre a second for eighty milliseconds — which a blade checked
 for a step by your sword and going on through never is. It knows the way you
 know your own arm has stopped.
 
+**A dead body stood on the thing that walked it.** Killed, a fighter used to
+stay on its feet for a second and a half and then go over stiff as a plank,
+legs straight out: the invisible walking capsule that stands a living body up
+was still under it, balanced on its end, and the legs were posed rather than
+simulated, so nothing in it could bend. A corpse has no walking capsule now,
+and its hips, thighs and shins are bodies of their own on joints with ranges.
+
+**Nothing falls straight down its own middle.** Given joints and nothing else,
+every body that died standing folded straight down onto its heels into the same
+kneeling heap, face on the floor, whatever had hit it — because the killing
+blow's shove went into the stumble a living body's feet would have taken it
+out in, and a corpse takes no more steps. It goes on the way the blow sent it
+now, and starts to go over some way of its own besides: some sit down hard and
+fall onto their side, some crumple and topple, and a goblin is thrown.
+
+**A hand holding its own body is shoved off it.** The trunk pushes the arm out
+of itself, which is what keeps a swing from going through your own chest. A
+goblin holding the stump of its arm had its forearm across its belly, the trunk
+pushed it off, the drive pulled it back, and the hand swung a third of a metre
+either side of the wound, steadily. A hand sent to its own body is let rest on
+it: the push that keeps it out is a sixth of what it was. And a hand sent after
+a stump that swings about swings about with it: it is sent to where the stump
+hangs on the body, and the stump is held in.
+
+**A millimetre at the hip is a tenth of a radian at the knee.** The body dips as
+it walks, and the legs bend under the dip the way they bend under a crouch, so
+the feet stay on the floor. Near a straight leg the knee bends as the square
+root of the drop: the last millimetre of a dip fading out after the feet had
+stopped bent a man standing still a tenth of a radian at both knees. The dip
+only comes in well into a walk now, and is gone before the stride is.
+
 And five about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1262,7 +1337,8 @@ Everything in the panel is live and saves to your browser. The four that matter:
 
 The body adds four: `torso lead` (how far the chest turns ahead of a swing and
 the shoulder slides to make room; 0 is the old rigid block), `secondary motion`
-(lean, bend, shrug and head-tracking), `hips' share of a turn`, and `clearance
+(lean, bend, shrug and head-tracking, and the hips and chest walking and
+breathing), `hips' share of a turn`, and `clearance
 from body` (how far the target pose keeps off your own chest and hips; 0 turns
 off both clearance layers). The angular drive adds `grip twist`: how hard the
 forearm turns the weapon in the hand — weak, and a blow on the flat knocks the
@@ -1378,6 +1454,12 @@ Some things look like bugs and are not:
 - **Space puts you on top of a low wall instead of jumping.** Only when you
   are moving forward at something you can stand on; standing still it is a
   jump. Going over it is V's.
+- **An opponent you have disarmed backs away bent over, holding the stump.**
+  It is beaten, not dead. So are you, if it happens to you — unless you are
+  steering that hand, or it has a shield on it.
+- **No two bodies fall the same way.** A body that dies standing is given a
+  small tip of its own, in a direction nobody chose, as well as whatever the
+  killing blow did.
 - **Standing still gets you killed** — by the orc in about a minute, by the
   goblin in about two, and much faster by both, if you manage to bring them
   together. Twice as fast, while blades passed through bodies: your guard,
@@ -1404,7 +1486,10 @@ src/
                      that stay planted, legs that bend into a crouch or a stoop,
                      and a body that can be knocked over and get back up
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
-                     how far a crouch sinks it and a stoop bows it over
+                     how far a crouch sinks it and a stoop bows it over, the
+                     hips and chest walking with the legs, breathing, and
+                     curling round a lost arm
+    ragdoll.ts       a body with nobody in it: hips, legs and waist let go
     offarm.ts        the other arm: a ghost hand of its own, and a shield on it
     shield.ts        a round shield: what it weighs and how it is drawn
     drive.ts         an angular PD held inside what each axis's inertia can take
@@ -1481,7 +1566,16 @@ until its feet are back; that forty seconds of the orc's axe rock you and forty 
 goblin's spear never move you at all; that your own real swings never move an
 orc; that the dummy swings from a blow and settles before the next; that a
 blade through two parts of a body carries one swing's weight; and that a corpse
-comes to rest where it fell.
+comes to rest where it fell — its legs simulated and folded, nothing of it
+higher than a knee, and, reset, standing on posed legs again with not one body
+or joint left over in the world.
+
+And it keeps a body a body: that walking, the hips turn and tilt with the
+stride and the body dips, while the chest turns against them; that the chest
+the sword shoulder hangs from is exactly the one drawn; that standing still the
+walk is gone and the chest breathes; and that a fighter who loses its sword arm
+curls over the wound and holds it — the socket, or the stump, for a man, an orc
+and a goblin — and keeps holding it while it backs away, the stump held in.
 
 And it holds the opponents to their footwork: that between swings each one goes
 round you — metres of it, where the old one managed centimetres — and not

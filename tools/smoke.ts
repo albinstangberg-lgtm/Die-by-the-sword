@@ -13,7 +13,7 @@
  */
 
 import * as THREE from "three";
-import { createPhysics, makeSides } from "../src/core/physics";
+import { createPhysics, makeSides, type PhysicsWorld } from "../src/core/physics";
 import {
   buildArena, CRATE, DUMMY_AT, GOBLIN_POST, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, ORC_POST, ROOMS,
   SPAWN, THIN_POST,
@@ -89,6 +89,7 @@ function foeSpawn(species: Species): THREE.Vector3 {
 }
 
 interface Rig {
+  phys: PhysicsWorld;
   arm: Arm;
   fighter: Fighter;
   input: FakeInput;
@@ -189,7 +190,7 @@ async function buildRig(
   };
 
   return {
-    arm, fighter, input, impacts, dummy, player, foe, ai, tuning,
+    phys, arm, fighter, input, impacts, dummy, player, foe, ai, tuning,
     step(n = 1, keys: Keys = NO_KEYS) {
       for (let i = 0; i < n; i++) advance(keys, holding ? "hold" : "idle");
     },
@@ -1004,6 +1005,188 @@ async function deathDropsTheBody(): Promise<void> {
   const after = rig.foe.fighter.body.translation().y;
   check("the body drops rather than standing there dead",
     before - after > 0.1, `torso fell ${(before - after).toFixed(2)} m`);
+}
+
+async function theTrunkWalksWithTheLegs(): Promise<void> {
+  console.log("\nwalking, the hips and chest go with the legs; standing, it breathes");
+  const rig = await buildRig();
+  rig.step(60);
+  const f = rig.fighter;
+  const pose = f.posture.pose;
+  const drawn = new THREE.Vector3();
+  const drawnQ = new THREE.Quaternion();
+  const real = new THREE.Vector3();
+  const realQ = new THREE.Quaternion();
+  const rel = new THREE.Matrix4();
+  const scale = new THREE.Vector3();
+  let hips = 0;
+  let tilt = 0;
+  let dip = 0;
+  let against = true;
+  let apart = 0;
+  let twist = 0;
+  let lowest = Infinity;
+  let highest = -Infinity;
+  for (let i = 0; i < 90; i++) {
+    rig.step(1, { ...NO_KEYS, forward: true });
+    if (i < 30) continue;                 // into its stride first
+    hips = Math.max(hips, Math.abs(pose.hipSwing));
+    tilt = Math.max(tilt, Math.abs(pose.roll));
+    dip = Math.max(dip, pose.dip);
+    if (Math.abs(pose.hipSwing) > 0.02) against &&= pose.hipSwing * pose.chestSwing < 0;
+    // The chest as drawn against the chest the shoulder and the collider
+    // are placed from: they must never come apart. In the hull's own frame,
+    // because the figure is drawn where the hull was when it was posed.
+    f.chest.updateWorldMatrix(true, false);
+    rel.copy(f.mesh.matrixWorld).invert().multiply(f.chest.matrixWorld)
+      .decompose(drawn, drawnQ, scale);
+    f.posture.chestPoint(pose, real.set(0, 0, 0), real);
+    f.posture.chestQuat(pose, realQ);
+    apart = Math.max(apart, drawn.distanceTo(real));
+    twist = Math.max(twist, drawnQ.angleTo(realQ));
+    lowest = Math.min(lowest, f.shoulderAnchor.y);
+    highest = Math.max(highest, f.shoulderAnchor.y);
+  }
+  check("walking, the hips turn and tilt over each stride, and the body dips",
+    hips > 0.06 && tilt > 0.04 && dip > 0.015,
+    `hips turn ${hips.toFixed(2)} rad and tilt ${tilt.toFixed(2)}, dipping ${(dip * 100).toFixed(1)} cm`);
+  check("and the chest turns against the hips, as arms swing against legs", against,
+    "every stride");
+  check("and the shoulder the sword hangs from walks with the chest that is drawn",
+    apart < 1e-3 && twist < 1e-3 && highest - lowest > 0.01,
+    `${(apart * 1000).toFixed(2)} mm and ${twist.toFixed(4)} rad apart; the shoulder rose and fell `
+      + `${((highest - lowest) * 100).toFixed(1)} cm`);
+
+  // Standing: nothing of the walk left, but not a post either.
+  rig.step(60);
+  let leanLo = Infinity;
+  let leanHi = -Infinity;
+  for (let i = 0; i < 240; i++) {
+    rig.step(1);
+    leanLo = Math.min(leanLo, pose.lean);
+    leanHi = Math.max(leanHi, pose.lean);
+  }
+  check("standing still, the walk is gone and the chest breathes",
+    Math.abs(pose.hipSwing) < 1e-3 && Math.abs(pose.roll) < 1e-3 && pose.dip < 1e-5
+      && leanHi - leanLo > 0.015,
+    `chest rising and falling ${(leanHi - leanLo).toFixed(3)} rad over four seconds`);
+}
+
+async function aDeadBodyGoesLimp(): Promise<void> {
+  console.log("\na dead body goes limp, and a reset stands it back up whole");
+  const rig = await buildRig();
+  rig.hold(60);
+  const hull = rig.foe.fighter.body;
+  const legs = rig.foe.fighter.parts.filter((p) => /thigh|shin/.test(p.name))
+    .map((p) => p.collider.parent()!);
+  // Dying makes bodies and joints, and a reset has to take every one away.
+  const census = () => `${rig.phys.world.bodies.len()} bodies, ${rig.phys.world.impulseJoints.len()} joints`;
+  const alive = census();
+
+  const torso = rig.foe.fighter.collider.handle;
+  for (let i = 0; i < 60 && !rig.foe.dead; i++) {
+    rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
+  }
+  // Two seconds for it to come down, however it goes.
+  rig.hold(120);
+
+  const up = new THREE.Vector3(0, 1, 0);
+  const along = (b: typeof legs[number]) => {
+    const q = b.rotation();
+    return up.clone().applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w));
+  };
+  // Each knee's bend: the angle between the thigh's length and the shin's.
+  const bends = [0, 2].map((i) => along(legs[i]).angleTo(along(legs[i + 1])));
+  const highest = Math.max(...legs.map((b) => b.translation().y), hull.translation().y);
+  check("its legs are its own now, not posed",
+    legs.every((b) => b.isDynamic()) && rig.foe.fighter.limp,
+    `${legs.filter((b) => b.isDynamic()).length} of ${legs.length} leg bones simulated`);
+  check("and it comes down in a heap, not a plank",
+    highest < 0.45 && Math.max(...bends) > 0.2,
+    `nothing higher than ${highest.toFixed(2)} m; knees bent ${bends.map((b) => b.toFixed(2)).join(", ")} rad`);
+
+  rig.foe.reset(rig.tuning, foeSpawn(SWORDSMAN));
+  rig.impacts.resetSweeps();
+  rig.hold(60);
+  const stood = rig.foe.fighter.body.translation().y;
+  check("a reset stands it back up, legs posed again, nothing left over",
+    legs.every((b) => b.isKinematic()) && !rig.foe.fighter.limp
+      && Math.abs(stood - SWORDSMAN.build.hullCentreY) < 0.05 && census() === alive,
+    `hull at ${stood.toFixed(3)} m against ${SWORDSMAN.build.hullCentreY.toFixed(3)} standing; `
+      + `${census()}, ${alive} before it died`);
+  const from = rig.foe.position(new THREE.Vector3());
+  for (let i = 0; i < 60; i++) rig.fight(1);
+  const went = rig.foe.position(new THREE.Vector3()).distanceTo(from);
+  check("and it can walk and fight again", went > 0.3 && rig.foe.state.health > 0,
+    `went ${went.toFixed(2)} m in a second of fighting`);
+}
+
+async function aLostArmIsHeld(): Promise<void> {
+  console.log("\na sword arm cut off: the body curls round it, and the other hand holds it");
+  const up = new THREE.Vector3(0, 1, 0);
+  const reached: string[] = [];
+  const kept: string[] = [];
+  let curled = true;
+  let held = true;
+  let steady = true;
+  let hangs = true;
+  let lowest = 1;
+  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+    for (const cut of ["shoulder", "elbow"] as const) {
+      const rig = await buildRig({}, species, foeSpawn(species));
+      const f = rig.foe.fighter;
+      const s = species.build.scale;
+      // How far the other hand is from the wound: the socket, or anywhere on
+      // the stump of the upper arm down to where it is held.
+      const down = cut === "elbow" ? 0.65 * species.build.segment.upperArm.length : 0;
+      const stump = new THREE.Line3();
+      const hand = new THREE.Vector3();
+      const near = new THREE.Vector3();
+      const gap = () => {
+        const fore = f.offLimb.fore;
+        const p = fore.translation();
+        const q = fore.rotation();
+        hand.set(0, species.build.segment.foreArm.length / 2, 0)
+          .applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w)).add(new THREE.Vector3(p.x, p.y, p.z));
+        stump.set(f.woundWorld(0, new THREE.Vector3()), f.woundWorld(down, new THREE.Vector3()));
+        return down === 0 ? hand.distanceTo(stump.start)
+          : hand.distanceTo(stump.closestPointToPoint(hand, true, near));
+      };
+      rig.holdFoe();
+      rig.hold(60);
+      const before = gap();
+      const part = (cut === "shoulder" ? rig.foe.arm.upper : rig.foe.arm.fore).collider(0)!.handle;
+      for (let k = 0; k < 20 && !rig.foe.arm.disarmed; k++) {
+        rig.foe.receive(fakeImpact(part, { closingSpeed: 12, time: k * 400 }));
+      }
+      rig.hold(60);
+      const still = gap();
+      const pose = f.posture.pose;
+      curled &&= pose.lean > 0.25 && pose.sink > 0.03 * s;
+      held &&= still < 0.25 * s && still < 0.6 * before;
+      // Then two seconds of it backing away from you, which is what it does.
+      let worst = 0;
+      for (let i = 0; i < 120; i++) {
+        rig.fight(1);
+        worst = Math.max(worst, gap());
+        if (cut === "elbow") {
+          const q = rig.foe.arm.upper.rotation();
+          const d = -up.clone().applyQuaternion(new THREE.Quaternion(q.x, q.y, q.z, q.w)).y;
+          lowest = Math.min(lowest, d);
+        }
+      }
+      steady &&= worst < 0.3 * s;
+      if (cut === "elbow") hangs &&= lowest > 0.7;
+      reached.push(`${species.key} ${cut} ${before.toFixed(2)}->${still.toFixed(2)}`);
+      kept.push(`${worst.toFixed(2)}`);
+    }
+  }
+  check("it curls round the wound", curled, "leaning over it, knees gone a little");
+  check("and the other hand goes to it", held, `hand to wound, m: ${reached.join(", ")}`);
+  check("and stays on it while it backs away from you", steady,
+    `never more than ${kept.join(", ")} m off it, in the same order`);
+  check("what is left of an arm cut at the elbow is held in, not swinging",
+    hangs, `the stump never came further up than ${(Math.acos(lowest) * 180 / Math.PI).toFixed(0)} deg off hanging`);
 }
 
 // --- stage 5: jumping, the bestiary, and the telegraph -----------------------
@@ -3086,10 +3269,13 @@ async function theSwordGoesOnYourBack(): Promise<void> {
   const between = rig.arm.stowed && !rig.arm.sheathed;
   rig.player.arm.sever("elbow");
   rig.step(5);
-  const home = inHull(rig.fighter, rig.arm.blade.translation());
+  // Measured against the scabbard, not the hull: a body that has lost its
+  // sword arm curls over the wound, and takes its back with it.
+  rig.fighter.chestFrameWorld(arm.sheathPoint, arm.sheathQuat, sheath, sq);
+  const home = bladeP().distanceTo(sheath);
   check("an arm cut off halfway leaves the sword on the back, not in the air",
-    between && rig.arm.sheathed && !rig.arm.stowing && home.z > 0.08,
-    `between ${between}; sheathed ${rig.arm.sheathed}, ${home.z.toFixed(2)} m behind`);
+    between && rig.arm.sheathed && !rig.arm.stowing && home < 0.01,
+    `between ${between}; sheathed ${rig.arm.sheathed}, ${(home * 1000).toFixed(1)} mm from the scabbard`);
 
   rig.place(SPAWN);
   rig.arm.sheathe();
@@ -3457,6 +3643,9 @@ async function run(): Promise<void> {
   await cuttingTheArmDisarms();
   await bladesIgnoreTheirOwnerButNotTheFoe();
   await deathDropsTheBody();
+  await theTrunkWalksWithTheLegs();
+  await aDeadBodyGoesLimp();
+  await aLostArmIsHeld();
 
   await theControlsAreWhereTheySay();
   await jumpingLeavesTheGround();

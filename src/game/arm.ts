@@ -298,6 +298,16 @@ const IDENTITY = new THREE.Quaternion();
 const ANG_X = 3, ANG_Y = 4, ANG_Z = 5;
 
 /**
+ * An arm cut at the elbow is held in: which way what is left of it hangs, in
+ * the chest's frame (down, a little toward the middle and a little forward),
+ * and how hard it is held there. See `Arm.tuckStump`.
+ */
+const STUMP_HANG = new THREE.Vector3(-0.25, -1, -0.35);
+const STUMP_KP = 60;
+const STUMP_KD = 6;
+const STUMP_TORQUE = 12;
+
+/**
  * Below this bend of the elbow, radians, the arm's angular drives let go of
  * its roll about its own length, fading in fully by `ROLL_FADE_TO`.
  *
@@ -1222,6 +1232,7 @@ export class Arm {
         b.resetForces(false);
         b.resetTorques(false);
       }
+      if (this.severedAt === "elbow" && !this.limp) this.tuckStump();
       this.slackenGrip();
       this.updateDerived();
       this.snapshotBlade();
@@ -1396,6 +1407,35 @@ export class Arm {
 
     this.snapshotBlade();
     this.sampleTip();
+  }
+
+  /**
+   * What is left of an arm cut at the elbow, held in against the ribs.
+   *
+   * Left to hang, a stump swings from its shoulder like anything else on a
+   * ball joint, and every step back its owner took flung it out in front and
+   * up past its head. Somebody holding a wound keeps it still: a gentle hold,
+   * down the side and a little in front, inside what the bone's own inertia
+   * can take and never more than a hand's strength.
+   */
+  private tuckStump(): void {
+    const dt = this.phys.world.timestep;
+    const f = this.fighter;
+    const want = this._refA.copy(STUMP_HANG)
+      .applyQuaternion(f.posture.chestQuat(f.posture.pose, this._q2))
+      .applyAxisAngle(this._v.set(0, 1, 0), f.yaw)
+      .normalize();
+    const r = this.upper.rotation();
+    const along = this._refB.set(0, 1, 0).applyQuaternion(this._q.set(r.x, r.y, r.z, r.w));
+    const angle = Math.acos(clamp(along.dot(want), -1, 1));
+    const err = this._refC.crossVectors(along, want);
+    if (err.lengthSq() > 1e-12) err.setLength(angle); else err.set(0, 0, 0);
+    const w = this.upper.angvel();
+    const torque = stablePD(this.upper, err, this._v.set(w.x, w.y, w.z),
+      STUMP_KP * this.power, STUMP_KD * this.power, dt, this._tb);
+    const cap = STUMP_TORQUE * this.power;
+    if (torque.length() > cap) torque.setLength(cap);
+    this.upper.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
   }
 
   /**

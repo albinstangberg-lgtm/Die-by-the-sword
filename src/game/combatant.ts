@@ -60,6 +60,20 @@ const CLEAR_BACK = 0.08;
 /** The other hand, not being steered. */
 const NO_OFF = { dx: 0, dy: 0, wheel: 0, active: false } as const;
 
+/**
+ * Where the other hand holds a lost arm's wound, metres at human scale: in
+ * front of it, and a little toward the middle -- a palm over the socket or
+ * round the stump, not inside it.
+ */
+const CLUTCH_FRONT = 0.09;
+const CLUTCH_IN = 0.03;
+/** How far down the stump of an arm cut at the elbow the hand holds it. */
+const STUMP_HOLD = 0.65;
+/** The furthest from its own shoulder the other hand is sent, in arm's lengths. */
+const CLUTCH_REACH = 0.85;
+const _wound = new THREE.Vector3();
+const _offShoulder = new THREE.Vector3();
+
 export class Combatant {
   readonly fighter: Fighter;
   readonly arm: Arm;
@@ -166,6 +180,7 @@ export class Combatant {
     const off = input.consumeOff?.() ?? NO_OFF;
     this.mend(dt);
     if (this.dead) {
+      this.fighter.lie();
       this.arm.drive(tuning);          // limp: snapshots motion, applies nothing
       this.offArm.limp = true;
       this.offArm.drive(tuning, dt);
@@ -191,8 +206,10 @@ export class Combatant {
     this.offArm.steer(off, tuning);
     // The body first, from the arm's intent, so the shoulder is where this
     // step's posture has it before the arm solves its ghost from it.
+    this.fighter.hurt = this.arm.disarmed ? 1 : 0;
     this.fighter.update(keys, tuning, dt, this.arm.postureDrive());
     this.holdOn();
+    this.tendWound(off.active);
     this.arm.drive(tuning);
     this.offArm.drive(tuning, dt);
   }
@@ -228,6 +245,54 @@ export class Combatant {
 
   /** The hands were on a hold last step. */
   private holding = false;
+
+  /**
+   * A sword arm cut off: the other hand goes to the wound and holds it, while
+   * the body curls round it (see `Fighter.hurt`). Not while that hand is on a
+   * ledge, has a shield on its arm, or is being steered by a player -- and
+   * only while it has a hand, and an arm to bring it.
+   */
+  private tendWound(steered: boolean): void {
+    const cut = this.arm.severedAt;
+    const l = this.fighter.offLimb;
+    const free = cut !== null && !this.holding && !steered && !this.offArm.hasShield
+      && l.shoulderOn && l.elbowOn;
+    if (free) {
+      const f = this.fighter;
+      // The socket, or most of the way down the stump of the upper arm -- or
+      // as far down it as the other arm reaches across the body. A goblin's
+      // arms are short for its shoulders, and a hand sent further hung in the
+      // air in front of it, held out at arm's length.
+      const reach = CLUTCH_REACH * f.build.armLength;
+      f.offShoulderWorld(_offShoulder);
+      let down = cut === "elbow" ? STUMP_HOLD * f.build.segment.upperArm.length : 0;
+      let at = this.clutchAt(down, _wound);
+      for (let k = 0; k < 4 && down > 0 && at.distanceTo(_offShoulder) > reach; k++) {
+        down = k < 3 ? down * 0.6 : 0;
+        at = this.clutchAt(down, _wound);
+      }
+      this.offArm.guide(at, 1, true);
+      this.clutching = true;
+    } else if (this.clutching) {
+      this.offArm.guide(null);
+      this.clutching = false;
+    }
+  }
+
+  /** The other hand was on a wound last step. */
+  private clutching = false;
+
+  /** Where the palm goes for a wound `down` metres down the sword side: in front of it, toward the middle. */
+  private clutchAt(down: number, out: THREE.Vector3): THREE.Vector3 {
+    const f = this.fighter;
+    const s = f.build.scale;
+    f.woundWorld(down, out);
+    const a = f.yaw + f.posture.pose.chestYaw;
+    // Forward is -Z, and the middle of the body is -X of the sword side.
+    out.x += -Math.sin(a) * CLUTCH_FRONT * s - Math.cos(a) * CLUTCH_IN * s;
+    out.z += -Math.cos(a) * CLUTCH_FRONT * s + Math.sin(a) * CLUTCH_IN * s;
+    return out;
+  }
 
   /**
    * Route an impact. Returns true if it landed on this fighter.
@@ -435,6 +500,7 @@ export class Combatant {
   reset(tuning: Tuning, at = this.spawn): void {
     this.health = this.maxHealth;
     this.dead = false;
+    this.clutching = false;
     this.joints.shoulder = JOINT_INTEGRITY.shoulder * this.jointScale;
     this.joints.elbow = JOINT_INTEGRITY.elbow * this.jointScale;
     this.bodyDamage.clear();

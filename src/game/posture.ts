@@ -143,6 +143,63 @@ const STOOP_LEAN = 0.9;
 const STOOP_DROP = 0.06;
 const STOOP_REACH = 0.05;
 
+// --- hurt -------------------------------------------------------------------------
+
+/**
+ * A sword arm cut off: the body curls round the wound. Over it, radians of
+ * forward lean; toward it, radians of side bend (the sword side is the right,
+ * and a positive bend is to the left); the chest turned to bring that
+ * shoulder forward and in, radians; the knees gone a little, metres at human
+ * scale; and the shoulder that lost the arm hunched up and forward, metres.
+ * The other hand holds it: see `Combatant.tendWound`.
+ */
+const HURT_LEAN = 0.38;
+const HURT_BEND = -0.16;
+const HURT_TWIST = 0.2;
+const HURT_SINK = 0.07;
+const HURT_ELEVATE = 0.03;
+const HURT_PROTRACT = 0.04;
+
+// --- walking and breathing --------------------------------------------------------
+
+/**
+ * A body walking is not a block carried on legs. The hips turn with each
+ * stride, the chest turns against them, the hip over the swinging leg drops
+ * while the chest stays level, and the whole of it dips as the weight comes
+ * down on a foot and rises as it passes over it. None of it is simulated:
+ * it is the stride's own phase, shaped, and it goes through the same pose
+ * everything jointed to the chest is placed from, so the shoulder, the neck
+ * and the chest's collider walk with it.
+ *
+ * Radians, and metres at human scale: the hips' turn and the chest's
+ * counter-turn, the swinging side's hip drop, how far the body dips between
+ * footfalls, and how far it leans into walking forward or out of backing up.
+ */
+const HIP_SWING = 0.11;
+const CHEST_SWING = 0.07;
+const HIP_ROLL = 0.07;
+const STRIDE_DIP = 0.028;
+const WALK_LEAN = 0.06;
+const BACK_LEAN = -0.035;
+/**
+ * And standing, it breathes: a slow lift of the chest and the shoulders,
+ * seconds a breath, radians of lean and metres of shoulder. Faint enough that
+ * a held sword barely stirs; enough that nobody stands like a post.
+ */
+const BREATH_PERIOD = 3.4;
+const BREATH_LEAN = 0.014;
+const BREATH_LIFT = 0.005;
+
+/** How the legs are going, for the trunk to go with them. */
+export interface Gait {
+  /** The stride phase: the left leg's, radians. See `Fighter.poseLegs`. */
+  phase: number;
+  /** How much of a stride the legs are showing, 0 standing to 1 walking. */
+  amount: number;
+  /** Which way the body is going: 1 forward, -1 back, 0 sideways. */
+  forward: number;
+}
+
 // --- gaze ---------------------------------------------------------------------
 
 /** Neck range relative to the chest. */
@@ -172,10 +229,23 @@ export class Pose {
   elevate = 0;
   /** How far the hips have sunk into a crouch, metres. Everything above them goes with them. */
   sink = 0;
+  /** The hips' turn with the stride, on top of `pelvis`, radians: drawn, not stood on. */
+  hipSwing = 0;
+  /** The chest's turn against it, radians. */
+  chestSwing = 0;
+  /** The hips' tilt to the side, radians: positive drops the left hip. */
+  roll = 0;
+  /** How far the stride has dipped the body, metres: never above standing. */
+  dip = 0;
 
   /** Where the chest actually faces, relative to the hull. */
   get chestYaw(): number {
-    return this.pelvis + this.spine;
+    return this.pelvis + this.spine + this.chestSwing;
+  }
+
+  /** How far below standing the hips are, metres: the crouch and the stride's dip. */
+  get drop(): number {
+    return this.sink + this.dip;
   }
 
   copy(o: Pose): this {
@@ -186,6 +256,10 @@ export class Pose {
     this.protract = o.protract;
     this.elevate = o.elevate;
     this.sink = o.sink;
+    this.hipSwing = o.hipSwing;
+    this.chestSwing = o.chestSwing;
+    this.roll = o.roll;
+    this.dip = o.dip;
     return this;
   }
 
@@ -197,7 +271,16 @@ export class Pose {
     this.protract = a.protract + (b.protract - a.protract) * t;
     this.elevate = a.elevate + (b.elevate - a.elevate) * t;
     this.sink = a.sink + (b.sink - a.sink) * t;
+    this.hipSwing = a.hipSwing + (b.hipSwing - a.hipSwing) * t;
+    this.chestSwing = a.chestSwing + (b.chestSwing - a.chestSwing) * t;
+    this.roll = a.roll + (b.roll - a.roll) * t;
+    this.dip = a.dip + (b.dip - a.dip) * t;
     return this;
+  }
+
+  /** The hips group's turn in the hull's frame: its yaw with the stride, and its tilt. */
+  hipsQuat(out: THREE.Quaternion): THREE.Quaternion {
+    return out.setFromEuler(_e.set(0, this.pelvis + this.hipSwing, this.roll, "YXZ"));
   }
 }
 
@@ -228,6 +311,8 @@ export class Posture {
   private readonly sinkS = new Spring(CROUCH_OMEGA);
   /** How far over the body is bowed this step, 0..1: see `update`. */
   private stoop = 0;
+  /** Seconds breathed, for the breath's phase. */
+  private breath = 0;
 
   /** Hull-local height of the waist: the pivot the chest turns and bends about. */
   readonly waistY: number;
@@ -302,6 +387,8 @@ export class Posture {
     // height the body is at now, with the lean the crouch gives it.
     out.sink = this.pose.sink;
     out.lean += this.crouchLean(out.sink) + STOOP_LEAN * this.stoop;
+    // Walking and breathing are motion, and a held aim has none.
+    out.hipSwing = out.chestSwing = out.roll = out.dip = 0;
     return out;
   }
 
@@ -318,7 +405,9 @@ export class Posture {
       pose.pelvis = pose.spine = pose.lean = pose.bend = 0;
       pose.protract = pose.elevate = 0;
       pose.sink = 0;
+      pose.hipSwing = pose.chestSwing = pose.roll = pose.dip = 0;
     }
+    this.breath = 0;
     for (const s of [this.twist, this.hips, this.leanS, this.bendS,
       this.protractS, this.elevateS, this.gazeYawS, this.gazePitchS, this.sinkS]) s.reset(0);
     this.stoop = 0;
@@ -336,21 +425,25 @@ export class Posture {
    * -- and the body relaxes back to square. `focus` overrides what the head
    * looks at; `hullYaw` and `hullPos` place the hull, for turning world points
    * into the body's own frame. `crouch` is how far down the legs want to be,
-   * 0 standing and 1 an ordinary crouch -- a stoop goes further -- and `stoop`
-   * how far over the body bows to get a hand to the floor, 0..1.
+   * 0 standing and 1 an ordinary crouch -- a stoop goes further -- `stoop`
+   * how far over the body bows to get a hand to the floor, 0..1, `hurt`
+   * how far it is curled round a lost sword arm, 0..1, and `gait` how the
+   * legs are going, for the trunk to walk with them.
    */
   update(
     drive: PostureDrive | null, focus: THREE.Vector3 | null,
     hullYaw: number, hullPos: { x: number; y: number; z: number },
-    t: Tuning, dt: number, crouch = 0, stoop = 0,
+    t: Tuning, dt: number, crouch = 0, stoop = 0, hurt = 0, gait: Gait | null = null,
   ): void {
     this.prev.copy(this.pose);
     const k = t.secondaryMotion;
+    const s = this.build.scale;
 
     // First, so the lean below can go with it: the crouch.
-    this.pose.sink = Math.max(0, this.sinkS.step(crouch * CROUCH_DROP * this.build.scale, dt));
+    this.pose.sink = Math.max(0, this.sinkS.step(
+      crouch * CROUCH_DROP * s + HURT_SINK * s * hurt, dt));
 
-    let twistT = 0;
+    let twistT = HURT_TWIST * hurt;
     let leanT = 0;
     let bendT = 0;
     if (drive) {
@@ -371,8 +464,9 @@ export class Posture {
     pose.pelvis = this.hips.step(this.hipsFor(twistT, t), dt);
     pose.spine = clamp(chest - pose.pelvis, -SPINE_MAX, SPINE_MAX);
     this.stoop = stoop;
-    pose.lean = this.leanS.step(leanT + this.crouchLean(pose.sink) + STOOP_LEAN * stoop, dt);
-    pose.bend = this.bendS.step(bendT, dt);
+    pose.lean = this.leanS.step(
+      leanT + this.crouchLean(pose.sink) + STOOP_LEAN * stoop + HURT_LEAN * hurt, dt);
+    pose.bend = this.bendS.step(bendT + HURT_BEND * hurt, dt);
 
     let protractT = 0;
     let elevateT = 0;
@@ -382,11 +476,48 @@ export class Posture {
         SHRUG_STRAIN * drive.strain * drive.strain
         + clamp(SHRUG_ACCEL * drive.accel.y, -0.012, 0.018));
     }
-    const s = this.build.scale;
-    pose.protract = this.protractS.step(protractT + STOOP_REACH * s * stoop, dt);
-    pose.elevate = this.elevateS.step(elevateT - STOOP_DROP * s * stoop, dt);
+    pose.protract = this.protractS.step(
+      protractT + STOOP_REACH * s * stoop + HURT_PROTRACT * s * hurt, dt);
+    pose.elevate = this.elevateS.step(
+      elevateT - STOOP_DROP * s * stoop + HURT_ELEVATE * s * hurt, dt);
+
+    this.walk(gait, k, dt);
 
     this.updateGaze(focus ?? drive?.look ?? null, hullYaw, hullPos, t, dt);
+  }
+
+  /**
+   * The trunk going with the legs, and breathing: see `HIP_SWING`.
+   *
+   * Laid on top of the springs rather than through them. The stride is
+   * smooth already -- it comes and goes with the legs -- and a spring would
+   * only put it a quarter of a stride behind the feet it belongs to.
+   */
+  private walk(gait: Gait | null, k: number, dt: number): void {
+    const pose = this.pose;
+    const w = gait ? gait.amount * Math.min(1, k) : 0;
+    const phase = gait?.phase ?? 0;
+    const sin = Math.sin(phase);
+    // The left leg forward carries the left hip forward, which turns the hips
+    // right; the chest turns the other way, as arms swing against legs.
+    pose.hipSwing = -HIP_SWING * sin * w;
+    pose.chestSwing = CHEST_SWING * sin * w;
+    // A leg is in the air over the half of its cycle its knee is bending
+    // (`Fighter.poseLegs`), and its hip drops while it is.
+    pose.roll = -HIP_ROLL * Math.sin(phase - 0.6) * w;
+    // Lowest with the feet furthest apart, standing tall as they pass. Only
+    // well into a walk: near a straight leg the knee bends as the square root
+    // of the drop, so the last millimetre of a dip fading out after the feet
+    // stop is a tenth of a radian of knee on someone standing still.
+    pose.dip = STRIDE_DIP * this.build.scale * sin * sin * w * smoothstep(0.2, 0.6, w);
+    const f = gait?.forward ?? 0;
+    pose.lean += (f >= 0 ? WALK_LEAN * f : -BACK_LEAN * f) * w;
+
+    // And breathing: all the time, less of it seen under a walk.
+    this.breath += dt;
+    const b = Math.sin((this.breath / BREATH_PERIOD) * Math.PI * 2) * Math.min(1, k) * (1 - 0.7 * w);
+    pose.lean -= BREATH_LEAN * b;
+    pose.elevate += BREATH_LIFT * this.build.scale * b;
   }
 
   /** The forward tip of the chest that goes with sinking this far. */
@@ -461,7 +592,7 @@ export class Posture {
    */
   chestPoint(pose: Pose, local: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
     const q = this.chestQuat(pose, _q);
-    return out.copy(local).applyQuaternion(q).setY(out.y + this.waistY - pose.sink);
+    return out.copy(local).applyQuaternion(q).setY(out.y + this.waistY - pose.drop);
   }
 
   /** How far the girdle has carried the sword shoulder, in the chest's frame. */
@@ -472,6 +603,17 @@ export class Posture {
   /** The sword shoulder, hull-local: the arm's joint anchor. */
   swordShoulder(pose: Pose, out: THREE.Vector3): THREE.Vector3 {
     this.clavicle(pose, out).add(this.restShoulder);
+    return this.chestPoint(pose, out, out);
+  }
+
+  /**
+   * A point hanging `down` metres straight down the chest from the sword
+   * shoulder, hull-local: where what is left of an arm cut at the elbow
+   * hangs against the side, when nothing is swinging it.
+   */
+  swordSide(pose: Pose, down: number, out: THREE.Vector3): THREE.Vector3 {
+    this.clavicle(pose, out).add(this.restShoulder);
+    out.y -= down;
     return this.chestPoint(pose, out, out);
   }
 

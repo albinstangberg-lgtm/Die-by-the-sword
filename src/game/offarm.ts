@@ -52,6 +52,12 @@ const MIN_REACH_FRACTION = 0.517;
 const REACH_MARGIN = 0.08;
 /** And a hand being taken to a hold may straighten nearer to full, as the sword hand's may. */
 const GUIDE_MARGIN = 0.02;
+/**
+ * How much of the trunk's push an arm holding its own body still gets: enough
+ * that the forearm rests on the belly rather than sinking into it, not so much
+ * that it is shoved off what the hand is holding.
+ */
+const ON_BODY_GIVE = 0.15;
 
 /**
  * Aims, chest-relative: yaw about the chest's own facing (positive is out to
@@ -198,15 +204,26 @@ export class OffArm {
    * Take the hand to a world point instead of its aim, `weight` of the way,
    * or back to the aim with null -- under the same drive, so it gets there
    * if the arm can. How a climb puts the hand on the ledge.
+   *
+   * `onBody` is a hand going to its own body -- holding a wound -- where the
+   * forearm is meant to lie across the belly. The trunk pushing it off, as it
+   * does any other time, fought the drive, and a goblin's hand swung a third
+   * of a metre either side of the wound it was holding. It gives, then: see
+   * `ON_BODY_GIVE`.
    */
-  guide(at: THREE.Vector3 | null, weight = 1): void {
+  guide(at: THREE.Vector3 | null, weight = 1, onBody = false): void {
     if (!at) {
       this.guideWeight = 0;
+      this.onBody = false;
       return;
     }
     this.guideAt.copy(at);
     this.guideWeight = clamp(weight, 0, 1);
+    this.onBody = onBody;
   }
+
+  /** The hand is being taken to its own body. See `guide`. */
+  private onBody = false;
 
   /** The aim as it stands, chest-relative. For the harness. */
   get aimNow(): Readonly<OffAim> {
@@ -455,7 +472,8 @@ export class OffArm {
         lv.y + (av.z * r.x - av.x * r.z),
         lv.z + (av.x * r.y - av.y * r.x),
       );
-      if (repulsion(p, radius, vel, caps, this.power, this._t) <= 0) continue;
+      const give = this.onBody ? ON_BODY_GIVE : 1;
+      if (repulsion(p, radius, vel, caps, this.power * give, this._t) <= 0) continue;
       body.addForceAtPoint(
         { x: this._t.x, y: this._t.y, z: this._t.z }, { x: p.x, y: p.y, z: p.z }, true);
     }
@@ -549,6 +567,7 @@ export class OffArm {
   regain(): void {
     this.limp = false;
     this.guideWeight = 0;
+    this.onBody = false;
     this.primed = false;
     this.track.snap([this.aim.yaw, this.aim.pitch]);
   }
@@ -559,6 +578,7 @@ export class OffArm {
     this.limp = false;
     this.steered = false;
     this.guideWeight = 0;
+    this.onBody = false;
     Object.assign(this.aim, OFF_REST);
     this.settle(t);
   }
