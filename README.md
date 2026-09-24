@@ -23,7 +23,7 @@ whatever of you is there, and the only warning is its weapon going back.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 195 checks, no browser needed
+npm run smoke    # headless physics harness — 201 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -462,12 +462,16 @@ Now nothing is announced, and every swing is made up as it is thrown:
 | | shapes | goes for |
 |---|---|---|
 | **swordsman** | forehand and backhand at your head, body or arm · a low cut at your legs | your body, then your head, your sword arm and your legs alike |
-| **orc** | overhead at your head or body · wide swing at your body or head · leg sweep | your body, sometimes your head, never your arm: a small thing to an orc |
+| **orc** | overhead at your head or body, three times as often as it goes round · wide swing at your body or head · leg sweep · and a leap, once you have got away from it | your body, sometimes your head, never your arm: a small thing to an orc |
 | **goblin** | thrust at anything · shaft sweep, only once you are inside its point | the middle of you |
 
 No two swings are the same, and there is no list of them to learn. Your sword
 arm is on it for a reason: taking it is the one cut that ends a fight without
-winning it, and the swordsman goes for it as readily as your head.
+winning it, and the swordsman goes for it as readily as your head. And a
+creature reaches for some shapes more than others, which is most of what it is
+like to fight: wherever the orc could bring the axe over the top or round, it
+comes over the top three times in four — so the axe going up is the thing to
+watch, and one line is the thing to step off.
 
 **It draws back for as long as its arm takes, and no longer.** A swing goes the
 moment the weapon is where it starts from — the arm's intent on the pose, and
@@ -505,6 +509,26 @@ subject to the same force clamp, the same reach limits, the same saturating
 controller. It cannot teleport its weapon, it cannot swing faster than an arm
 can be moved, and if it buries its axe in a pillar it is stuck there exactly as
 long as you would be.
+
+### The orc's leap
+
+Get out of the orc's reach and it comes after you through the air.
+
+Only once you have got away. If you were in its reach within the last three
+seconds and are now three to five metres off, down a clear line, it runs at you
+with the axe going up. When you are one jump away and the axe is up, it jumps —
+your jump, on your key, as high as its legs put it for its size — and brings the
+axe down at the top. Something that has never had you in reach walks up to you
+like anything else: the leap is how an animal too heavy to chase you down closes
+ground you just made.
+
+Once its feet leave the floor it is committed. It flies the line it jumped on,
+and the chop comes down where you were when it jumped. So the answer is to be
+somewhere else: step aside the moment it leaves the ground. In the harness a
+player who stands still takes the chop nine times in ten, and one who sidesteps
+as the orc jumps takes it none. Come back into its reach during the run-up and
+it swings from its feet instead; keep running and it gives the chase up after a
+second and a half. It leaps at most once every four seconds.
 
 ### How one shape fits three bodies and all of you
 
@@ -597,12 +621,13 @@ manoeuvring — enough to adjust, not enough to change your mind. That is the
 price of
 the one thing a jump buys you, which is being above a swing at your legs —
 the orc's above all, which is already travelling along the ground and cannot
-be sidestepped.
+be sidestepped. The orc has the same jump, and uses it (see
+[the orc's leap](#the-orcs-leap)).
 
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Thirty-three things the physics taught us
+## Thirty-six things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -911,6 +936,34 @@ again as often as before — a neck gives way after seven points — so it goes 
 your head less now. And an orc that never aims at your arm at all still takes
 it more often than the old one did, because your arm is in front of your body.
 
+**A running body drags its hand behind it.** The arm's drive damps the hand's
+speed through the world, not its speed past the shoulder, so a body moving at
+walking pace carries its hand a steady distance behind the pose it was sent to:
+that speed times the drive's damping over its stiffness, a fifth of a metre at
+an orc's run. Every "is the weapon there yet" in the opponent asked for a tenth,
+which is right for something standing still and impossible for something
+running. The orc's first leap never counted its axe as up until it had stopped
+running, and chopped from its feet every time. Now what it waits for allows for
+the lag its own speed puts there.
+
+**Nothing hides where a chop really goes.** On its feet the orc steps into its
+overhead, and the step covered for two errors nobody knew were there: the axe
+falls in the plane of the right shoulder, and hangs off the forearm at an angle,
+so a chop aimed straight ahead comes down a third of a metre to one side; and
+an overhead meets you at chest height a metre in front, not at the end of its
+reach. Out of a leap there is no step. Landed where it swings from and aimed
+the way everything else is aimed, its chop drew blood from someone standing
+still one leap in four. Aimed by where the axe head arrives rather than where
+the arm points, and landed a metre off, it draws blood nine times in ten.
+
+**A leap that follows you is one you cannot get out of the way of.** In the air
+the orc has your air control — a twentieth of the gap closed every step, which
+over half a second is most of it — and your turn, and it re-aimed its chop at
+you all the way down. Stepping aside the moment it jumped, the one answer a leap
+should have, still took the axe twelve times in sixteen. Once its feet leave the
+floor now it holds its line and its aim at where you were: nine chops in ten on
+someone who stands there, and none on someone who steps aside.
+
 And three about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1018,6 +1071,9 @@ Some things look like bugs and are not:
   a reaction time later — so a quick cut usually lands and a slow, big one often
   does not. Never in the middle of a swing of its own. The goblin does it
   most; the orc hardly ever.
+- **Back away from the orc and it jumps at you.** Axe up, one jump, and the
+  axe down at the top of it. It cannot change its line once its feet leave the
+  floor: step aside then, not before.
 - **An opponent sometimes darts in and straight back out without swinging.**
   That is a feint with its feet. Its weapon stays at the guard; only a real
   swing draws it back.
@@ -1096,7 +1152,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 195 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 201 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1162,8 +1218,17 @@ into a corner turns back at the walls instead of walking into them.
 And it holds them to swinging the way you do: half a minute against each, in
 which every swing is drawn back first and for no set time, the axe comes back
 slower than the sword, the swings go for more of you than one place and no two
-are the same, and nothing but the arm gives one away; and that a swing at your
-legs from the orc really does pass under a jump.
+are the same, and nothing but the arm gives one away; that the orc brings the
+axe over the top three times in four wherever it has the choice, across two
+thousand swings made up and never thrown; and that a swing at your legs from
+the orc really does pass under a jump.
+
+And it holds the orc's leap to its claims, ten times standing still and ten
+times stepping aside, in the bare cell: that once you have been in its reach
+and got out of it, it leaps nearly every time, its feet leaving the floor by
+half a metre; that the axe is up before it jumps and comes down in the air;
+that it lands on someone who stands there and misses someone who steps aside as
+it jumps; and that it walks up to you, rather than leaping, the first time.
 
 ## Stack
 

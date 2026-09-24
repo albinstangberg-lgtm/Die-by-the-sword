@@ -3,7 +3,7 @@ import { ARM_RANGE, type ArmInput } from "./arm";
 import type { Combatant } from "./combatant";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
-import type { Aim, Cut, Span, Species } from "./species";
+import type { Aim, Cut, Leap, Span, Species } from "./species";
 
 /**
  * An opponent that fights the way you do.
@@ -45,6 +45,10 @@ import type { Aim, Cut, Span, Species } from "./species";
  * out; and it gets out of the way of a blade it sees coming. Every step goes
  * through the same four keys yours do -- its sidestep is Q and E too -- so it
  * has no way of moving that you have not.
+ *
+ * Its jump is yours as well. Something that leaps (see `Leap`) and has just
+ * lost you out of its reach runs at you with its weapon going up and comes
+ * down on you out of the air, on your key, from a jump its legs could make.
  */
 
 /** How fast the AI is allowed to move its hand, in pixels of mouse per second. */
@@ -227,6 +231,37 @@ const THERE = { windup: 0.1, strike: 0.15, recover: 0.12 } as const;
  */
 const TURN_IN = 0.7;
 
+// --- leaping ------------------------------------------------------------------
+
+/**
+ * How far into its reach you have to be for a chop to meet you, as a fraction
+ * of its strike reach: the part of the weapon that does the work a little past
+ * your middle.
+ */
+const LAND = 0.95;
+
+/**
+ * Where a leap should put it down, as a fraction of its strike reach -- closer
+ * than it swings from on its feet. An overhead meets you at chest height a
+ * metre in front of it, not at the end of its reach, and on its feet it
+ * closes that last stretch by stepping into the swing, which in the air it
+ * cannot: landed where it swings from, its axe came down half a metre short.
+ */
+const LEAP_LAND = 0.7;
+
+/**
+ * How long an overhead takes to come down from the top, seconds, measured on
+ * the orc's axe: the time a leap goes on covering ground while it falls, and
+ * so how far ahead of you it has to start.
+ */
+const CHOP = 0.28;
+
+/** The longest it runs at you with the weapon going up before it gives up, seconds. */
+const CHASE = 1.5;
+
+/** How long after it leaves the floor before finding it again counts as landing, seconds. */
+const LIFT = 0.15;
+
 /**
  * One swing, made up as it is thrown: the shape its arm makes, the part of you
  * it is aimed at, and the numbers drawn for this one.
@@ -237,11 +272,23 @@ export interface Swing {
   readonly from: { readonly yaw: number; readonly pitch: number; readonly reach: number };
   readonly to: { readonly yaw: number; readonly pitch: number; readonly reach: number };
   readonly roll: number;
+  /** Brought down out of a jump: see `Leap`. */
+  readonly leap: boolean;
 }
 
 /** Somewhere in a span, any of it as likely as the rest. */
 function draw([lo, hi]: Span): number {
   return lo + Math.random() * (hi - lo);
+}
+
+/** One of these, as often as its weight says. */
+function weighted<T>(items: readonly T[], weight: (item: T) => number): T {
+  let left = Math.random() * items.reduce((sum, item) => sum + weight(item), 0);
+  for (const item of items) {
+    left -= weight(item);
+    if (left < 0) return item;
+  }
+  return items[items.length - 1];
 }
 
 function within(v: number, [lo, hi]: readonly [number, number]): number {
@@ -264,7 +311,7 @@ function copy(out: THREE.Vector3, p: { x: number; y: number; z: number }): THREE
 
 type State =
   | "close" | "circle" | "backoff" | "evade"
-  | "windup" | "strike" | "recover" | "free" | "beaten"
+  | "windup" | "leap" | "strike" | "recover" | "free" | "beaten"
   | "waiting" | "reeling" | "down";
 
 /**
@@ -356,6 +403,8 @@ export class Ai implements ArmInput {
   /** The part of you a swing is aimed at, and its own shoulder, for bearings. */
   private readonly _part = new THREE.Vector3();
   private readonly _shoulder = new THREE.Vector3();
+  /** Where the part of you a leap was aimed at was when its feet left the floor. */
+  private readonly _leapMark = new THREE.Vector3();
   private readonly _was = new THREE.Vector3();
   /** The nearest your swinging blade came to it, flat: the side to step away from. */
   private readonly _near = new THREE.Vector3();
@@ -390,6 +439,16 @@ export class Ai implements ArmInput {
   private flinch = -1;
   /** Seconds before it will get out of the way of anything again. */
   private rest = 0;
+  /**
+   * Seconds since you were last within its reach: whether you have just got
+   * away from it, or were never there. Infinite until it has had you.
+   */
+  private sinceNear = Infinity;
+  /** Seconds before it will leap again. */
+  private leapRest = 0;
+  /** How fast the gap between you is closing, m/s, and how much of that is you coming at it. */
+  private closing = 0;
+  private coming = 0;
 
   constructor(readonly species: Species) {
     const [lo, hi] = species.cuts[0].roll;
@@ -416,7 +475,8 @@ export class Ai implements ArmInput {
    * nothing you are shown reads it.
    */
   get committed(): Swing | null {
-    return this.state === "windup" || this.state === "strike" ? this.swing : null;
+    const s = this.state;
+    return s === "windup" || s === "leap" || s === "strike" ? this.swing : null;
   }
 
   /** Run once per fixed step, before the arm reads its input. */
@@ -473,6 +533,7 @@ export class Ai implements ArmInput {
       this.want = { yaw: 0.3, pitch: -0.12, reach: 0.55, roll: 0 };
       this.steerArm(self, t, dt);
       this._was.copy(this._self);
+      this.sinceNear = Infinity;
       return;
     }
     if (this.state === "waiting") this.engage();
@@ -508,6 +569,22 @@ export class Ai implements ArmInput {
     const inner = (strike + far) / 2;
     const outer = far * HOVER;
 
+    // Whether you have just got away from it, and how fast the gap is
+    // closing -- its own feet, and yours, which it can see: what a leap is
+    // decided and timed by.
+    this.sinceNear = range <= far ? 0 : this.sinceNear + dt;
+    this.leapRest = Math.max(0, this.leapRest - dt);
+    if (range > 1e-6) {
+      const mine = self.fighter.body.linvel();
+      const yours = foe.fighter.body.linvel();
+      const ux = toFoe.x / range;
+      const uz = toFoe.z / range;
+      this.coming = -(yours.x * ux + yours.z * uz);
+      this.closing = mine.x * ux + mine.z * uz + this.coming;
+    }
+    // Its feet leave the floor for one step at a time, and only in a leap.
+    this.keys.jump = false;
+
     this.checkSnag(t, dt);
     this.crowd = range < close ? this.crowd + dt : 0;
     this.watch(self, foe, dt);
@@ -519,6 +596,7 @@ export class Ai implements ArmInput {
         // moment it has stepped in to where its weapon works.
         this.guard();
         if (this.lashOut(self, range, close)) break;
+        if (this.leapAt(self, range)) break;
         if (this.patience > 0 && range <= outer) {
           this.circle(this.patience);
           break;
@@ -560,6 +638,7 @@ export class Ai implements ArmInput {
         // stay there.
         this.guard();
         if (this.lashOut(self, range, close)) break;
+        if (this.leapAt(self, range)) break;
         if (range > outer * 1.4) {
           // You have backed out of its circle. It comes after you, and carries
           // on waiting once it has you again.
@@ -617,8 +696,30 @@ export class Ai implements ArmInput {
           reach: s.from.reach,
           roll: s.roll,
         };
+        if (s.leap) {
+          this.charge(self, foe, range, t);
+          break;
+        }
         this.hold(0, 0);
         if (this.done(self, WINDUP, THERE.windup)) this.begin("strike", 0);
+        break;
+      }
+
+      case "leap": {
+        // Off the floor with the weapon up and following you, and down it
+        // comes at the top of the jump -- or when the feet find the floor
+        // again, if the top came and went with the weapon still going up.
+        const s = this.swing!;
+        this.want = {
+          yaw: this.aimFrom.yaw + s.from.yaw,
+          pitch: this.aimFrom.pitch + s.from.pitch,
+          reach: s.from.reach,
+          roll: s.roll,
+        };
+        this.hold(1, 0);
+        const landed = this.clock > LIFT && self.fighter.grounded;
+        const top = this.clock > LIFT && self.fighter.body.linvel().y <= 0;
+        if ((top && this.raised(self, t)) || landed) this.begin("strike", 0);
         break;
       }
 
@@ -679,6 +780,18 @@ export class Ai implements ArmInput {
         break;
     }
 
+    // Off the floor in a leap it is committed to the line it jumped on, as
+    // `measure` holds its aim at where you were when it jumped. Your air
+    // control and your turn would let it bend the leap round after you, and
+    // with the aim following you down, stepping aside -- the one answer a
+    // leap has -- still took the axe twelve times in sixteen.
+    if (this.swing?.leap && !self.fighter.grounded
+      && (this.state === "leap" || this.state === "strike")) {
+      this.keys.turnLeft = false;
+      this.keys.turnRight = false;
+      this.hold(1, 0);
+    }
+
     this.steerArm(self, t, dt);
   }
 
@@ -721,53 +834,159 @@ export class Ai implements ArmInput {
    * same, and there is no list of them to learn.
    *
    * Where it is aimed is solved from the arm while it draws back, and held once
-   * it goes (see `measure`).
+   * it goes (see `measure`). A leap brings down its own shape, whatever the
+   * distance says.
    */
-  private commit(range: number): void {
-    const all = this.species.cuts;
-    const f = range / this.strikeReach;
-    let cuts = all.filter((c) =>
-      !c.at || (f >= (c.at.min ?? 0) && f <= (c.at.max ?? Infinity)));
-    if (cuts.length === 0) cuts = [...all];
-    const pinned = all.filter((c) => c.name === this.cutOverride);
-    if (pinned.length > 0) cuts = pinned;
+  private commit(range: number, leap: Leap | null = null): void {
+    this.swing = this.makeUp(range / this.strikeReach, leap);
+    this.flinch = -1;
+    this.begin("windup", 0);
+  }
 
+  /**
+   * A swing it might throw from this far off -- a fraction of its strike
+   * reach -- made up exactly as a real one is, and never thrown. For the
+   * harness: what a creature reaches for is a claim about thousands of swings,
+   * and half a minute of a fight throws a couple of dozen.
+   */
+  imagine(at: number): Swing {
+    return this.makeUp(at, null);
+  }
+
+  /** The swing itself: see `commit`. `at` is the distance in its own reaches. */
+  private makeUp(at: number, leap: Leap | null): Swing {
+    const all = this.species.cuts;
+    let cuts: Cut[];
+    if (leap !== null) {
+      cuts = all.filter((c) => c.name === leap.cut);
+    } else {
+      cuts = all.filter((c) =>
+        !c.at || (at >= (c.at.min ?? 0) && at <= (c.at.max ?? Infinity)));
+      if (cuts.length === 0) cuts = [...all];
+      const pinned = all.filter((c) => c.name === this.cutOverride);
+      if (pinned.length > 0) cuts = pinned;
+    }
+
+    // A part of you as often as this creature goes for it, then a shape that
+    // reaches it as often as this creature reaches for that shape.
     const aims = (Object.keys(this.species.aim) as Aim[])
       .filter((a) => cuts.some((c) => c.aims.includes(a)));
     const aim = this.aimOverride !== null && aims.includes(this.aimOverride)
-      ? this.aimOverride : this.pick(aims);
-    const shapes = cuts.filter((c) => c.aims.includes(aim));
-    const cut = shapes[(Math.random() * shapes.length) | 0];
+      ? this.aimOverride : weighted(aims, (a) => this.species.aim[a]);
+    const cut = weighted(cuts.filter((c) => c.aims.includes(aim)), (c) => c.favour ?? 1);
 
-    this.swing = {
+    return {
       cut,
       aim,
       from: { yaw: draw(cut.from.yaw), pitch: draw(cut.from.pitch), reach: draw(cut.from.reach) },
       to: { yaw: draw(cut.to.yaw), pitch: draw(cut.to.pitch), reach: draw(cut.to.reach) },
       roll: draw(cut.roll),
+      leap: leap !== null,
     };
-    this.flinch = -1;
-    this.begin("windup", 0);
   }
 
-  /** One of these parts of you, as often as this creature goes for each. */
-  private pick(aims: readonly Aim[]): Aim {
-    const weight = this.species.aim;
-    let left = Math.random() * aims.reduce((sum, a) => sum + weight[a], 0);
-    for (const a of aims) {
-      left -= weight[a];
-      if (left < 0) return a;
+  /**
+   * You have got out of its reach, and it comes after you through the air.
+   *
+   * Only if you were in its reach a moment ago, only from where a run and a
+   * jump will carry it to you, and only down a clear line: a leap asks the
+   * stone for the whole of its run first, knee high and a body wide, and
+   * something between you is a reason to walk round it instead. See `Leap`.
+   */
+  private leapAt(self: Combatant, range: number): boolean {
+    const leap = this.species.leap;
+    if (leap === undefined || this.leapRest > 0 || this.sinceNear > leap.memory) return false;
+    if (!this.squared || !this.sighted || !self.fighter.grounded) return false;
+    if (this.cutOverride !== null && this.cutOverride !== leap.cut) return false;
+    const f = range / this.strikeReach;
+    if (f < leap.at.min || f > leap.at.max) return false;
+    if (!this.roomFor(self, 1, 0, range - this.strikeReach)) return false;
+    this.leapRest = leap.rest;
+    this.commit(range, leap);
+    return true;
+  }
+
+  /**
+   * The run-up: at you with the weapon going up, and off the floor once it is
+   * up and you are one jump away -- the jump whose top is where the weapon has
+   * to start down to meet you. Already that close with the weapon not yet up,
+   * it stands and gets it up.
+   *
+   * The weapon has to be up before the feet leave the floor. Jumping with it
+   * half raised, the axe went on rising for half a second of the leap and came
+   * down after the orc had landed, a foot inside where it cuts. All of it is
+   * the same jump you have, worked out from the same numbers -- how high its
+   * legs put it for its size, under the same gravity. Come back into its reach
+   * and it swings from its feet instead; stay out of it long enough and it
+   * gives the chase up.
+   */
+  private charge(self: Combatant, foe: Combatant, range: number, t: Tuning): void {
+    // Timed on the run it is making, not on how fast it happens to be going
+    // this step: a leap planned from a standing start left the floor half a
+    // metre late.
+    const run = Math.max(0, this.pace + this.coming);
+    const chop = this.chopAt(run);
+    const up = this.raised(self, t);
+    if (range <= chop) {
+      // Back in its reach before it could leave the floor: it swings from
+      // where it stands, and stops being a leap -- otherwise, standing, the gap
+      // stopped closing, a chop needed less of a lead, and it ran on again.
+      this.swing = { ...this.swing!, leap: false };
+      this.hold(0, 0);
+      if (up) this.begin("strike", 0);
+      return;
     }
-    return aims[aims.length - 1];
+    const apex = Math.sqrt(2 * t.jumpHeight * this.species.build.scale / Math.abs(t.gravity));
+    const takeoff = this.strikeReach * LEAP_LAND + run * (CHOP + apex);
+    if (range <= takeoff) {
+      if (!up || !self.fighter.grounded) {
+        this.hold(0, 0);
+        return;
+      }
+      this.keys.jump = true;
+      this.hold(1, 0);
+      this.target(foe, this.swing!.aim, this._leapMark);
+      this.begin("leap", 0);
+      return;
+    }
+    if (this.clock > CHASE) {
+      this.begin("close", 0);
+      return;
+    }
+    this.hold(1, 0);
+  }
+
+  /**
+   * Is the weapon up, for a body that is moving?
+   *
+   * A running body drags its hand behind it: the drive's damping works against
+   * the hand's speed through the world, not past the shoulder, so the hand
+   * trails the pose it was sent to by that speed times the drive's damping
+   * over its stiffness -- a fifth of a metre at an orc's run, twice what counts
+   * as there. Waiting for less, it never counted its axe as up until it had
+   * stopped running.
+   */
+  private raised(self: Combatant, t: Tuning): boolean {
+    const v = self.fighter.body.linvel();
+    return this.done(self, WINDUP, THERE.windup, Math.hypot(v.x, v.z) * t.armKd / t.armKp);
+  }
+
+  /**
+   * How far off you must be for a chop begun now to meet you: its reach, and
+   * the ground the gap will close by while the weapon comes down.
+   */
+  private chopAt(closing = this.closing): number {
+    return this.strikeReach * LAND + Math.max(0, closing) * CHOP;
   }
 
   /**
    * Is this part of a swing over: the weapon where it was sent, or the longest
-   * it may take gone by?
+   * it may take gone by? `give` is metres more the hand may trail by: see
+   * `charge`.
    */
-  private done(self: Combatant, [least, most]: Span, slack: number): boolean {
+  private done(self: Combatant, [least, most]: Span, slack: number, give = 0): boolean {
     if (this.clock >= most) return true;
-    return this.clock >= least && this.arrived(self, slack);
+    return this.clock >= least && this.arrived(self, slack, give);
   }
 
   /**
@@ -778,9 +997,9 @@ export class Ai implements ArmInput {
    * Nothing it could not know. It is what you know about your own arm by
    * looking at it, and it is all a swing waits on.
    */
-  private arrived(self: Combatant, slack: number): boolean {
+  private arrived(self: Combatant, slack: number, give = 0): boolean {
     return this.onPose
-      && self.arm.state.trackingError < slack * this.species.build.scale;
+      && self.arm.state.trackingError < slack * this.species.build.scale + give;
   }
 
   /** Where its weapon works, squared up to you, and able to see what it swings at. */
@@ -1075,15 +1294,26 @@ export class Ai implements ArmInput {
     }
 
     const s = this.swing;
-    if (s !== null && this.state === "windup") {
+    if (s !== null && (this.state === "windup" || this.state === "leap")) {
       // An edge wants its arc to cross the part it is aimed at; a point wants
       // to be aimed at it, which takes both angles rather than just the pitch.
       // Same shapes either way -- only what "level" means changes, and it
-      // changes with what is in the hand.
-      const part = this.target(foe, s.aim, this._part);
+      // changes with what is in the hand. Off the floor in a leap it is aimed
+      // at where you were when it jumped: it follows its own flight, not you.
+      const part = this.state === "leap"
+        ? this._part.copy(this._leapMark) : this.target(foe, s.aim, this._part);
       if (point) {
         arm.aimPointAt(part, s.from.reach, s.roll, t, this.aimFrom);
         arm.aimPointAt(part, s.to.reach, s.roll, t, this.aimTo);
+      } else if (s.leap) {
+        // Out of a leap the chop comes straight down the line it jumped on,
+        // with no step into the swing to bring it round onto you, so it is
+        // aimed where the axe head arrives rather than off its chest: aimed as
+        // everything else is, it came down half a metre to one side of you.
+        arm.aimCutAt(part, 1, s.roll, t, this.aimTo);
+        this.aimTo.yaw = within(this.aimTo.yaw, [-TURN_IN, TURN_IN]);
+        this.aimFrom.yaw = this.aimTo.yaw;
+        this.aimFrom.pitch = this.aimTo.pitch;
       } else {
         // Round toward it, but not so far round that the shape stops being
         // itself: an arm flung out wide is not worth a swing at the air.
@@ -1258,6 +1488,10 @@ export class Ai implements ArmInput {
     this.threatened = false;
     this.flinch = -1;
     this.rest = 0;
+    this.sinceNear = Infinity;
+    this.leapRest = 0;
+    this.closing = 0;
+    this.coming = 0;
     this.idle();
   }
 }

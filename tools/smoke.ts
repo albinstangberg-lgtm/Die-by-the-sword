@@ -45,7 +45,7 @@ const NO_KEYS: Keys = {
 /** An opponent's intents between swings: on its feet, and committed to nothing. */
 const FOOTWORK: ReadonlySet<string> = new Set(["close", "circle", "backoff", "evade"]);
 /** And every intent in which it is in the fight at all. */
-const FIGHTING: ReadonlySet<string> = new Set([...FOOTWORK, "windup", "strike", "recover"]);
+const FIGHTING: ReadonlySet<string> = new Set([...FOOTWORK, "windup", "leap", "strike", "recover"]);
 
 /** A scriptable stand-in for pointer-lock input. */
 class FakeInput implements ArmInput {
@@ -1180,13 +1180,15 @@ async function swingsAreReadOffTheArm(): Promise<void> {
       }
       // Back, through, and on guard again.
       if (cycle >= 0) {
-        if (now === "windup" || now === "strike" || now === "recover") cycle += STEP;
+        if (now === "windup" || now === "leap" || now === "strike" || now === "recover") {
+          cycle += STEP;
+        }
         else {
           if (before === "recover") cycles.push(cycle);
           cycle = -1;
         }
       }
-      const swinging = now === "windup" || now === "strike";
+      const swinging = now === "windup" || now === "leap" || now === "strike";
       if (lied === "" && swinging !== (rig.ai.committed !== null)) {
         lied = `intent "${now}" with ${rig.ai.committed?.cut.name ?? "nothing"} committed`;
       }
@@ -1216,10 +1218,27 @@ async function swingsAreReadOffTheArm(): Promise<void> {
       `${alike} different ones, in ${plural(new Set(swings.map((s) => s.cut.name)).size, "shape")}`);
     check("and nothing but the arm gives it away", told === "" && lied === "",
       told || lied || "30s of fighting: the panel only ever said it was fighting");
+
   }
 
   check("between them they go for your head, your body, your sword arm and your legs",
     everywhere.size === 4, `went for your ${[...everywhere].join(", ")}`);
+
+  // And what the orc reaches for, which half a minute of a fight is too short
+  // to say: a bout throws a couple of dozen swings, and which of them it
+  // could throw depends on where you were standing. Two thousand made up
+  // from where it swings from, and never thrown: wherever an overhead and a
+  // swing round both reach, it brings the axe over the top three times in
+  // four.
+  const orc = new Ai(ORC);
+  const imagined = Array.from({ length: 2000 }, () => orc.imagine(1));
+  const high = imagined.filter((s) => s.aim === "head" || s.aim === "body");
+  const over = high.filter((s) => s.cut.name === "overhead").length / high.length;
+  const all = imagined.filter((s) => s.cut.name === "overhead").length / imagined.length;
+  check("the orc brings the axe over the top three times in four where it has the choice",
+    Math.abs(over - 0.75) < 0.04,
+    `${(over * 100).toFixed(0)}% overheads at your head or body, ` +
+    `${(all * 100).toFixed(0)}% of everything it throws`);
 
   // More weapon, longer. Swung by an arm scaled to the body carrying it, a
   // metre of ash with 3.65 kg on the end is still slower back, through and
@@ -2621,6 +2640,125 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
     `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
 }
 
+interface LeapTrial {
+  /** Its feet left the floor. */
+  leapt: boolean;
+  /** How far its hull rose, metres. */
+  rose: number;
+  /** The chop began before it was back on the floor. */
+  inAir: boolean;
+  /** What the chop itself did to you. */
+  blood: number;
+}
+
+/**
+ * Stand in the orc's reach, then a jump away from it, and see what comes:
+ * one leap per trial, in the cell, where there is nothing to jump over or
+ * into. Either standing still, or stepping aside the moment its feet leave
+ * the floor -- which is the answer to a leap.
+ */
+async function leapTrials(trials: number, stepAside: boolean): Promise<LeapTrial[]> {
+  // The orc at the south end of the cell, facing north up the length of it,
+  // and put back there for every trial: a leap carries it three metres, and
+  // ten of them in a row walked it into the wall.
+  const home = spawnFor(ORC, 12.2, -4.8);
+  const rig = await buildRig({}, ORC, home);
+  const at = new THREE.Vector3();
+  const out: LeapTrial[] = [];
+  let hurt = 0;
+  rig.impacts.addBlade(rig.foe.arm, (i) => {
+    const intent = rig.ai.intent;
+    if (rig.ai.committed?.leap && (intent === "leap" || intent === "strike")) {
+      hurt += cutDamage(i);
+    }
+  });
+  for (let k = 0; k < trials; k++) {
+    rig.foe.reset(rig.tuning, home);
+    rig.ai.reset();
+    rig.hold(20);
+    rig.foe.position(at);
+    const standing = at.y;
+    // In its reach, a pace in front of it...
+    rig.place(new THREE.Vector3(at.x, SPAWN.y, at.z - 1.5));
+    rig.fight(30);
+    // ...then a jump away, on the same line.
+    rig.foe.position(at);
+    rig.place(new THREE.Vector3(at.x, SPAWN.y, at.z - 3.6));
+    hurt = 0;
+    const trial: LeapTrial = { leapt: false, rose: 0, inAir: false, blood: 0 };
+    // Stepping aside is a sidestep -- your left, its right -- for as long as a
+    // step lasts, from the moment its feet leave the floor.
+    let aside = 0;
+    for (let i = 0; i < 60 * 4; i++) {
+      const before = rig.ai.intent;
+      rig.fight(1, stepAside && aside > 0 ? { ...NO_KEYS, left: true } : NO_KEYS);
+      aside--;
+      const now = rig.ai.intent;
+      rig.foe.position(at);
+      if (now === "leap") {
+        if (!trial.leapt) aside = 24;
+        trial.leapt = true;
+        trial.rose = Math.max(trial.rose, at.y - standing);
+      }
+      if (trial.leapt && now === "strike" && before === "leap") {
+        trial.inAir = !rig.foe.fighter.grounded;
+      }
+      if (trial.leapt && now === "recover") break;
+    }
+    trial.blood = hurt;
+    out.push(trial);
+  }
+  return out;
+}
+
+async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
+  console.log("\nget away from the orc and it comes after you through the air");
+  // It used to walk after you like anything else. Now, having had you in
+  // reach, it runs at you with the axe going up, jumps -- your jump, on your
+  // keys -- and brings the axe down at the top of it. Once its feet are off
+  // the floor it is committed to the line it jumped on and to where you were
+  // when it jumped, so stepping aside is the answer: which has to be true, or
+  // it is just an axe you cannot avoid.
+  const still = await leapTrials(10, false);
+  const aside = await leapTrials(10, true);
+  const leapt = still.filter((t) => t.leapt);
+  const lowest = Math.min(...leapt.map((t) => t.rose));
+  check("back out of its reach and it leaps at you", leapt.length >= 7 && lowest > 0.2,
+    `${leapt.length} of ${still.length} times; its feet left the floor by at least ` +
+    `${(lowest * 100).toFixed(0)}cm`);
+  const inAir = leapt.filter((t) => t.inAir).length;
+  check("the axe is up before it jumps, and comes down in the air", inAir >= leapt.length - 1,
+    `${inAir} of ${leapt.length} chops began before its feet found the floor`);
+  const landed = (ts: LeapTrial[]) => ts.filter((t) => t.leapt && t.blood > 0).length;
+  const standingHits = landed(still);
+  const dodged = aside.filter((t) => t.leapt);
+  const asideHits = landed(aside);
+  check("stand there and it lands", standingHits >= 0.4 * leapt.length,
+    `the chop drew blood ${standingHits} times in ${leapt.length}`);
+  check("step aside as its feet leave the floor and it does not",
+    dodged.length >= 5 && asideHits <= 0.3 * dodged.length,
+    `${asideHits} of ${dodged.length} chops drew blood from someone stepping out of the way`);
+
+  // And not on the way in. Something that has never had you in reach walks
+  // up to you like anything else: a leap is how it closes ground you made.
+  const fresh = await buildRig({}, ORC, spawnFor(ORC, 12.2, -10.5));
+  fresh.foe.position(new THREE.Vector3());
+  fresh.place(new THREE.Vector3(12.2, SPAWN.y, -6.4));
+  let jumpedIn = false;
+  let closest = 99;
+  const me = new THREE.Vector3();
+  const it = new THREE.Vector3();
+  for (let i = 0; i < 60 * 4; i++) {
+    fresh.fight(1);
+    if (fresh.ai.committed?.leap) jumpedIn = true;
+    fresh.player.position(me);
+    fresh.foe.position(it);
+    closest = Math.min(closest, Math.hypot(me.x - it.x, me.z - it.z));
+  }
+  check("but it walks up to you the first time", !jumpedIn && closest < 2.2,
+    `${jumpedIn ? "leapt" : "no leap"}; closed to ${closest.toFixed(2)} m`);
+}
+
 async function crowdingItDoesNotStopIt(): Promise<void> {
   console.log("\nwalk into its face and it still fights");
   // Crowding used to switch an opponent off: it only ever stepped back, and
@@ -2710,6 +2848,7 @@ async function run(): Promise<void> {
   await anOpponentMovesBetweenSwings();
   await anOpponentGetsOutOfTheWay();
   await crowdingItDoesNotStopIt();
+  await theOrcComesAfterYouThroughTheAir();
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +
