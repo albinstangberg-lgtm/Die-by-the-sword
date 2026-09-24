@@ -11,14 +11,14 @@ import type { Blow, Knock } from "../game/balance";
  * here changes rarely, so it is only redrawn when it does.
  */
 export interface Kit {
-  /** Where the sword is. */
-  sword: "hand" | "back" | "lost";
+  /** Where the sword is, or where it is going. */
+  sword: "hand" | "back" | "lost" | "sheathing" | "drawing";
   /** Whether there is a shield on the off arm, or an arm to put one on. */
   shield: "none" | "arm" | "lost";
   potions: number;
   /** Drinking one: health still to come back. */
   healing: number;
-  stance: "standing" | "crouching" | "vaulting" | "airborne" | "down";
+  stance: "standing" | "crouching" | "vaulting" | "climbing" | "picking up" | "airborne" | "down";
   /** The left button is held: the mouse is on the other arm. */
   guarding: boolean;
   /** What F would do right now, or null. */
@@ -125,10 +125,11 @@ export class Hud {
           <dt>W / S</dt><dd>forward, back</dd>
           <dt>A / D</dt><dd>turn</dd>
           <dt>Q / E</dt><dd>sidestep</dd>
-          <dt>Space</dt><dd data-f="jumphint">jump &middot; vault</dd>
+          <dt>Space</dt><dd data-f="jumphint">jump &middot; W+Space climb</dd>
+          <dt>V</dt><dd>vault</dd>
           <dt>C</dt><dd>crouch</dd>
           <dt>X</dt><dd>sheathe / draw</dd>
-          <dt>F</dt><dd>pick up</dd>
+          <dt>F</dt><dd>go and pick up</dd>
           <dt>H</dt><dd>drink a potion</dd>
           <dt>Tab</dt><dd>tuning panel</dd>
           <dt>R</dt><dd>reset</dd>
@@ -195,7 +196,7 @@ export class Hud {
 
     // Air control is a fraction of ground control, so knowing you are off the
     // floor matters: you cannot take a jump back.
-    this.jumpHint.textContent = grounded ? "jump · vault" : "AIRBORNE";
+    this.jumpHint.textContent = grounded ? "jump · W+Space climb" : "AIRBORNE";
     this.jumpHint.style.color = grounded ? "" : "var(--ink)";
 
     if (kit) this.updateKit(kit);
@@ -244,7 +245,10 @@ export class Hud {
     if (sig === this.lastKitSig) return;
     this.lastKitSig = sig;
 
-    const sword = { hand: "in hand", back: "on your back", lost: "lost" }[kit.sword];
+    const sword = {
+      hand: "in hand", back: "on your back", lost: "lost",
+      sheathing: "going on your back", drawing: "coming out",
+    }[kit.sword];
     const shield = { none: "none", arm: "on your arm", lost: "lost with the arm" }[kit.shield];
     const potions = kit.healing > 0
       ? `${kit.potions} &middot; +${Math.ceil(kit.healing)} coming`

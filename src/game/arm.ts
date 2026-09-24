@@ -244,6 +244,56 @@ const SHEATH_DIR = new THREE.Vector3(-0.42, -0.9, 0).normalize();
  */
 const EMPTY_HAND = 0.5;
 
+/**
+ * How far out of the scabbard the grip stands with the point just in its
+ * mouth, metres at human scale: where the hand takes a sword to put it up,
+ * and how far it draws one before bringing it over the shoulder. Not the
+ * blade's whole length -- nobody's arm reaches that far up behind their own
+ * head -- so the last of the point goes in, and comes out, on the swing.
+ */
+const SHEATH_MOUTH = 0.32;
+
+/**
+ * Putting a sword up and drawing it, a phase at a time: seconds at human
+ * scale, and longer for a bigger body, as anything that moves under gravity.
+ *
+ *   lift    the hand takes the sword up over its shoulder, still in its grip
+ *   turn    the point goes back over the shoulder and down into the mouth
+ *   seat    and the blade slides home
+ *   settle  the empty hand goes back to wherever the mouse has it
+ *
+ *   reach   drawing: the hand goes up over the shoulder to the grip
+ *   pull    draws the blade up out of the scabbard
+ *   swing   and brings it over the shoulder into the hand's line
+ */
+const STOW_TIME = {
+  lift: 0.3, turn: 0.28, seat: 0.18, settle: 0.3, reach: 0.3, pull: 0.2, swing: 0.36,
+} as const;
+type StowPhase = keyof typeof STOW_TIME;
+/** How much longer than its time a phase waits for a hand still on its way. */
+const STOW_GRACE = 2;
+
+/**
+ * A hand being taken somewhere -- to its own back, to the floor -- may fold
+ * further than an aim is ever let go, and straighten nearer to full: the
+ * fraction of the arm it may come in to, and how short of straight it stops,
+ * metres at human scale. An aim is kept off both for the sake of a blade in
+ * the hand, which is not what these reaches are for.
+ */
+const GUIDE_MIN_REACH = 0.36;
+const GUIDE_MARGIN = 0.02;
+
+/**
+ * Where the elbow goes when the hand goes up behind the shoulder: up, out
+ * and forward, as an arm reaching for something on its own back. Hung down
+ * and back as it is for an aim, it would have to go through the shoulder.
+ */
+const OVER_POLE = { back: -0.5, down: -0.8, right: 0.7 };
+
+/** The chest's own right, which the point swings about going over the shoulder. */
+const CHEST_RIGHT = new THREE.Vector3(1, 0, 0);
+const IDENTITY = new THREE.Quaternion();
+
 /** Rapier's axes, by the numbers its raw joint calls take them as. */
 const ANG_X = 3, ANG_Y = 4, ANG_Z = 5;
 
@@ -400,10 +450,48 @@ export class Arm {
   private scabbard: THREE.Object3D | null = null;
   /** The hand, which rides the weapon while it is held and the forearm while it is not. */
   private handMeshObj!: THREE.Mesh;
+  /**
+   * The inside of the hand, riding the forearm: where something the hand
+   * picks up is held. A plain node, so what hangs from it keeps its shape.
+   */
+  readonly palm = new THREE.Object3D();
+  /** Where the grip sits in the scabbard, chest frame, and the weapon's turn there. */
   private readonly sheathPoint = new THREE.Vector3();
   private readonly sheathQuat = new THREE.Quaternion();
+  /** Where the grip is with the point just in the mouth: see SHEATH_MOUTH. */
+  private readonly mouthPoint = new THREE.Vector3();
   private readonly _sheathP = new THREE.Vector3();
   private readonly _sheathQ = new THREE.Quaternion();
+
+  /**
+   * Putting the weapon up or taking it out, under way: which, what part of
+   * it, how long into that part, and how far the point swings over the
+   * shoulder on the way, radians about the chest's right.
+   */
+  private stow: { draw: boolean; phase: StowPhase; time: number; turn: number } | null = null;
+  /**
+   * The weapon is out of the hand's joint and carried by the stow instead:
+   * kinematic, touching nothing, but not on the back yet either.
+   */
+  private loose = false;
+  /** The weapon's pose where the part of the stow moving it began, chest frame. */
+  private readonly stowP = new THREE.Vector3();
+  private readonly stowQ = new THREE.Quaternion();
+  private readonly _stowP = new THREE.Vector3();
+  private readonly _stowQ = new THREE.Quaternion();
+  private readonly _handP = new THREE.Vector3();
+  private readonly _handV = new THREE.Vector3();
+  private readonly _handQ = new THREE.Quaternion();
+
+  /**
+   * A world point the hand is being taken to rather than aimed, and how far
+   * the ghost has been handed over to it: 0 is wholly the mouse's aim, 1
+   * wholly the point. And where the elbow goes meanwhile, if not where the
+   * aim hangs it. See `guide`.
+   */
+  private readonly guideAt = new THREE.Vector3();
+  private guideWeight = 0;
+  private guidePole: { back: number; down: number; right: number } | null = null;
 
   readonly group = new THREE.Group();
   /** Public so the Interpolator can drive them; physics never touches meshes. */
@@ -498,6 +586,12 @@ export class Arm {
   private readonly _bendA = new THREE.Vector3();
   private readonly _bendB = new THREE.Vector3();
   private readonly _bendQ = new THREE.Quaternion();
+
+  /** The ghost's velocity, and where it was last step. See `measureGhost`. */
+  private readonly _ghostVel = new THREE.Vector3();
+  private readonly _prevGhost = new THREE.Vector3();
+  private _ghostPrimed = false;
+  private readonly _relVel = new THREE.Vector3();
 
   /** The hand's velocity last step and its smoothed acceleration, world. */
   private readonly _prevHandVel = new THREE.Vector3();
@@ -826,15 +920,32 @@ export class Arm {
     this._v.set(-Math.sin(yaw) * cp, Math.sin(pitch), -Math.cos(yaw) * cp);
     this._ghostPos.copy(this._shoulder).addScaledVector(this._v, this.reach);
 
+    // A hand being taken somewhere goes there instead, as far as the arm
+    // reaches -- which, for a grip on its own back or a potion on the floor,
+    // is further in and further out than an aim is ever let go. A probe asks
+    // about an aim, and never sees it.
+    const w = steady ? 0 : this.guideWeight;
+    let reach = this.reach;
+    let lo = this.minReach;
+    let hi = this.maxReach;
+    if (w > 0) {
+      lo += (GUIDE_MIN_REACH * this.build.armLength - lo) * w;
+      hi += (this.build.armLength - GUIDE_MARGIN * this.build.scale - hi) * w;
+      this._ghostPos.lerp(this.guideAt, w);
+      this._v.copy(this._ghostPos).sub(this._shoulder);
+      reach = clamp(this._v.length(), lo, hi);
+      this._v.normalize();
+      this._ghostPos.copy(this._shoulder).addScaledVector(this._v, reach);
+    }
+
     // A hand asked to be inside the body goes on its surface instead. Rare --
     // the posture has usually carried the shoulder far enough round that the
     // hand clears -- but a low hand pulled in and across can still ask for it.
     const margin = t.clearance * this.build.scale;
     const caps = margin > 0 ? this.fighter.trunkCapsules(pose) : null;
-    let reach = this.reach;
     if (caps && pushOut(this._ghostPos, this.handRadius, caps, margin)) {
       this._v.copy(this._ghostPos).sub(this._shoulder);
-      reach = clamp(this._v.length(), this.minReach, this.maxReach);
+      reach = clamp(this._v.length(), lo, hi);
       this._v.normalize();
       this._ghostPos.copy(this._shoulder).addScaledVector(this._v, reach);
     }
@@ -868,8 +979,18 @@ export class Arm {
     const pole = this._refB.set(0, -POLE.down, 0)
       .addScaledVector(right, POLE.right)
       .addScaledVector(back, POLE.back)
-      .normalize()
-      .applyQuaternion(this._q2.setFromAxisAngle(this._armDir, roll));
+      .normalize();
+    // A guided hand hangs its elbow its own way, and the roll -- the edge the
+    // mouse asked for -- is not what it is doing.
+    const hang = this.guidePole;
+    if (w > 0 && hang) {
+      const own = this._refD.set(0, -hang.down, 0)
+        .addScaledVector(right, hang.right)
+        .addScaledVector(back, hang.back)
+        .normalize();
+      pole.lerp(own, w).normalize();
+    }
+    pole.applyQuaternion(this._q2.setFromAxisAngle(this._armDir, roll * (1 - w)));
 
     // The edge this pose presents, and the way its weapon points, are what
     // the aim and the roll asked for. Remember them before the body gets a
@@ -930,7 +1051,7 @@ export class Arm {
     // watching its own blade watches. Not for probes: they are hypothetical.
     if (!steady) {
       this._look.copy(bladeDir)
-        .multiplyScalar(this.sheathedNow ? 0 : this.weapon.grip + this.weapon.span * this.strikePoint)
+        .multiplyScalar(this.gripping ? this.weapon.grip + this.weapon.span * this.strikePoint : 0)
         .add(this._ghostPos);
     }
   }
@@ -1077,6 +1198,12 @@ export class Arm {
     // and it has to hang from where the shoulder is drawn.
     this.shoulderJoint?.setAnchor1(this.fighter.shoulderAnchor);
 
+    // A sword going up or coming out is finished where it is, or dropped
+    // home, by anything that takes the arm away from it; otherwise it goes
+    // on a step. Before the ghost, which it may be guiding.
+    if (this.stow && (this.severedAt !== null || this.limp)) this.abortStow();
+    if (this.stow) this.stepStow(this.phys.world.timestep);
+
     // A sword on the back rides the back, whatever the arm is doing -- a body
     // on the floor, a limb cut off -- so this goes before anything returns.
     if (this.sheathedNow) this.holdSheathed(false);
@@ -1103,6 +1230,7 @@ export class Arm {
     }
 
     this.computeGhost(t, false, true);
+    this.measureGhost(this.phys.world.timestep);
 
     // Rapier keeps user forces until they're cleared, so a missed reset would
     // make the arm accelerate without bound.
@@ -1112,7 +1240,7 @@ export class Arm {
     this.upper.resetTorques(false);
     this.blade.resetForces(false);
     this.blade.resetTorques(false);
-    const holding = !this.sheathedNow;
+    const holding = this.gripping;
 
     // Gravity feed-forward. Without it the PD has to spend a standing 45N just
     // holding the sword up, and since a proportional controller only produces
@@ -1148,8 +1276,14 @@ export class Arm {
     // An empty hand is a fraction of the mass the linear drive was tuned to
     // push: see EMPTY_HAND.
     const lin = holding ? 1 : EMPTY_HAND;
+    // Damped against the hand's own motion -- except for as much of it as is
+    // following a guide. The lag that leaves behind a moving ghost is what an
+    // aim is meant to feel, but a hand taking a grip off its own back that
+    // trailed it by a hand's breadth would be holding air.
+    const moving = this._relVel.copy(this._handVel)
+      .addScaledVector(this._ghostVel, -this.guideWeight);
     const force = err.multiplyScalar(t.armKp * this.power * lin)
-      .addScaledVector(this._handVel, -t.armKd * this.power * lin);
+      .addScaledVector(moving, -t.armKd * this.power * lin);
     const mag = force.length();
     this.state.saturation = maxForce > 0 ? Math.min(1, mag / maxForce) : 1;
     if (mag > maxForce) force.multiplyScalar(maxForce / mag);
@@ -1493,13 +1627,22 @@ export class Arm {
     return d;
   }
 
+  /** How fast the ghost is going, from where it was last step. */
+  private measureGhost(dt: number): void {
+    if (this._ghostPrimed) this._ghostVel.copy(this._ghostPos).sub(this._prevGhost).divideScalar(dt);
+    else this._ghostVel.set(0, 0, 0);
+    this._prevGhost.copy(this._ghostPos);
+    this._ghostPrimed = true;
+  }
+
   /** Cancels `gravityComp` of each limb segment's weight at its own centre of mass. */
   private applyGravityFeedForward(t: Tuning): void {
     if (t.gravityComp <= 0) return;
     const up = -t.gravity * t.gravityComp;
     for (const body of [this.upper, this.fore, this.blade]) {
-      // A sheathed weapon is carried by the back, not held up by the arm.
-      if (body === this.blade && this.sheathedNow) continue;
+      // A weapon out of the hand is carried by the back, or by the stow, and
+      // not held up by the arm.
+      if (body === this.blade && !this.gripping) continue;
       body.addForce({ x: 0, y: body.mass() * up, z: 0 }, false);
     }
   }
@@ -1674,6 +1817,10 @@ export class Arm {
     // its length would not show anyway.
     const hand = this.handMeshObj = handMesh(fore.radius * 1.22, skin);
     this.bladeMesh.add(hand);
+    // And the inside of the hand, on the forearm, for anything held in it
+    // that is not the weapon.
+    this.palm.position.y = this.foreHalf + fore.radius;
+    this.foreMesh.add(this.palm);
 
     this.ghostMesh = buildGhostMesh(this.build.scale);
     this.group.add(this.ghostMesh);
@@ -1958,11 +2105,13 @@ export class Arm {
     const wasSevered = this.severedAt;
     // Back in the hand before anything is laid out: it is jointed on again
     // below, once the arm is where the joint expects it.
-    if (this.sheathedNow) {
+    this.endStow();
+    if (this.sheathedNow || this.loose) {
       this.blade.setBodyType(this.phys.rapier.RigidBodyType.Dynamic, true);
       for (const c of this.weaponColliders) c.setEnabled(true);
       this.setWeaponMass(this.weaponMass);
       this.sheathedNow = false;
+      this.loose = false;
       this.moveHand(this.bladeMesh, 0);
     }
     this.severedAt = null;
@@ -1982,6 +2131,7 @@ export class Arm {
     this.slackenGrip();
     this._handAccel.set(0, 0, 0);
     this._accelPrimed = false;
+    this._ghostPrimed = false;
     this.computeGhost(t);
 
     const dir = this._armDir.copy(this._ghostPos).sub(this._shoulder).normalize();
@@ -2025,6 +2175,7 @@ export class Arm {
    */
   regain(t: Tuning): void {
     this.limp = false;
+    this.guide(null);
     if (this.severedAt !== null) return;
 
     this.fighter.shoulderWorld(this._shoulder);
@@ -2052,6 +2203,7 @@ export class Arm {
     this._wristTarget.identity();
     this._handAccel.set(0, 0, 0);
     this._accelPrimed = false;
+    this._ghostPrimed = false;
     // Stale from before it went down: it would hold the ghost on its leash.
     this.state.trackingError = 0;
     this.computeGhost(t);
@@ -2112,55 +2264,248 @@ export class Arm {
 
   /** A weapon in a hand on an arm that is on: something that can cut. */
   get wielding(): boolean {
-    return !this.sheathedNow && this.severedAt === null;
+    return this.gripping && this.severedAt === null;
   }
 
   /**
-   * Put the weapon up, on the back. False if there is nothing to do it with:
-   * no scabbard, no arm, a body on the floor, or already done.
+   * The weapon is out of the world: on the back, or being carried between
+   * the back and the hand, where it touches nothing and cuts nothing.
+   */
+  get stowed(): boolean {
+    return this.sheathedNow || this.loose;
+  }
+
+  /** The weapon is being put up or taken out: the hand is busy with it. */
+  get stowing(): boolean {
+    return this.stow !== null;
+  }
+
+  /** And it is being taken out. */
+  get drawing(): boolean {
+    return this.stow?.draw === true;
+  }
+
+  /** The hand's joint has the weapon: not on the back, and not on its way there. */
+  private get gripping(): boolean {
+    return !this.sheathedNow && !this.loose;
+  }
+
+  /**
+   * Start putting the weapon up, on the back. False if there is nothing to do
+   * it with -- no scabbard, no arm, a body on the floor -- or it is already
+   * there or on its way.
    *
-   * The weapon comes out of the hand -- its joint is taken out of the world --
-   * and rides the back as a kinematic body with nothing to touch, so it can
-   * neither cut nor be caught on anything. The hand goes on with the arm.
+   * It is not put there: the hand takes it. Up over the shoulder in the
+   * hand's grip, under the arm's own drive, so a sword being put away is
+   * still a sword until the point is in the mouth; then back over the
+   * shoulder and down into the scabbard, carried along the chest -- the one
+   * part of this that is placed, since the grip in this game runs along the
+   * forearm and no wrist turns a blade point-down behind its own head -- and
+   * the hand going with it all the way. See STOW_TIME.
    */
   sheathe(): boolean {
-    if (!this.scabbard || this.sheathedNow || this.severedAt !== null || this.limp) return false;
+    if (!this.scabbard || this.sheathedNow || this.stow
+      || this.severedAt !== null || this.limp) return false;
+    this.stow = { draw: false, phase: "lift", time: 0, turn: 0 };
+    return true;
+  }
+
+  /**
+   * Start drawing it: the hand goes over the shoulder to the grip, pulls the
+   * blade up out of the scabbard, and brings it over into its own line, where
+   * it is jointed back on across no gap at all. False if it is not on the
+   * back, or cannot be taken.
+   */
+  draw(): boolean {
+    if (!this.sheathedNow || this.stow || this.severedAt !== null || this.limp) return false;
+    this.stow = { draw: true, phase: "reach", time: 0, turn: 0 };
+    return true;
+  }
+
+  /**
+   * Take the hand to a world point instead of where the mouse aims it --
+   * `weight` of the way, 0 the aim and 1 the point -- or back to the aim with
+   * null. Nothing is placed: the ghost goes there and the hand has to follow
+   * it under the same clamped drive as ever, which is how a pick-up reaches
+   * for what it picks up. Ignored while a sword is going up or coming out:
+   * that has the hand.
+   */
+  guide(at: THREE.Vector3 | null, weight = 1): void {
+    if (this.stow) return;
+    this.guidePole = null;
+    if (!at) {
+      this.guideWeight = 0;
+      return;
+    }
+    this.guideAt.copy(at);
+    this.guideWeight = clamp(weight, 0, 1);
+  }
+
+  /** A step of putting the weapon up or taking it out. */
+  private stepStow(dt: number): void {
+    const st = this.stow!;
+    st.time += dt;
+    const span = STOW_TIME[st.phase] * Math.sqrt(this.build.scale);
+    const u = Math.min(1, st.time / span);
+    const s = smoothstep(0, 1, u);
+    // A hand that is still on its way when its time is up gets a little
+    // longer to arrive -- not forever: a hand that cannot get there, can't.
+    const late = (near: number) =>
+      this.state.trackingError > near * this.build.scale && st.time < span * STOW_GRACE;
+    const next = (phase: StowPhase) => {
+      st.phase = phase;
+      st.time = 0;
+    };
+
+    switch (st.phase) {
+      case "lift":
+        // Up over the shoulder to where the grip will be with the point in
+        // the mouth, the weapon still in the hand's grip.
+        this.guideOnChest(this.mouthPoint, s);
+        if (u < 1 || late(0.1)) break;
+        this.loosen();
+        this.fighter.chestFrameLocal(this.bladePosition(this._sheathP), this.bladeQuat(this._sheathQ),
+          this.stowP, this.stowQ);
+        // Back over the shoulder, whichever way the point was: up, back, down.
+        st.turn = wrapTwoPi(pitchOf(this.sheathQuat) - pitchOf(this.stowQ));
+        this.carry(this.stowP, this.stowQ);
+        next("turn");
+        break;
+      case "turn": {
+        const p = this._stowP.lerpVectors(this.stowP, this.mouthPoint, s);
+        const q = this._stowQ.setFromAxisAngle(CHEST_RIGHT, st.turn * s).multiply(this.stowQ)
+          .slerp(this.sheathQuat, smoothstep(0.55, 1, u));
+        this.carry(p, q);
+        if (u >= 1) next("seat");
+        break;
+      }
+      case "seat":
+        this.carry(this._stowP.lerpVectors(this.mouthPoint, this.sheathPoint, s), this.sheathQuat);
+        if (u < 1) break;
+        this.loose = false;
+        this.sheathedNow = true;
+        this.moveHand(this.foreMesh, this.foreHalf);
+        next("settle");
+        break;
+      case "settle":
+        // The hand lets go of it and goes back to where the mouse has it.
+        this.guideOnChest(this.sheathPoint, 1 - s);
+        if (u >= 1) this.endStow();
+        break;
+
+      case "reach":
+        this.guideOnChest(this.sheathPoint, s);
+        if (u < 1 || late(0.04)) break;
+        this.sheathedNow = false;
+        this.loose = true;
+        this.moveHand(this.bladeMesh, 0);
+        this.carry(this.sheathPoint, this.sheathQuat);
+        next("pull");
+        break;
+      case "pull":
+        this.carry(this._stowP.lerpVectors(this.sheathPoint, this.mouthPoint, s), this.sheathQuat);
+        if (u < 1) break;
+        this.stowP.copy(this.mouthPoint);
+        this.stowQ.copy(this.sheathQuat);
+        // Forward over the shoulder, into the line the forearm has: down,
+        // back, up and over.
+        this.fighter.chestFrameLocal(this.handSample(this._handP, this._handV),
+          this.foreQuat(this._sheathQ), this._stowP, this._stowQ);
+        st.turn = wrapTwoPi(pitchOf(this._stowQ) - pitchOf(this.stowQ));
+        if (st.turn > 0) st.turn -= 2 * Math.PI;
+        next("swing");
+        break;
+      case "swing": {
+        this.guideOnChest(this.mouthPoint, 1 - s);
+        // Along the arc over the shoulder, and onto the hand, which is
+        // already on its way back to the aim: its place first, so the fist
+        // stays on the grip, and its line by the end.
+        const q = this._stowQ.setFromAxisAngle(CHEST_RIGHT, st.turn * s).multiply(this.stowQ);
+        const lead = this.phys.world.timestep;
+        this.fighter.chestFrameWorld(this.stowP, q, this._sheathP, this._sheathQ, lead);
+        this.handSample(this._handP, this._handV).addScaledVector(this._handV, lead);
+        this._sheathP.lerp(this._handP, smoothstep(0, 0.35, u));
+        this._sheathQ.slerp(this.foreQuat(this._handQ), smoothstep(0.3, 1, u));
+        this.placeBlade(this._sheathP, this._sheathQ);
+        if (u < 1) break;
+        this.unsheathe();
+        this.endStow();
+        break;
+      }
+    }
+  }
+
+  /** The hand toward a point on the chest, `weight` of the way, elbow up and over. */
+  private guideOnChest(local: THREE.Vector3, weight: number): void {
+    this.fighter.chestFrameWorld(local, IDENTITY, this.guideAt, this._qb);
+    this.guideWeight = weight;
+    this.guidePole = OVER_POLE;
+  }
+
+  /**
+   * The weapon to a pose on the chest, for this step to take it to, and the
+   * hand guided onto its grip. Placed where the chest will be after the step
+   * rather than where it is, or it rides a step behind a body on the move.
+   */
+  private carry(local: THREE.Vector3, localQ: THREE.Quaternion): void {
+    this.fighter.chestFrameWorld(local, localQ, this._sheathP, this._sheathQ,
+      this.phys.world.timestep);
+    this.placeBlade(this._sheathP, this._sheathQ);
+    this.fighter.chestFrameWorld(local, localQ, this.guideAt, this._qb);
+    this.guideWeight = 1;
+    this.guidePole = OVER_POLE;
+  }
+
+  private placeBlade(p: THREE.Vector3, q: THREE.Quaternion): void {
+    this.blade.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z });
+    this.blade.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w });
+  }
+
+  /** Out of the hand's joint and out of the world: carried, from here, by the stow. */
+  private loosen(): void {
     if (this.wristJoint) {
       this.phys.world.removeImpulseJoint(this.wristJoint, true);
       this.wristJoint = null;
     }
     this.blade.setBodyType(this.phys.rapier.RigidBodyType.KinematicPositionBased, true);
     for (const c of this.weaponColliders) c.setEnabled(false);
-    this.sheathedNow = true;
+    this.loose = true;
     this.twistTarget = 0;
     this._wristTarget.identity();
-    this.moveHand(this.foreMesh, this.foreHalf);
-    this.holdSheathed(true);
-    return true;
+  }
+
+  private endStow(): void {
+    this.stow = null;
+    this.guideWeight = 0;
+    this.guidePole = null;
   }
 
   /**
-   * Take the weapon back into the hand: laid along the forearm as it was
-   * welded, turned square in the grip, moving with the hand, and jointed on
-   * across no gap at all. False if it is already there or cannot be.
+   * The arm has been taken away from a stow half done -- cut off, or the body
+   * knocked down. A weapon still in the hand stays there and one still on
+   * the back stays there; one between the two goes home, onto the back.
    */
-  draw(): boolean {
-    if (!this.sheathedNow || this.severedAt !== null || this.limp) return false;
-    this.unsheathe();
-    return true;
+  private abortStow(): void {
+    if (this.loose) {
+      this.loose = false;
+      this.sheathedNow = true;
+      this.moveHand(this.foreMesh, this.foreHalf);
+      this.holdSheathed(true);
+    }
+    this.endStow();
   }
 
-  /** Where the sheath has the weapon this step, and put it there. */
+  /** Where the sheath has the weapon after this step, and send it there. */
   private holdSheathed(teleport: boolean): void {
-    this.fighter.chestFrameWorld(this.sheathPoint, this.sheathQuat, this._sheathP, this._sheathQ);
+    this.fighter.chestFrameWorld(this.sheathPoint, this.sheathQuat, this._sheathP, this._sheathQ,
+      teleport ? 0 : this.phys.world.timestep);
     const p = this._sheathP;
     const q = this._sheathQ;
     if (teleport) {
       this.blade.setTranslation({ x: p.x, y: p.y, z: p.z }, true);
       this.blade.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
     } else {
-      this.blade.setNextKinematicTranslation({ x: p.x, y: p.y, z: p.z });
-      this.blade.setNextKinematicRotation({ x: q.x, y: q.y, z: q.z, w: q.w });
+      this.placeBlade(p, q);
     }
   }
 
@@ -2189,10 +2534,26 @@ export class Arm {
     this.setWeaponMass(this.weaponMass);
 
     this.sheathedNow = false;
+    this.loose = false;
     this.twistTarget = 0;
     this._wristTarget.identity();
     if (!this.wristJoint) this.makeWristJoint();
     this.moveHand(this.bladeMesh, 0);
+  }
+
+  private bladePosition(out: THREE.Vector3): THREE.Vector3 {
+    const p = this.blade.translation();
+    return out.set(p.x, p.y, p.z);
+  }
+
+  private bladeQuat(out: THREE.Quaternion): THREE.Quaternion {
+    const r = this.blade.rotation();
+    return out.set(r.x, r.y, r.z, r.w);
+  }
+
+  private foreQuat(out: THREE.Quaternion): THREE.Quaternion {
+    const r = this.fore.rotation();
+    return out.set(r.x, r.y, r.z, r.w);
   }
 
   /** The hand mesh onto the weapon or the forearm, at the wrist. */
@@ -2201,8 +2562,8 @@ export class Arm {
     this.handMeshObj.position.set(0, y, 0);
   }
 
-  /** The hand -- the end of the forearm -- and its velocity, now. */
-  private handSample(pos: THREE.Vector3, vel: THREE.Vector3): void {
+  /** The hand -- the end of the forearm -- and its velocity, now. Returns `pos`. */
+  private handSample(pos: THREE.Vector3, vel: THREE.Vector3): THREE.Vector3 {
     const fq = this.fore.rotation();
     const r = this._v.set(0, this.foreHalf, 0).applyQuaternion(this._q.set(fq.x, fq.y, fq.z, fq.w));
     const fp = this.fore.translation();
@@ -2214,6 +2575,7 @@ export class Arm {
       lv.y + (av.z * r.x - av.x * r.z),
       lv.z + (av.x * r.y - av.y * r.x),
     );
+    return pos;
   }
 
   /**
@@ -2230,6 +2592,7 @@ export class Arm {
     const along = this._tb.copy(SHEATH_DIR);
     const edge = this._tc.crossVectors(flat, along);
     this.sheathQuat.setFromRotationMatrix(this._m.makeBasis(flat, along, edge));
+    this.mouthPoint.copy(this.sheathPoint).addScaledVector(SHEATH_DIR, -SHEATH_MOUTH * s);
 
     const len = this.weapon.span + 0.04;
     const leather = new THREE.MeshStandardMaterial({ color: 0x3a2b22, roughness: 0.88 });
@@ -2423,3 +2786,20 @@ function wrapPi(a: number): number {
   while (v < -Math.PI) v += Math.PI * 2;
   return v;
 }
+
+/** Fold an angle into [0, 2pi). */
+function wrapTwoPi(a: number): number {
+  const v = a % (Math.PI * 2);
+  return v < 0 ? v + Math.PI * 2 : v;
+}
+
+/**
+ * Which way a weapon at this turn points, as an angle about the chest's right
+ * from straight up: a quarter turn is straight back, a half straight down.
+ */
+function pitchOf(q: THREE.Quaternion): number {
+  const d = _pitchDir.set(0, 1, 0).applyQuaternion(q);
+  return Math.atan2(d.z, d.y);
+}
+
+const _pitchDir = new THREE.Vector3();

@@ -31,6 +31,13 @@ export interface Item {
   /** Where it lies, world, on the floor. */
   readonly at: THREE.Vector3;
   readonly mesh: THREE.Object3D;
+  /** Where on it a hand takes hold, world. */
+  readonly grip: THREE.Vector3;
+  /**
+   * Which way a body has to face to take it, as a yaw, or null if any way
+   * will do: a rack is taken from in front, a potion from wherever you are.
+   */
+  readonly face: number | null;
   /**
    * Gone from where it lay -- until a reset puts it back. For the rack: its
    * shield is off it.
@@ -40,6 +47,11 @@ export interface Item {
 
 /** How far from the middle of a body a hand can take something off the floor, metres at human scale. */
 export const PICKUP_REACH = 1.25;
+/**
+ * How far away something may be and still be gone and got, metres at human
+ * scale: F walks over to it. Further than that, and it is not "this".
+ */
+export const PICKUP_RANGE = 2.4;
 
 /** What a potion gives back, as a share of a body's full health, over how long. */
 export const POTION_HEAL = 0.4;
@@ -55,13 +67,27 @@ export interface ItemLayout {
 export class Items {
   readonly items: Item[] = [];
   private readonly rackShield: THREE.Object3D;
+  /**
+   * Where each mesh that can be carried off belongs, so a hand that took it
+   * can put it back: its parent and its place there.
+   */
+  private readonly homes = new Map<THREE.Object3D, {
+    parent: THREE.Object3D; position: THREE.Vector3; quaternion: THREE.Quaternion;
+  }>();
+  /** In a hand right now: the mesh, and how far it is still to go to the palm. */
+  private carried: { mesh: THREE.Object3D; from: THREE.Vector3 } | null = null;
 
   constructor(scene: THREE.Scene, layout: ItemLayout) {
     for (const at of layout.potions) {
       const mesh = potionMesh();
       mesh.position.copy(at);
       scene.add(mesh);
-      this.items.push({ kind: "potion", name: "a health potion", at: at.clone(), mesh, taken: false });
+      this.items.push({
+        kind: "potion", name: "a health potion", at: at.clone(), mesh, taken: false,
+        // By the neck.
+        grip: at.clone().setY(0.15), face: null,
+      });
+      this.home(mesh);
     }
 
     // A shield lying on its back, boss up.
@@ -71,7 +97,10 @@ export class Items {
     scene.add(shield);
     this.items.push({
       kind: "shield", name: "the shield", at: layout.shield.clone(), mesh: shield, taken: false,
+      // By the boss.
+      grip: layout.shield.clone().setY(0.08), face: null,
     });
+    this.home(shield);
 
     const rack = rackMesh();
     rack.position.copy(layout.rack.at);
@@ -82,17 +111,60 @@ export class Items {
     this.rackShield.position.set(0, 1.28, -0.07);
     rack.add(this.rackShield);
     scene.add(rack);
+    rack.updateMatrixWorld(true);
     this.items.push({
       kind: "rack", name: "the shield rack", at: layout.rack.at.clone(), mesh: rack, taken: false,
+      // The shield's rim, from in front: the rack's front is its own -Z.
+      grip: this.rackShield.localToWorld(new THREE.Vector3(0, 0.03, 0.12)),
+      face: layout.rack.facing + Math.PI,
+    });
+    this.home(this.rackShield);
+  }
+
+  private home(mesh: THREE.Object3D): void {
+    this.homes.set(mesh, {
+      parent: mesh.parent!, position: mesh.position.clone(), quaternion: mesh.quaternion.clone(),
     });
   }
 
+  /**
+   * Take something's mesh into a hand -- `palm`, which has to be a node of
+   * even scale -- from wherever it lies, and ease it into the palm over the
+   * next few steps. What it IS is not decided here: see `take`.
+   */
+  lift(item: Item, palm: THREE.Object3D): void {
+    this.putBack();
+    const mesh = item.kind === "rack" ? this.rackShield : item.mesh;
+    mesh.visible = true;
+    palm.attach(mesh);
+    this.carried = { mesh, from: mesh.position.clone() };
+  }
+
+  /** A step of whatever is in a hand settling into it, `k` of the way from where it was picked up. */
+  settle(k: number): void {
+    if (!this.carried) return;
+    this.carried.mesh.position.copy(this.carried.from).multiplyScalar(1 - Math.min(1, k));
+  }
+
+  /** Whatever is in a hand back where it belongs, shown or not as it is taken or not. */
+  putBack(): void {
+    const c = this.carried;
+    if (!c) return;
+    this.carried = null;
+    const home = this.homes.get(c.mesh)!;
+    home.parent.add(c.mesh);
+    c.mesh.position.copy(home.position);
+    c.mesh.quaternion.copy(home.quaternion);
+    for (const item of this.items) this.setTaken(item, item.taken);
+  }
+
   /** The nearest thing a body standing at `p` could reach, or null. */
-  nearest(p: THREE.Vector3, reach: number): Item | null {
+  nearest(p: THREE.Vector3, reach: number, seen: (item: Item) => boolean = () => true): Item | null {
     let best: Item | null = null;
     let bestD = reach;
     for (const item of this.items) {
       if (item.taken && item.kind !== "rack") continue;
+      if (!seen(item)) continue;
       const d = Math.hypot(item.at.x - p.x, item.at.z - p.z);
       if (d < bestD) {
         bestD = d;
@@ -111,6 +183,8 @@ export class Items {
 
   /** Everything back where it was. */
   reset(): void {
+    for (const item of this.items) item.taken = false;
+    this.putBack();
     for (const item of this.items) this.setTaken(item, false);
   }
 }
@@ -122,54 +196,103 @@ export interface Outcome {
 }
 
 /**
- * Reach for whatever is nearest. The sword has to be away: the hand that
- * takes things is the sword hand.
+ * Why this body cannot take that, in words the HUD can show -- or null if it
+ * can. The sword has to be away: the hand that takes things is the sword hand.
  */
-export function interact(who: Combatant, items: Items): Outcome {
-  if (who.dead || who.fighter.down) return { ok: false, text: "" };
-  const at = who.position(_p);
-  const item = items.nearest(at, PICKUP_REACH * who.fighter.build.scale);
-  if (!item) return { ok: false, text: "nothing in reach" };
-  if (who.arm.disarmed) return { ok: false, text: "no hand to take it with" };
-  if (!who.arm.sheathed) return { ok: false, text: "sheathe your sword first — X" };
+export function refusal(who: Combatant, item: Item): string | null {
+  if (who.dead || who.fighter.down) return "";
+  if (who.arm.disarmed) return "no hand to take it with";
+  if (!who.arm.sheathed || who.arm.stowing) return "sheathe your sword first — X";
+  const l = who.fighter.offLimb;
+  const arm = l.shoulderOn && l.elbowOn;
+  switch (item.kind) {
+    case "potion":
+      return null;
+    case "shield":
+      if (who.hasShield) return "you already carry a shield";
+      return arm ? null : "no arm to strap it to";
+    case "rack":
+      if (!item.taken) {
+        if (who.hasShield) return "you already carry a shield";
+        return arm ? null : "no arm to strap it to";
+      }
+      return who.hasShield ? null : "the rack is empty";
+  }
+}
 
+/**
+ * What taking it does, once a hand has it: a potion on the belt, a shield on
+ * the arm, a shield off the arm and back on the rack.
+ */
+export function take(who: Combatant, items: Items, item: Item): Outcome {
+  const no = refusal(who, item);
+  if (no !== null) return { ok: false, text: no };
   switch (item.kind) {
     case "potion":
       items.setTaken(item, true);
       who.potions++;
       return { ok: true, text: `took ${item.name}` };
     case "shield":
-      if (who.hasShield) return { ok: false, text: "you already carry a shield" };
       if (!who.equipShield()) return { ok: false, text: "no arm to strap it to" };
       items.setTaken(item, true);
       return { ok: true, text: "took up the shield" };
     case "rack":
       if (!item.taken) {
-        if (who.hasShield) return { ok: false, text: "you already carry a shield" };
         if (!who.equipShield()) return { ok: false, text: "no arm to strap it to" };
         items.setTaken(item, true);
         return { ok: true, text: "took the shield from the rack" };
       }
-      if (!who.hasShield) return { ok: false, text: "the rack is empty" };
       who.unequipShield();
       items.setTaken(item, false);
       return { ok: true, text: "hung the shield on the rack" };
   }
 }
 
-/** What F would do here, for the prompt, or null if nothing is in reach. */
-export function promptFor(who: Combatant, items: Items): string | null {
-  if (who.dead || who.fighter.down) return null;
+/**
+ * Take whatever is nearest, within an arm's reach, at once: the rules, with
+ * nothing walked to or reached for. What F does is `Pickup`, which goes and
+ * gets it and then asks `take` exactly this.
+ */
+export function interact(who: Combatant, items: Items): Outcome {
+  if (who.dead || who.fighter.down) return { ok: false, text: "" };
   const item = items.nearest(who.position(_p), PICKUP_REACH * who.fighter.build.scale);
+  if (!item) return { ok: false, text: "nothing in reach" };
+  return take(who, items, item);
+}
+
+/**
+ * The nearest thing this body could go and get: within a few paces, and in
+ * sight -- a potion on the far side of a wall is not in front of you.
+ */
+export function inRange(who: Combatant, items: Items): Item | null {
+  if (who.dead || who.fighter.down) return null;
+  return items.nearest(who.position(_p), PICKUP_RANGE * who.fighter.build.scale,
+    (item) => who.fighter.sees(_seen.copy(item.grip).setY(item.grip.y + 0.1)));
+}
+
+/** What F would do here, for the prompt, or null if there is nothing to go and get. */
+export function promptFor(who: Combatant, items: Items): string | null {
+  const item = inRange(who, items);
   if (!item) return null;
-  const verb = item.kind === "rack"
-    ? (item.taken ? (who.hasShield ? "hang your shield on the rack" : null) : "take the shield")
-    : `take ${item.name}`;
-  if (verb === null) return null;
-  return who.arm.sheathed ? `F — ${verb}` : `X then F — ${verb}`;
+  const verb = item.kind === "rack" && item.taken ? "hang your shield on the rack"
+    : item.kind === "rack" ? "take the shield" : `take ${item.name}`;
+  const no = refusal(who, item);
+  if (no === null) return `F — ${verb}`;
+  // Only the one refusal that says what to do about it.
+  return who.arm.sheathed || who.arm.disarmed || !canHold(who, item) ? null : `X then F — ${verb}`;
+}
+
+/** Could it be taken, sword aside? */
+function canHold(who: Combatant, item: Item): boolean {
+  const l = who.fighter.offLimb;
+  const arm = l.shoulderOn && l.elbowOn;
+  if (item.kind === "potion") return true;
+  if (item.kind === "rack" && item.taken) return who.hasShield;
+  return arm && !who.hasShield;
 }
 
 const _p = new THREE.Vector3();
+const _seen = new THREE.Vector3();
 
 // -----------------------------------------------------------------------------
 

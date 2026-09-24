@@ -46,6 +46,16 @@ export interface CombatantState {
 }
 
 const _eye = new THREE.Vector3();
+const _up = new THREE.Vector3();
+
+/**
+ * Where a sword hand goes while its body climbs, from the shoulder, metres at
+ * human scale: out to its side, up, and a little back, the blade upright and
+ * clear of whatever is being climbed.
+ */
+const CLEAR_OUT = 0.22;
+const CLEAR_UP = 0.3;
+const CLEAR_BACK = 0.08;
 
 /** The other hand, not being steered. */
 const NO_OFF = { dx: 0, dy: 0, wheel: 0, active: false } as const;
@@ -182,9 +192,42 @@ export class Combatant {
     // The body first, from the arm's intent, so the shoulder is where this
     // step's posture has it before the arm solves its ghost from it.
     this.fighter.update(keys, tuning, dt, this.arm.postureDrive());
+    this.holdOn();
     this.arm.drive(tuning);
     this.offArm.drive(tuning, dt);
   }
+
+  /**
+   * Going over or up something, the hands take hold of it: the other hand
+   * always, and the sword hand if the sword is away. A hand with a sword in
+   * it cannot -- the blade would go into the stone -- so going up a ledge it
+   * holds the sword up and out of the way instead: held at its guard, a body
+   * driven up a face at a climb's speed swung the blade into the edge.
+   */
+  private holdOn(): void {
+    const hold = this.fighter.handhold;
+    if (hold) {
+      this.offArm.guide(hold.left, hold.weight);
+      if (this.arm.sheathed && !this.arm.stowing) this.arm.guide(hold.right, hold.weight);
+      else if (this.arm.wielding && this.fighter.climbing) {
+        const f = this.fighter;
+        const s = f.build.scale;
+        f.shoulderWorld(_up);
+        _up.x += Math.cos(f.yaw) * CLEAR_OUT * s + Math.sin(f.yaw) * CLEAR_BACK * s;
+        _up.y += CLEAR_UP * s;
+        _up.z += -Math.sin(f.yaw) * CLEAR_OUT * s + Math.cos(f.yaw) * CLEAR_BACK * s;
+        this.arm.guide(_up, hold.weight);
+      }
+      this.holding = true;
+    } else if (this.holding) {
+      this.offArm.guide(null);
+      this.arm.guide(null);
+      this.holding = false;
+    }
+  }
+
+  /** The hands were on a hold last step. */
+  private holding = false;
 
   /**
    * Route an impact. Returns true if it landed on this fighter.
@@ -229,7 +272,7 @@ export class Combatant {
    * other hand with no shield on its arm. Drinking takes one.
    */
   get freeHand(): boolean {
-    const sword = this.arm.severedAt === null && this.arm.sheathed;
+    const sword = this.arm.severedAt === null && this.arm.sheathed && !this.arm.stowing;
     const l = this.fighter.offLimb;
     const other = l.shoulderOn && l.elbowOn && !this.offArm.hasShield;
     return sword || other;

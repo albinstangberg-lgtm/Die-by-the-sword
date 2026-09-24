@@ -7,7 +7,8 @@ import { Input, type Action } from "./input/input";
 import {
   buildArena, DUMMY_AT, GOBLIN_POST, ITEM_LAYOUT, ORC_POST, SPAWN,
 } from "./game/arena";
-import { interact, Items, promptFor } from "./game/items";
+import { Items, promptFor } from "./game/items";
+import { Pickup } from "./game/pickup";
 import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
 import { Combatant } from "./game/combatant";
@@ -86,6 +87,7 @@ async function main(): Promise<void> {
   const impacts = new Impacts(phys, renderer.scene, targets, tuning);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
   const items = new Items(renderer.scene, ITEM_LAYOUT);
+  const pickup = new Pickup(player, items);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
 
@@ -171,13 +173,19 @@ async function main(): Promise<void> {
   const perform = (a: Action) => {
     switch (a) {
       case "sheathe": {
-        const ok = player.arm.sheathed ? player.arm.draw() : player.arm.sheathe();
-        if (ok) hud.showNote(player.arm.sheathed ? "sword on your back" : "sword drawn");
+        // Whatever the hand was doing -- going for something -- it is
+        // wanted for the sword now.
+        pickup.cancel();
+        if (!player.arm.stowing) {
+          if (player.arm.sheathed) player.arm.draw(); else player.arm.sheathe();
+        }
         break;
       }
       case "interact": {
-        const out = interact(player, items);
-        hud.showNote(out.text, !out.ok);
+        // Again, while going for something: never mind.
+        if (pickup.active) { pickup.cancel(); break; }
+        const out = pickup.start(input.keys);
+        if (!out.ok) hud.showNote(out.text, true);
         break;
       }
       case "drink": {
@@ -195,6 +203,7 @@ async function main(): Promise<void> {
       f.ai.reset();
     }
     dummy.reset();
+    pickup.cancel();
     items.reset();
     pending.length = 0;
     // The dummy's bodies are all new, so the interpolator's entries point at
@@ -320,7 +329,9 @@ async function main(): Promise<void> {
 
   /** What you carry and how you stand, for the HUD. */
   const kit = (): Kit => ({
-    sword: arm.disarmed ? "lost" : arm.sheathed ? "back" : "hand",
+    sword: arm.disarmed ? "lost"
+      : arm.stowing ? (arm.drawing ? "drawing" : "sheathing")
+        : arm.sheathed ? "back" : "hand",
     shield: player.hasShield
       ? (player.fighter.offLimb.elbowOn && player.fighter.offLimb.shoulderOn ? "arm" : "lost")
       : "none",
@@ -328,18 +339,24 @@ async function main(): Promise<void> {
     healing: player.healing,
     stance: player.dead || fighter.down ? "down"
       : fighter.vaulting ? "vaulting"
-        : !fighter.grounded ? "airborne"
-          : fighter.crouching ? "crouching" : "standing",
+        : fighter.climbing ? "climbing"
+          : pickup.active ? "picking up"
+            : !fighter.grounded ? "airborne"
+              : fighter.crouching ? "crouching" : "standing",
     guarding: input.guardMode,
-    prompt: promptFor(player, items),
+    prompt: pickup.active || fighter.vaulting || fighter.climbing ? null : promptFor(player, items),
   });
 
   const loop = new Loop({
     fixed: (dt) => {
       for (const a of pending.splice(0)) perform(a);
+      // Going to get something, the body is walked there by the pick-up
+      // through the same keys, until it has it or the player takes over.
+      const keys = pickup.step(input.keys, dt, (out) => hud.showNote(out.text, !out.ok))
+        ?? input.keys;
       // Mouse deltas are consumed here, not in render: reading them per frame
       // double-counts input whenever one frame spans two physics steps.
-      player.act(input, input.keys, tuning, dt);
+      player.act(input, keys, tuning, dt);
 
       for (const f of foes) {
         f.ai.think(f.combatant, player, tuning, dt);
@@ -352,9 +369,10 @@ async function main(): Promise<void> {
 
       for (const c of everyone) c.arm.updateDerived();
       impacts.update(performance.now());
-      // A sword on your back traces nothing; drawn again, its arc starts afresh.
+      // A sword on your back, or on its way there or back, traces nothing;
+      // drawn again, its arc starts afresh.
       if (tuning.showTrail) {
-        if (arm.sheathed) trail.clear(); else trail.sample(arm);
+        if (arm.stowed) trail.clear(); else trail.sample(arm);
       }
     },
     render: (alpha, dt) => {

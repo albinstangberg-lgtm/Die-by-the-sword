@@ -21,13 +21,14 @@ coming any more: an opponent makes each swing up as it throws it, aimed at
 whatever of you is there, and the only warning is its weapon going back.
 And now there is a second arm worth having: it holds still, it can carry a
 shield you steer with the other mouse button, and the sword can go on your
-back to leave a hand free for a potion. You can crouch under a cut and vault
-what is waist high.
+back — the hand takes it there, over the shoulder — to leave a hand free for
+a potion, which you walk over, get down to and take. You can crouch under a
+cut, climb a ledge, and vault what is waist high.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 231 checks, no browser needed
+npm run smoke    # headless physics harness — 250 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -42,10 +43,11 @@ npm run build    # production bundle
 | **W / S** | forward, back |
 | **A / D** | turn (arrow keys also work) |
 | **Q / E** | sidestep |
-| **Space** | jump — or, running at something waist high, vault it |
+| **Space** | jump — or, with **W** held at a ledge, climb it |
+| **V** | vault whatever is in front of you, if it is waist high |
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand |
-| **F** | pick up what is in reach — sword on your back first |
+| **F** | go and pick up what is nearby — sword on your back first; F again, or any key, calls it off |
 | **H** | drink a potion — takes a free hand |
 | **Tab** | tuning panel |
 | **R** | reset the fight |
@@ -383,11 +385,30 @@ like. The other lies in the far corner of the hall, past the orc.
 ### The scabbard
 
 **X** puts the sword on your back, hilt over the sword shoulder and point toward
-the other hip, and takes it out again. On your back it is out of the world: the
-joint that held it in the hand is taken out, and it rides the chest as a body
-nothing can touch, so it cannot cut, parry, or snag a door frame. The hand is
-empty and the arm still goes where the mouse sends it. Drawn, it comes back
-into the hand laid along the forearm, moving with it, jointed on across no gap.
+the other hip, and takes it out again — and the hand does it. Putting it up,
+the hand takes the sword up over the shoulder, still in its grip and under the
+arm's own clamped drive, so a sword on its way to your back is a sword until
+its point is in the mouth of the scabbard. Then the point goes back over the
+shoulder and down, the blade slides home, and the empty hand comes back to
+wherever the mouse has it: about a second. Drawing is the same backwards: the
+hand goes over the shoulder to the grip, draws the blade up out of the
+scabbard, and brings it forward over the shoulder into its own line, where it
+is jointed back on across no gap.
+
+Only the part between the mouth and the hand is placed. The grip in this game
+runs along the forearm, and no wrist turns a blade point-down behind its own
+head, so from the moment the hand lets go of the joint until the blade is home
+it is carried along the chest — and the hand is guided onto its grip all the
+way, within a few centimetres. Anything that takes the arm away halfway — a
+cut, a fall — finishes it: a sword still in the hand stays there, one still on
+the back stays there, and one between the two goes home.
+
+On your back it is out of the world: the joint that held it in the hand is
+taken out, and it rides the chest as a body nothing can touch, so it cannot
+cut, parry, or snag a door frame. It used to ride a step behind a body on the
+move — five centimetres out of the scabbard at a walk — and now stays within a
+few millimetres of it (see the findings). The hand is empty and the arm still
+goes where the mouse sends it.
 
 An empty hand is a different arm. The drives were tuned on a hand with a sword
 in it; empty, the same gains shook it back and forth every step at the clamp.
@@ -396,10 +417,20 @@ arm, and holds still.
 
 ### Picking things up, and potions
 
-**F** takes whatever is in reach — about a stride from the middle of you — and
-the hand that takes things is the sword hand. So the sword has to be on your
-back first, and picking something up in a fight costs you your sword for as
-long as it takes. The prompt at the bottom of the screen says what F would do.
+**F** goes and gets the nearest thing in sight within a few paces. The body
+walks over — through the same keys you walk it with, so the same feet and the
+same walls apply — and turns so the thing is under the sword hand. On the floor
+it gets down to it: a squat as deep as the legs go, bowed well over, which on
+these proportions is what it takes to get a hand to the floor at all. Then the
+hand reaches for it, guided there under the arm's own drive, so it gets as
+close as the arm does; what it has hold of comes up with it, and only once the
+body has straightened is it yours. A key of your own — any you were not
+already holding — calls it off, and so does F again, X, or a blow.
+
+The hand that takes things is the sword hand, so the sword has to be on your
+back first, and picking something up in a fight costs you your sword and a
+couple of seconds with your head down. The prompt at the bottom of the screen
+says what F would do.
 
 Potions go on your belt. **H** drinks one, and that takes a free hand: the sword
 hand with the sword away, or the other hand with no shield on it. A potion
@@ -419,17 +450,31 @@ of the way of a swing is the body you can see and cut. Crouched you walk at
 under half speed. An opponent aims at wherever your head and chest are, while
 it draws back — so a crouch after the swing has gone is a crouch under it.
 
+### Climbing
+
+Moving at a ledge, **Space** climbs it rather than jumping: anything with a top
+between a knee and as high as hands that have jumped for it can reach —
+two metres and a bit — and room on top to stand. The body is driven up the face
+and over the edge by its velocity, the way it is walked and got up off the
+floor, never placed, so anything in the way still has its say. The hands go on
+the edge on the way up: the other hand always, the sword hand too if the sword
+is on your back. A hand with a sword in it lifts the sword up and out of the
+way instead, because held at the guard, a body driven up a face swung the blade
+into the edge. A wall is no ledge, and a pillar is no ledge: there is nothing
+on top of either to stand on. The training room has a ledge in its south-west
+corner, a metre and a half up, and a crate against it to go up by in two.
+
 ### Vaulting
 
-Running at something between knee and chest high, **Space** goes over it
-instead of straight up. It asks the stone first, the same stone footwork asks:
-something at knee height within a stride, a top between a knee and a chest when
-looked down on, a far side within a pace and a half, and floor to land on with
-nothing overhead. A wall fails the top, a pillar fails it too. The body is then
-driven up, over and down by its velocity, the way it is walked and got up off
-the floor — never placed — so anything in the way still has its say. Your arms
-are yours the whole way over. The hall's block is vaultable, and the training
-room has a low wall along its west side to practise on.
+**V** goes over something between knee and chest high, rather than up onto it.
+It asks the stone first, the same stone footwork asks: something at knee height
+within a stride, a top between a knee and a chest when looked down on, a far
+side within a pace and a half, and floor to land on with nothing overhead. A
+wall fails the top, a pillar fails it too, and with nothing to vault the key
+does nothing. The body is driven up, over and down by its velocity, a hand
+planted on the top on the way. The hall's block is vaultable, and the training
+room has a low wall along its west side to practise on — **Space** with **W**
+there climbs onto it instead.
 
 ## The testing area
 
@@ -454,9 +499,9 @@ Three rooms, and the point of them is that they are not one room.
 ```
 
 You start in the training room with the practice dummy and four pillars — and
-a shield on a rack by the east wall, a potion beside it, and a low wall along
-the west side to vault — and nothing else in it: a cut you land there is a cut
-you can read. North through
+a shield on a rack by the east wall, a potion beside it, and along the west
+side a low wall to vault and a ledge to climb — and nothing else in it: a cut
+you land there is a cut you can read. North through
 the door is the hall, which holds the orc and the scenery a big swing gets
 caught on. East out of the hall is the cell, which holds the goblin and
 nothing at all, because a spear's reach is the whole argument and a cluttered
@@ -740,7 +785,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Thirty-nine things the physics taught us
+## Forty-two things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1094,6 +1139,32 @@ forearm is most of what the linear drive was pushing, and the forearm's swing
 and the upper arm's roll — one motion when the elbow is bent — weigh a
 fraction of what two drives damping them at once assumed.
 
+**Anything placed has to be placed where it will be.** A sword on the back is
+put there before each step, for the step to take it to — and it was put where
+the back was before the step. The body then walked out from under it: a step
+behind, five centimetres out of the scabbard at a walk, and more at a run. It
+is sent to where the chest will be once the hull has carried it a step at the
+speed it is going, and stays within a few millimetres. Everything that is
+carried along the chest rather than simulated goes through the same one
+function, and none of it can forget.
+
+**A hand that follows a moving target trails it by its own damping.** The arm's
+drive damps the hand's velocity, which is what makes a swing feel heavy — and
+what leaves it the damping over the stiffness behind anything that moves:
+55 over 900, a sixteenth of a second. Following a grip down a scabbard at two
+metres a second that was twelve centimetres of air between the fist and the
+sword. For as much of the ghost as is being guided somewhere — and only that
+much, so an aim still feels exactly as it did — the hand is damped against the
+ghost's own motion instead, and stays on the grip within a few centimetres.
+
+**A human body cannot pick a potion up off the floor standing over it.** The
+hand here is where the forearm ends, 58 centimetres from the shoulder, and the
+shoulder is a metre and a half up. An ordinary crouch and a bend of the back
+still left the arm, straight and pointing at the floor, fifteen centimetres
+short. It takes a squat as deep as the legs go and a bow of sixty-odd degrees —
+which is what a person does — and even then the last few centimetres are the
+wrist's.
+
 And four about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1253,11 +1324,16 @@ Some things look like bugs and are not:
   blade, not the weight behind it.
 - **F does nothing with your sword drawn.** The hand that picks things up is
   the one holding it. X first.
+- **F takes the body away from you for a moment.** It walks you over, turns
+  you, and puts you on your haunches. Press a key and you have it back.
+- **X takes a second, and a sword half put away is not one you can swing.**
+  Between the mouth of the scabbard and the hand it is out of the world, and
+  cuts nothing.
 - **H does nothing with a sword in one hand and a shield on the other arm.**
   Drinking takes a free hand.
-- **Space runs you up and over a low wall instead of jumping.** Only when you
-  are moving forward and it is waist high and within a stride; standing still
-  it is a jump.
+- **Space puts you on top of a low wall instead of jumping.** Only when you
+  are moving forward at something you can stand on; standing still it is a
+  jump. Going over it is V's.
 - **Standing still gets you killed in well under a minute** by whichever of
   them you have walked in on, and much faster by both, if you manage to bring
   them together.
@@ -1279,19 +1355,20 @@ src/
     weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
     species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
     anatomy.ts       one set of proportions, scaled to any body
-    fighter.ts       torso, locomotion, the jump and the vault, feet that stay
-                     planted, legs that bend into a crouch, and a body that can
-                     be knocked over and get back up
+    fighter.ts       torso, locomotion, the jump, the climb and the vault, feet
+                     that stay planted, legs that bend into a crouch or a stoop,
+                     and a body that can be knocked over and get back up
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
-                     and how far a crouch sinks it
+                     how far a crouch sinks it and a stoop bows it over
     offarm.ts        the other arm: a ghost hand of its own, and a shield on it
     shield.ts        a round shield: what it weighs and how it is drawn
     drive.ts         an angular PD held inside what each axis's inertia can take
     items.ts         potions, the shield and the rack, and taking them
+    pickup.ts        F: walking over, getting down to it, and reaching for it
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
-    arena.ts         three rooms built to be hit, the doors between them, and
-                     where the things lying about are put down
+    arena.ts         three rooms built to be hit, the doors between them, a
+                     ledge to climb, and where the things lying about go
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
     cutting.ts       swept-segment hit detection: how a weapon finds flesh
@@ -1308,7 +1385,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 231 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 250 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1388,16 +1465,24 @@ it jumps; and that it walks up to you, rather than leaping, the first time.
 
 And it holds the new kit to its claims: that the other arm and the head hold
 still standing, and the arm settles back where it hangs after a walk; that X
-puts the sword on your back, out of the world, with the empty hand steady, and
-draws it back into the hand within half a millimetre; that nothing is picked up
-with the sword drawn, a potion heals over seconds and never past full, and with
-a shield on one arm and a sword in the other there is no hand to drink with;
-that the rack gives the shield and takes it back; that a blade meeting a shield
-is stopped, the body behind it is cut a third as much, and the blow's weight
-still arrives; that the left button raises the shield and the sword holds its
-aim meanwhile; that a crouch lowers the head and chest a third of a metre with
-both feet on the floor, and halves your pace; and that the low wall and the
-block are vaulted, and a pillar and a standing jump are not.
+takes about a second, the hand going up over the shoulder with the sword and
+staying within a few centimetres of the grip all the way in, with nothing about
+it a snap; that the sword is then out of the world, with the empty hand steady,
+and stays within millimetres of the scabbard while you walk and turn; that it
+is drawn back into the hand within half a millimetre, and that an arm cut off
+halfway leaves it on the back; that nothing is picked up with the sword drawn
+or on its way to your back, a potion heals over seconds and never past full,
+and with a shield on one arm and a sword in the other there is no hand to drink
+with; that the rack gives the shield and takes it back; that F walks over to a
+potion, gets down to it, and takes it only once the hand is on it, and that a
+key of your own calls it off while one already held does not; that a blade
+meeting a shield is stopped, the body behind it is cut a third as much, and the
+blow's weight still arrives; that the left button raises the shield and the
+sword holds its aim meanwhile; that a crouch lowers the head and chest a third
+of a metre with both feet on the floor, and halves your pace; that W and Space
+climb the ledge, the crate and the crate then the ledge, with the hands on the
+edge, and not a wall or a pillar; and that V vaults the low wall and the block
+and does nothing at a pillar.
 
 ## Stack
 
