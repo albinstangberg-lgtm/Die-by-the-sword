@@ -448,8 +448,19 @@ export class Arm {
   /** Once the arm is cut, nothing drives it and the sword is gone for good. */
   severedAt: "shoulder" | "elbow" | null = null;
 
-  /** Set when the owner is down: the limb hangs, but still reports its motion. */
-  limp = false;
+  /**
+   * Set when the owner is down: the limb hangs, but still reports its motion.
+   * Its weapon stops meeting bodies meanwhile: see `inertBladeFilter`.
+   */
+  get limp(): boolean {
+    return this.limpNow;
+  }
+  set limp(on: boolean) {
+    if (on === this.limpNow) return;
+    this.limpNow = on;
+    this.fitWeaponGroups();
+  }
+  private limpNow = false;
 
   /**
    * The weapon is on the back rather than in the hand. The hand is empty and
@@ -2164,6 +2175,7 @@ export class Arm {
     }
     this.caps.length = 0;
     this.limp = false;
+    this.fitWeaponGroups();
     this.armYaw = REST_YAW;
     this.armPitch = REST_PITCH;
     this.reach = clamp(this.build.armLength * 0.793, this.minReach, this.maxReach);
@@ -2266,6 +2278,7 @@ export class Arm {
     this.phys.world.removeImpulseJoint(joint, true);
     if (where === "shoulder") this.shoulderJoint = null; else this.elbowJoint = null;
     this.severedAt = where;
+    this.fitWeaponGroups();
 
     // The cut face. The limb's joint end is -Y, as everywhere else.
     const seg = where === "shoulder"
@@ -2294,6 +2307,16 @@ export class Arm {
 
   get disarmed(): boolean {
     return this.severedAt !== null;
+  }
+
+  /**
+   * A weapon someone is swinging meets bodies; one in a limp hand, or on an
+   * arm that has come off, meets only the floor and other blades.
+   */
+  private fitWeaponGroups(): void {
+    const inert = this.limpNow || this.severedAt !== null;
+    const groups = inert ? this.side.inertBladeFilter : this.side.bladeFilter;
+    for (const c of this.weaponColliders) c.setCollisionGroups(groups);
   }
 
   // -------------------------------------------------------------------------

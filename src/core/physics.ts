@@ -69,6 +69,15 @@ export interface Side {
    */
   readonly shieldFilter: number;
   /**
+   * For a weapon nobody is swinging: in a limp hand, or on an arm that has
+   * been cut off. It lies on the floor and meets other blades, but no body.
+   * Staying out of bodies is also staying out of the way of the legs, which
+   * are kinematic and cannot be pushed back: a spear on the floor that a
+   * passing foot came down on was kicked across the room at seventeen metres
+   * a second, and the corpse still holding it went with it.
+   */
+  readonly inertBladeFilter: number;
+  /**
    * For the invisible locomotion hull.
    *
    * Identical to `bodyFilter` except that blades pass straight through, and
@@ -136,6 +145,7 @@ export function makeSides(teams: readonly number[]): Side[] {
       bladeFilter: groups(mine.blade, GROUP.WORLD | GROUP.PROP | otherBlades | foeBodies),
       cuttableFilter: groups(mine.blade, GROUP.PROP | foeBodies),
       shieldFilter: groups(mine.blade, GROUP.WORLD | otherBlades),
+      inertBladeFilter: groups(mine.blade, GROUP.WORLD | GROUP.PROP | otherBlades),
       hullFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP | otherHulls),
       hitOnlyFilter: groups(mine.body, foeBlades),
       groundFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP),
