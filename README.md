@@ -8,21 +8,22 @@ lag, its refusal to go where you asked — comes out of the physics.
 **This is stage 6.** Stage 2 asked whether swinging a sword at a wall feels
 good. Stage 3 gave the swing consequences. Stage 4 put someone in the room who
 swings back. Stage 5 gave you something to fight that is not a copy of you: an
-orc with an axe and a goblin with a spear, both bound by the same physics, both
-telling you what they are about to do before they do it. Stage 6 stops them
-sharing a room — there are three now, with doors between them — and makes a cut
-look like one. Since then the body has learned to get out of its own arm's way:
-the chest turns ahead of a swing, the shoulder slides round the ribs, the head
-watches the blade, the feet step under a turn, the arm no longer goes straight
-through the chest to get across it, the forearm twists to keep the edge where
-you put it, and the wrist bends to keep the blade pointing where you aimed.
-And a blow now lands with its weight: the swing that puts a goblin on the
-floor does not move an orc.
+orc with an axe and a goblin with a spear, both bound by the same physics.
+Stage 6 stops them sharing a room — there are three now, with doors between
+them — and makes a cut look like one. Since then the body has learned to get
+out of its own arm's way: the chest turns ahead of a swing, the shoulder slides
+round the ribs, the head watches the blade, the feet step under a turn, the arm
+no longer goes straight through the chest to get across it, the forearm twists
+to keep the edge where you put it, and the wrist bends to keep the blade
+pointing where you aimed. And a blow now lands with its weight: the swing that
+puts a goblin on the floor does not move an orc. And nothing tells you what is
+coming any more: an opponent makes each swing up as it throws it, aimed at
+whatever of you is there, and the only warning is its weapon going back.
 
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 187 checks, no browser needed
+npm run smoke    # headless physics harness — 195 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -258,8 +259,8 @@ The same swing — your sword, 8 m/s into the upper chest:
 
 The orc does not have a stagger resistance. It has 173 kilos. It is also why
 *committed to everything it starts* is literal: a stagger is the only way to
-take an attack off something once it has begun, nothing you can swing moves an
-orc that far, and a goblin's lunge you can knock clean out of it. The other way
+take a swing off something once it has begun, nothing you can swing moves an
+orc that far, and a goblin's thrust you can knock clean out of it. The other way
 round, the orc's axe staggers you about one blow in three and now and then puts
 you on the floor, and the goblin's spear, with under three kilos behind it, has
 never moved anyone.
@@ -375,8 +376,8 @@ trivial to beat and absurd to watch.
 ## The bestiary
 
 Three creatures, and not one of them has a stat block. A species is **a size, a
-weapon, and a list of attacks it knows how to throw** — everything that makes an
-orc feel like an orc falls out of the physics those three imply.
+weapon, and the shapes of swing its arm knows** — everything that makes an orc
+feel like an orc falls out of the physics those three imply.
 
 | | | | |
 |---|---|---|---|
@@ -440,39 +441,63 @@ shape of its business end and a mass never can: which axis bites (an edge, or a
 point), where along itself its leverage is, how fast it has to be moving to do
 anything, and how concentrated that bite is.
 
-### Telegraphed attacks
+### Swings, made up as they are thrown
 
-An opponent's swings come from a short, fixed list. Each attack has a **windup
-long enough to read**, and while one is winding the weapon lights up and the
-panel on the right names it and says how to beat it.
+An opponent used to throw a short, fixed list of named attacks, each held wound
+up for a declared length — three quarters of a second of axe going up — while
+the weapon glowed and the panel on the right named it and said how to beat it.
+It read clearly and fought like a quiz: you learned the tells and stopped
+watching the body.
 
-| | | |
+Now nothing is announced, and every swing is made up as it is thrown:
+
+1. **a part of you** — head, body, sword arm or legs — as often as that
+   creature goes for each;
+2. **a shape its arm knows** that reaches that part from this distance: the way
+   the weapon goes round, over the top, along the floor;
+3. and **every number in it drawn afresh**: each angle of the wound-up pose and
+   of the follow-through, how far the arm is drawn in and how far it extends,
+   and the edge.
+
+| | shapes | goes for |
 |---|---|---|
-| **orc** | overhead cleave (0.72s) | sidestep — it only covers one line |
-| | wide swing (0.54s) | give ground — it runs out of arc |
-| | leg sweep (0.46s) | **jump** |
-| **goblin** | jab (0.22s) | turn aside — it is only a poke |
-| | lunge (0.45s) | sidestep and close |
-| | shaft sweep (0.26s) | stay inside it and cut |
-| **swordsman** | cross cut, descending cut, low sweep, backhand | step inside, give ground, jump, turn with it |
+| **swordsman** | forehand and backhand at your head, body or arm · a low cut at your legs | your body, then your head, your sword arm and your legs alike |
+| **orc** | overhead at your head or body · wide swing at your body or head · leg sweep | your body, sometimes your head, never your arm: a small thing to an orc |
+| **goblin** | thrust at anything · shaft sweep, only once you are inside its point | the middle of you |
 
-Preset because a telegraphed attack is one you can *learn*: the same windup
-always becomes the same swing, so once you have seen a cleave you know what the
-axe going up means and that you have three quarters of a second to not be there.
-The windup runs its declared length every time — an earlier version committed
-early the moment the arm reached the wound-up pose, which on a fast arm halved
-the orc's cleave, and a tell whose length depends on how cleanly the last swing
-finished is not a tell.
+No two swings are the same, and there is no list of them to learn. Your sword
+arm is on it for a reason: taking it is the one cut that ends a fight without
+winning it, and the swordsman goes for it as readily as your head.
 
-None of which makes an attack scripted. Once it commits, the arm is still a
-physical limb being dragged toward a target pose under a clamped force. It
-overswings, it catches the low beam, it plants the axe in the floor, and the
-damage it does comes out of how fast the weapon happened to be travelling when
-it arrived.
+**It draws back for as long as its arm takes, and no longer.** A swing goes the
+moment the weapon is where it starts from — the arm's intent on the pose, and
+the real hand within a hand's width of it — it is over once the weapon has gone
+through, and the opening after it lasts as long as the guard takes to come back
+up. There are no clocks, only bounds for a weapon caught on something that
+never gets there. So the timing is the weapon's own. A sword is drawn back in a
+fifth to two fifths of a second, depending on how far round it has to come, a
+spear in about a fifth, and the orc's axe in about a third; back, through and on
+guard again, a swing of the sword takes about a second and one of the axe a
+fifth of a second more. The heaviest thing in the room is still the slowest,
+because it is, not because a table says so — and what you read is what you
+would read off anyone: the weapon going back, where to, and how far.
 
-Attacks are also chosen for the distance. A goblin outside your reach thrusts;
+**The edge is the one number not left to chance.** A cut is worth its edge
+squared, and which rolls lead with the edge through a real swing is not
+something the pose says (see the findings below). Each shape carries a band of
+rolls it was measured to cut in, swing by swing, and draws from inside it.
+Where the best of a band cut far harder than the attack the shape replaced, it
+draws from the side that cuts about as hard as the old attack did — so the
+fight is as dangerous as it was, and only no longer tells you what is coming.
+
+Shapes are still chosen for the distance. A goblin outside your reach thrusts;
 get inside the point and the only thing it has left is the shaft, which is a
-broom handle. That is the counter-play made legible.
+broom handle.
+
+None of which makes a swing scripted. Once it goes, the arm is still a physical
+limb being dragged toward a target pose under a clamped force. It overswings,
+it catches the low beam, it plants the axe in the floor, and the damage it does
+comes out of how fast the weapon happened to be travelling when it arrived.
 
 **The opponent does not cheat.** It drives its weapon arm by emitting *mouse
 deltas* through the same input surface your pointer feeds, so its weapon is
@@ -481,13 +506,19 @@ controller. It cannot teleport its weapon, it cannot swing faster than an arm
 can be moved, and if it buries its axe in a pillar it is stuck there exactly as
 long as you would be.
 
-### How one attack table fits three bodies
+### How one shape fits three bodies and all of you
 
-The attack tables are written in **offsets from level** — the arm pitch at which
-that creature's own weapon would cross its target's chest — and level is solved
-from its own kinematics every time it winds up. So one line reading "a hand's
-width above level, swept across" describes the same swing whether a 1.37m goblin
-or a 2.11m orc throws it.
+The shapes are written in **offsets from level** — the arm pitch at which that
+creature's own weapon would cross the part of you it is aimed at — and level is
+solved from its own kinematics while it draws back. So one shape reading "a
+hand's width above level, swept across" describes the same swing at your head
+and at your shins, thrown by a 1.37m goblin or a 2.11m orc. Aimed at your sword
+arm, which is off to one side of you, an edge also comes round by however far
+from your chest it lies.
+
+The aim follows you while it draws back, as anyone's does, and is held once the
+swing goes: chasing you through the swing would make every one of them home,
+and you should be able to step off the line it went on.
 
 The solver is bisection over the same pose maths the ghost hand uses. It touches
 nothing physical and knows nothing the creature does not: it is an animal
@@ -498,12 +529,12 @@ Edges and points ask different questions of it. An **edge** wants to know where
 its arc will cross, so it solves for pitch. A **point** wants to be aimed, which
 takes both angles — and both ends of the thrust (see the findings below).
 
-### Between attacks
+### Between swings
 
 An opponent used to walk up to you, stop, and swing, and swing again. Nine
 tenths of a fight went on winding up, striking and recovering, and in forty
 seconds of it the orc moved twenty centimetres sideways. The gaps between
-attacks are footwork now:
+swings are footwork now:
 
 - **It circles.** Short steps round you, a pause between each, at the edge of
   its own reach — drifting in or out only as far as it takes to stay there. It
@@ -511,21 +542,21 @@ attacks are footwork now:
   own right: your left, away from your sword hand.
 - **It waits for its moment, never for the same time twice.** How long it goes
   round before committing is rolled afresh every time, so the gap between two
-  attacks is not a rhythm you can count. When the moment comes it steps in to
-  where its weapon does its work — which you see — and winds up there.
+  swings is not a rhythm you can count. When the moment comes it steps in to
+  where its weapon does its work — which you see — and draws back there.
 - **It gives ground.** After a swing it presses straight into another, backs
   off a step or two on a slant, or goes round, in proportions that are the
   creature's own.
 - **It feints with its feet, never with its weapon.** A dart in and straight
   back out, the weapon at the guard throughout: a question put to your nerve,
-  not a tell that lies. The glow still means a swing is coming, every time, and
-  only then.
+  not a tell that lies. The weapon going back still means a swing is coming,
+  every time.
 - **It gets out of the way.** A swing of yours that comes at it is noticed
   once, weighed once against how wary a creature it is, and answered — if at
   all — a reaction time later, 0.12 to 0.22 seconds, by which point a quick
   cut has already landed. What it steps out of is a slow one, a big one, and
-  the second of two. Never while it is committed: an attack it has started, it
-  finishes, and its recovery is still the window its windup bought you.
+  the second of two. Never while it is committed: a swing it has started, it
+  finishes, and the time its guard takes to come back up is still yours.
 - **Crowd it and it fights.** Inside its guard it backs off while it can.
   Pinned against stone, or pressed for more than 0.6 seconds, it swings at you
   from where it stands with whatever works at that distance — for a goblin,
@@ -541,7 +572,7 @@ its sidestep is Q and E too — at the same speed, and it sees nothing of you bu
 where you are and where your blade is.
 
 Each creature does it like what it is, from a `footwork` block beside its
-attacks:
+shapes of swing:
 
 | | goes round you for | between steps | steps out of a swing it sees coming | gives ground after its own |
 |---|---|---|---|---|
@@ -564,14 +595,14 @@ In the air you close only about a twentieth of the gap to your intended velocity
 each step, which over a jump comes out at well under half your ground
 manoeuvring — enough to adjust, not enough to change your mind. That is the
 price of
-the one thing a jump buys you, which is being above the orc's leg sweep — the
-only attack in the game that cannot be sidestepped, because it is already
-travelling along the ground.
+the one thing a jump buys you, which is being above a swing at your legs —
+the orc's above all, which is already travelling along the ground and cannot
+be sidestepped.
 
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Thirty things the physics taught us
+## Thirty-three things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -803,13 +834,13 @@ twenty-one tries instead of nine. It takes a blow like a punching bag now, and
 its mount drags, and the arm comes off in nine again.
 
 **Crowding switched an opponent off.** Its only answer to being inside its
-guard was a step back, and every attack in its table wanted room it never got:
+guard was a step back, and every attack it had wanted room it never got:
 walk into an orc and stay there, and it swung three times in forty seconds. The
 goblin's shaft sweep, written for exactly that distance, had never been thrown
 at all — its band of distances lay wholly inside the one at which the goblin
 stopped attacking. Backing off is still the first answer; pressed for more than
 0.6 seconds, or with stone at its back, it swings from where it stands with
-whatever the table has for that distance.
+whatever it has for that distance.
 
 **A single ray passes a pillar that a shoulder walks into.** Footwork asks the
 floor before it steps, and the first probe was one knee-high line from the
@@ -840,6 +871,45 @@ fewer than half of them drew blood. Thrown from further in, nine in ten did.
 Now, when its moment comes, it steps in to where its weapon does its work and
 swings from there: fewer swings than the old opponent threw, and each doing 5.4
 points of damage to their 3.1.
+
+**Which edge leads a swing is not in the pose.** Swivel and edge are one degree
+of freedom and a cut is worth its edge squared, so an opponent that makes its
+swings up has to know which rolls cut. The obvious answer is to work it out:
+take the pose where the swing crosses you, the way the percussion point travels
+through it, and solve for the roll that lays the edge along that line. The
+solver was right about every pose it was asked about and wrong about every
+swing. The swordsman's solved cuts drew blood one time in five, against nine in
+ten for the rolls it had been throwing, because a swing is not a sequence of
+poses: the blade lags the hand, the grip gives, the wrist bends, and the edge
+that arrives is not the one that was asked for. Every shape now carries a band
+of rolls measured the only way that works, swing by swing in a live fight.
+Most turned out broad, with a cliff either side.
+
+**A stride posed from how far you have walked stops where the walking does.**
+The legs follow a stride phase that advances with the distance the body covers,
+which is what keeps the feet from sliding at any speed. It also meant that when
+the body stopped, the phase stopped, and so did the legs: stand still mid-step
+and you stood on one leg, the other knee bent nine tenths of a radian and its
+foot a third of a metre off the floor, for as long as you cared to stand there.
+Every opponent did it between every two steps of its footwork, which is most of
+a fight — and a fighter that had never moved at all stood with its knees half
+bent, because a stride phase of zero is not a standing pose. The stride has an
+amplitude now as well as a phase: it comes in within a few hundredths of a
+second of the feet moving and goes over about a tenth once they stop, and the
+raised foot comes down to the floor.
+
+**A swing timed by its weapon lands harder than one timed by a clock.** Taking
+out the telegraph's hold changed nothing about a swing but when it started, and
+the orc's chop went from 12 points a swing to 25, on the same edge and along
+the same line: an axe brought down the moment it is up is not the swing it was
+after being held there for a count. Most of the old cleave's damage had been
+landing after its strike was over. Every edge was measured again on swings as
+they are now thrown, and the orc's comes from the side of its band that cuts
+about as hard as the old cleave did. Aiming mattered as much. Going for your
+head a quarter of the time, the swordsman beheaded a man standing still half
+again as often as before — a neck gives way after seven points — so it goes for
+your head less now. And an orc that never aims at your arm at all still takes
+it more often than the old one did, because your arm is in front of your body.
 
 And three about the harness rather than the game:
 
@@ -946,13 +1016,19 @@ Some things look like bugs and are not:
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
 - **An opponent sometimes steps out of your swing.** It saw it start, and moved
   a reaction time later — so a quick cut usually lands and a slow, big one often
-  does not. Never in the middle of an attack of its own. The goblin does it
+  does not. Never in the middle of a swing of its own. The goblin does it
   most; the orc hardly ever.
 - **An opponent sometimes darts in and straight back out without swinging.**
-  That is a feint with its feet. Its weapon lights up only for a real attack.
+  That is a feint with its feet. Its weapon stays at the guard; only a real
+  swing draws it back.
+- **Nothing tells you what an opponent is about to do.** The fight panel says
+  whether it has seen you and whether it can still fight, and that is all.
+  What is coming is on its arm: watch the weapon go back, and where to.
+- **The swordsman goes for your sword arm.** As readily as your head. Losing
+  it ends the fight without the fight being won.
 - **The goblin backs away when you come for it.** It goes round you out of your
   reach and gives ground as you close. Pin it against a wall, or stay in its
-  face, and it swings the shaft at you — the one attack it has up close, and a
+  face, and it swings the shaft at you — the one swing it has up close, and a
   poor one.
 - **At the very end of a cross-body cut the blade drifts a few degrees back
   toward your left shoulder.** With the elbow kept out of the ribs the forearm
@@ -996,7 +1072,7 @@ src/
   game/
     arm.ts           THE MECHANIC — read this one first
     weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
-    species.ts       the bestiary — a size, a weapon, a list of attacks
+    species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
     anatomy.ts       one set of proportions, scaled to any body
     fighter.ts       torso, locomotion, the jump, feet that stay planted, and
                      a body that can be knocked over and get back up
@@ -1020,7 +1096,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 187 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 195 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1048,7 +1124,9 @@ the original flick no longer spins the forearm; that a drag reaches the ghost
 with no lag at all and a flick arrives within a few frames; that the chest is
 more than half turned before the hand crosses it while the hips lag behind;
 that planted feet do not skate, step one at a time, and end up under the hips;
-and that the shoulder a held aim settles to is exactly the one the opponent's
+that a fighter stopped anywhere in a stride has both feet on the floor a third
+of a second later, and one that has never walked stands on straight legs; and
+that the shoulder a held aim settles to is exactly the one the opponent's
 probes predicted.
 
 And the grip: that each weapon's inertia is where its iron is — a one-part
@@ -1064,8 +1142,8 @@ And it weighs blows: that one swing floors a goblin, shoves a man a centimetre
 and leaves an orc where it stood; that a floored fighter lies there with
 nothing driving it, gets up by itself, upright, at standing height, with its
 sword arm on its shoulder, and comes at you again — three times over, and still
-whole; that a stagger takes a goblin's lunge off it mid-windup until its feet
-are back; that forty seconds of the orc's axe rock you and forty of the
+whole; that a stagger takes a goblin's thrust off it while it draws back,
+until its feet are back; that forty seconds of the orc's axe rock you and forty of the
 goblin's spear never move you at all; that your own real swings never move an
 orc; that the dummy swings from a blow and settles before the next; that a
 blade through two parts of a body carries one swing's weight; and that a corpse
@@ -1076,12 +1154,16 @@ round you — metres of it, where the old one managed centimetres — and not
 always the same way round; that the orc spends more of a fight swinging than
 the others, while the goblin goes round you out of your sword's reach and gives
 more ground; that the goblin steps out of cuts it sees coming, and never out of
-the middle of an attack of its own; that crowded, every one of them still
+the middle of a swing of its own; that crowded, every one of them still
 swings, and the goblin swings its shaft; that the step probe finds the wall
 behind you and open floor where there is nothing; and that a swordsman fought
-into a corner turns back at the walls instead of walking into them. And, for
-twenty seconds of real fighting, that the weapon lights and an attack is named
-only while one is actually coming.
+into a corner turns back at the walls instead of walking into them.
+
+And it holds them to swinging the way you do: half a minute against each, in
+which every swing is drawn back first and for no set time, the axe comes back
+slower than the sword, the swings go for more of you than one place and no two
+are the same, and nothing but the arm gives one away; and that a swing at your
+legs from the orc really does pass under a jump.
 
 ## Stack
 

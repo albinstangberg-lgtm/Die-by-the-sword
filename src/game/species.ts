@@ -5,8 +5,8 @@ import { AXE, SPEAR, SWORD, type Weapon } from "./weapons";
 /**
  * The bestiary.
  *
- * A species is not a stat block. It is a size, a weapon, and a list of attacks
- * it knows how to throw; everything that makes an orc feel like an orc comes
+ * A species is not a stat block. It is a size, a weapon, and the shapes of
+ * swing its arm knows; everything that makes an orc feel like an orc comes
  * out of the physics those three imply. An orc is slow because it is swinging
  * 3.65kg of iron on the end of a metre of ash, not because a speed number says
  * so. A goblin outranges you because its spear is longer than your sword, not
@@ -24,55 +24,67 @@ import { AXE, SPEAR, SWORD, type Weapon } from "./weapons";
  *                   while its health pool is nearly twice as deep.
  */
 
+/** A part of you a swing can be aimed at. */
+export type Aim = "head" | "body" | "arm" | "legs";
+
+/** The least and the most a value may be, drawn afresh for every swing. */
+export type Span = readonly [number, number];
+
 /**
- * One preset attack.
+ * One shape of swing a creature's arm knows how to make.
  *
- * Preset because a telegraphed attack is one you can learn: the same windup
- * always becomes the same swing, so after you have seen a cleave once you know
- * what the axe going up means and you know you have three quarters of a second
- * to not be there. Nothing about it is on rails -- the arm is still a physical
- * limb being dragged toward a target pose under a clamped force, and it misses,
- * catches on pillars and overswings exactly as yours does.
+ * Not an attack: nothing names it to you, nothing tells you how to beat it,
+ * and no two swings thrown with it are the same. It is the way the weapon goes
+ * round -- forehand, backhand, over the top, along the floor -- and each swing
+ * is made up as it is thrown: aimed at a part of you, with its angles, its
+ * depth and its edge each drawn from a range. The arm is still a physical limb
+ * dragged toward a pose under a clamped force, and it misses, catches on
+ * pillars and overswings exactly as yours does.
  *
  * Pitches are offsets in radians from LEVEL: the arm pitch at which this
- * fighter's own weapon would cross its target's chest. That is solved from the
- * arm's kinematics every time it winds up, so the same table describes the
- * same attack whether it is thrown by a 1.37m goblin or a 2.11m orc.
+ * fighter's own weapon would cross the part it is aimed at. That is solved
+ * from the arm's kinematics as it winds up, so the same shape describes the
+ * same swing at your head or your shins, thrown by a 1.37m goblin or a 2.11m
+ * orc.
+ *
+ * The one thing that is not free is the roll. Swivel and edge are one degree
+ * of freedom, a cut is worth its edge squared, and which rolls lead with the
+ * edge through a real swing -- the blade lagging the hand, the grip giving --
+ * is not something the pose alone says. The bands here were measured, swing by
+ * swing: outside them the same shape lands on the flat. Where a band cut far
+ * harder than the attack the shape replaced, it is the side of it that cuts
+ * about as hard -- the fight was meant to stop announcing itself, not to get
+ * more lethal.
  */
-export interface Attack {
-  name: string;
-  /** How to not be hit by it. Shown in the HUD while it winds up. */
-  counter: string;
+export interface Cut {
+  /** What the code and the harness call it. You are never told. */
+  readonly name: string;
+  /** The parts of you it can be aimed at. */
+  readonly aims: readonly Aim[];
   /** Wound-up pose: arm yaw, pitch offset from level, reach 0..1. */
-  from: { yaw: number; pitch: number; reach: number };
+  readonly from: { readonly yaw: Span; readonly pitch: Span; readonly reach: Span };
   /** Followed THROUGH to this one. Aiming at the target decelerates into it. */
-  to: { yaw: number; pitch: number; reach: number };
-  /** Elbow swivel, which is also the cutting edge's roll. */
-  roll: number;
-  /** Seconds of tell. This is the whole contract with the player. */
-  windup: number;
-  /** Seconds of commitment. Nothing steers during it. */
-  strike: number;
-  /** Seconds of being open afterwards. Long attacks cost more. */
-  recover: number;
-  /** Footwork during the strike: 1 steps in, -1 gives ground, 0 holds. */
-  step: number;
+  readonly to: { readonly yaw: Span; readonly pitch: Span; readonly reach: Span };
+  /** Elbow swivel, which is also the cutting edge's roll: the band it cuts in. */
+  readonly roll: Span;
+  /** Footwork during the swing: 1 steps in, -1 gives ground, 0 holds. */
+  readonly step: number;
   /**
-   * The band of distances this attack is worth throwing at, as fractions of
+   * The band of distances this shape is worth throwing at, as fractions of
    * the creature's own strike reach. Omitted means any distance.
    *
    * This is what stops a spearman sweeping at a target it cannot reach and an
-   * axe cleaving at one standing on its toes. It is also the counter-play made
-   * legible: get inside a goblin's point and its answer changes, because the
-   * only thing it has at that distance is the shaft.
+   * axe cleaving at one standing on its toes -- and why getting inside a
+   * goblin's point changes what it does, because the only thing it has at that
+   * distance is the shaft.
    */
-  at?: { min?: number; max?: number };
+  readonly at?: { readonly min?: number; readonly max?: number };
 }
 
 /**
  * How a creature moves when it is not swinging.
  *
- * The gap between attacks is where a fight is read, and most of what makes
+ * The gap between swings is where a fight is read, and most of what makes
  * one opponent feel unlike another happens in it. None of this is a way of
  * moving the player lacks: it steps with the same keys you do, at the same
  * speed, and sees nothing of you but where you are and where your blade is.
@@ -81,7 +93,7 @@ export interface Footwork {
   /**
    * Seconds it circles, once it is at its distance, before it commits: the
    * shortest and the longest. Rolled afresh every time, so the gap between
-   * two attacks is not a rhythm you can count.
+   * two swings is not a rhythm you can count.
    */
   readonly patience: readonly [number, number];
   /** Its usual pause between one step and the next, seconds. */
@@ -89,7 +101,7 @@ export interface Footwork {
   /**
    * Chance it steps out of a swing it sees coming, 0..1. Rolled once per
    * swing, answered a reaction time later, and never while it is committed:
-   * an attack it has started, it finishes.
+   * a swing it has started, it finishes.
    */
   readonly wariness: number;
   /** Chance it gives ground after a swing of its own, before anything else. */
@@ -131,7 +143,9 @@ export interface Species {
    * middle, not their front.
    */
   readonly range: { close: number; strike: number; far: number };
-  readonly attacks: Attack[];
+  /** How it shares its swings between the parts of you: relative weights. */
+  readonly aim: Readonly<Record<Aim, number>>;
+  readonly cuts: readonly Cut[];
 }
 
 /**
@@ -176,32 +190,40 @@ export const SWORDSMAN: Species = {
     patience: [0.5, 1.5], settle: 0.26, wariness: 0.35, retreat: 0.35, feint: 0.12,
   },
   range: { close: 0.68, strike: 1.0, far: 1.26 },
-  attacks: [
+  // Your body, mostly, and everything else as often as each other -- your
+  // sword arm included, the one cut that ends a fight without winning it.
+  //
+  // It went for your head and your arm a quarter of the time each at first,
+  // and took them: against someone standing still it beheaded half again as
+  // often as the old swordsman and disarmed twice as often. A neck gives way
+  // after seven points, and a cut at the head is one clean hit from over.
+  aim: { head: 0.15, body: 0.55, arm: 0.15, legs: 0.15 },
+  cuts: [
     {
-      name: "cross cut", counter: "step inside it",
-      from: { yaw: -1.15, pitch: 0.5, reach: 0.5 },
-      to: { yaw: 0.95, pitch: -0.1, reach: 1.0 },
-      roll: -1.1, windup: 0.28, strike: 0.42, recover: 0.24, step: 0,
+      // Across and down from its own right. The blade is symmetric, so which
+      // edge leads costs nothing, and a steeper or a flatter line cuts in the
+      // same band of rolls.
+      name: "forehand", aims: ["head", "body", "arm"],
+      from: { yaw: [-1.3, -1.1], pitch: [0.3, 0.5], reach: [0.45, 0.55] },
+      to: { yaw: [0.9, 1.05], pitch: [-0.35, -0.1], reach: [1, 1] },
+      roll: [-1.4, -0.8], step: 0,
     },
     {
-      name: "descending cut", counter: "back off a pace",
-      from: { yaw: -1.25, pitch: 0.35, reach: 0.5 },
-      to: { yaw: 1.0, pitch: -0.35, reach: 1.0 },
-      roll: -0.6, windup: 0.3, strike: 0.42, recover: 0.24, step: 0,
+      name: "backhand", aims: ["head", "body", "arm"],
+      from: { yaw: [0.95, 1.1], pitch: [0.3, 0.45], reach: [0.45, 0.55] },
+      to: { yaw: [-1.3, -1.1], pitch: [-0.2, -0.1], reach: [1, 1] },
+      roll: [-1.2, -0.7], step: 0,
     },
     {
-      name: "low sweep", counter: "jump it",
-      from: { yaw: -1.3, pitch: -0.2, reach: 0.5 },
-      to: { yaw: 1.05, pitch: -0.65, reach: 1.0 },
-      roll: 0, windup: 0.26, strike: 0.4, recover: 0.22, step: 0,
-    },
-    {
-      // The blade is symmetric, so which edge leads costs nothing, and this is
-      // the arm plane that measured well.
-      name: "backhand", counter: "turn with it",
-      from: { yaw: 1.05, pitch: 0.4, reach: 0.5 },
-      to: { yaw: -1.2, pitch: -0.15, reach: 1.0 },
-      roll: -1.0, windup: 0.27, strike: 0.42, recover: 0.24, step: 0,
+      // Along the floor at your shins, from its right. Legs are thin, and
+      // this is the weakest thing it does; you can jump it. Its band is the
+      // narrowest here: a fifth of a radian either side of its best it lands
+      // on the flat nearly three times as often, and a little past that it
+      // barely cuts at all.
+      name: "low cut", aims: ["legs"],
+      from: { yaw: [-1.35, -1.2], pitch: [0.25, 0.4], reach: [0.45, 0.55] },
+      to: { yaw: [0.95, 1.1], pitch: [-0.15, -0.05], reach: [1, 1] },
+      roll: [-0.5, -0.1], step: 0,
     },
   ],
 };
@@ -215,10 +237,10 @@ const ORC_BUILD = makeBuild(1.14, 1.1);
  *
  * It is not fast and it does not have to be. Everything it throws takes the
  * better part of a second to arrive and could be walked away from by anyone
- * paying attention, which is the deal: the tell is long and the consequence is
- * enormous. Its leg sweep is the only attack in the game that cannot be
- * sidestepped, because it is already travelling along the ground -- the answer
- * to that one is to be in the air.
+ * paying attention, which is the deal: the axe comes back slowly because it is
+ * an axe, and what it does when it arrives is enormous. A swing at your legs
+ * cannot be sidestepped, because it is already travelling along the ground --
+ * the answer to that one is to be in the air.
  */
 export const ORC: Species = {
   key: "orc",
@@ -239,28 +261,40 @@ export const ORC: Species = {
   },
   // It keeps its distance more than a swordsman does: an axe wants room.
   range: { close: 0.78, strike: 1.0, far: 1.24 },
-  attacks: [
+  // Mostly the body, sometimes the head, and never your arm: your arm is a
+  // small thing to an orc, and in front of your body anyway.
+  aim: { head: 0.2, body: 0.65, arm: 0, legs: 0.15 },
+  cuts: [
     {
-      // The signature. Nearly a second of axe going up, then all of it coming
-      // down on one line -- so stand anywhere but that line.
-      name: "overhead cleave", counter: "sidestep — it only covers one line",
-      from: { yaw: -0.45, pitch: 1.0, reach: 0.35 },
-      to: { yaw: 0.05, pitch: -0.75, reach: 1.0 },
-      roll: -0.35, windup: 0.72, strike: 0.46, recover: 0.42, step: 1,
+      // Over the top and down through whatever is in the way, stepping in
+      // behind it. One line, so it is the one you can step off.
+      //
+      // It cuts across more than a radian of roll, and near the middle of that
+      // it takes a quarter of your health a swing: twice what the old cleave
+      // did on the same edge, because a chop timed by the axe's own weight
+      // lands harder than one held for a count. Its edge is the side of the
+      // band that cuts about as hard as the cleave did.
+      name: "overhead", aims: ["head", "body"],
+      from: { yaw: [-0.55, -0.35], pitch: [0.9, 1.1], reach: [0.3, 0.4] },
+      to: { yaw: [0, 0.1], pitch: [-0.85, -0.65], reach: [1, 1] },
+      roll: [0.45, 0.8], step: 1,
       at: { min: 0.72 },
     },
     {
-      name: "wide swing", counter: "give ground — it runs out of arc",
-      from: { yaw: -1.4, pitch: 0.35, reach: 0.55 },
-      to: { yaw: 1.3, pitch: -0.15, reach: 1.0 },
-      roll: -0.9, windup: 0.54, strike: 0.56, recover: 0.4, step: 0,
+      // The whole axe round at waist height. It runs out of arc: give ground.
+      name: "wide swing", aims: ["body", "head"],
+      from: { yaw: [-1.5, -1.3], pitch: [0.3, 0.4], reach: [0.5, 0.6] },
+      to: { yaw: [1.2, 1.35], pitch: [-0.2, -0.1], reach: [1, 1] },
+      roll: [-1.5, -1.1], step: 0,
       at: { min: 0.7 },
     },
     {
-      name: "leg sweep", counter: "JUMP",
-      from: { yaw: 1.25, pitch: -0.55, reach: 0.6 },
-      to: { yaw: -1.35, pitch: -0.95, reach: 1.0 },
-      roll: 0.1, windup: 0.46, strike: 0.48, recover: 0.36, step: 0,
+      // Backhand along the floor. It is already travelling along the ground,
+      // so stepping aside does nothing: be in the air.
+      name: "leg sweep", aims: ["legs"],
+      from: { yaw: [1.15, 1.3], pitch: [0, 0.1], reach: [0.55, 0.65] },
+      to: { yaw: [-1.4, -1.3], pitch: [-0.45, -0.3], reach: [1, 1] },
+      roll: [-1.8, -1.5], step: 0,
     },
   ],
 };
@@ -297,7 +331,10 @@ export const GOBLIN: Species = {
   // It thrusts rather than sweeps, so it fights at arm's length and hates
   // anything closer.
   range: { close: 0.86, strike: 1.04, far: 1.3 },
-  attacks: [
+  // The middle of you, mostly: a point goes where it is sent, and a body is
+  // the biggest thing to send it at.
+  aim: { head: 0.2, body: 0.5, arm: 0.15, legs: 0.15 },
+  cuts: [
     {
       // A thrust is REACH and nothing else.
       //
@@ -307,28 +344,21 @@ export const GOBLIN: Species = {
       // shaft went in flat, so it scored nothing at all. Take the sweep out
       // and the same 7 m/s runs down the shaft instead of across it. What is
       // left is the hand going from folded to extended under a clamped force,
-      // which is what a thrust is.
-      name: "jab", counter: "turn aside — it is only a poke",
-      from: { yaw: 0.05, pitch: 0.12, reach: 0.1 },
-      to: { yaw: 0, pitch: 0, reach: 1.0 },
-      roll: -0.2, windup: 0.22, strike: 0.2, recover: 0.22, step: 1,
+      // aimed at both ends -- and the deeper it draws back, the more of a lunge
+      // it is.
+      name: "thrust", aims: ["head", "body", "arm", "legs"],
+      from: { yaw: [0, 0.08], pitch: [0.08, 0.18], reach: [0.08, 0.2] },
+      to: { yaw: [0, 0], pitch: [0, 0], reach: [1, 1] },
+      roll: [-0.3, -0.15], step: 1,
       at: { min: 0.7 },
-    },
-    {
-      // Its best move, and the only one worth respecting.
-      name: "lunge", counter: "sidestep and close",
-      from: { yaw: 0.05, pitch: 0.16, reach: 0.12 },
-      to: { yaw: 0, pitch: 0, reach: 1.0 },
-      roll: -0.25, windup: 0.45, strike: 0.3, recover: 0.36, step: 1,
-      at: { min: 0.8 },
     },
     {
       // What it is left with once you are inside the point. It gives ground
       // while it swings, because standing there is how a goblin dies.
-      name: "shaft sweep", counter: "stay inside it and cut",
-      from: { yaw: -0.9, pitch: 0.3, reach: 0.6 },
-      to: { yaw: 1.0, pitch: -0.15, reach: 0.8 },
-      roll: -0.8, windup: 0.26, strike: 0.4, recover: 0.3, step: -1,
+      name: "shaft sweep", aims: ["body"],
+      from: { yaw: [-0.95, -0.85], pitch: [0.25, 0.35], reach: [0.55, 0.65] },
+      to: { yaw: [0.95, 1.05], pitch: [-0.2, -0.1], reach: [0.75, 0.85] },
+      roll: [-0.9, -0.7], step: -1,
       at: { max: 0.82 },
     },
   ],

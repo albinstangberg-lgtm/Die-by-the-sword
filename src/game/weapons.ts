@@ -80,8 +80,8 @@ export interface Weapon {
    * its edge is offset.
    */
   samplePoint(t: number, out: THREE.Vector3): THREE.Vector3;
-  /** Origin at the hand, +Y down the weapon. `glow` is what the telegraph lights. */
-  build(): { group: THREE.Group; glow: THREE.MeshStandardMaterial[] };
+  /** Origin at the hand, +Y down the weapon. */
+  build(): THREE.Group;
 }
 
 /** The sword's mass, and so the unit every other weapon's weight is read against. */
@@ -290,7 +290,7 @@ export const SWORD: Weapon = {
 
     g.add(new THREE.Mesh(new THREE.SphereGeometry(0.026, 10, 8), brass));
 
-    return { group: g, glow: [steel, edge] };
+    return g;
   },
 };
 
@@ -384,7 +384,7 @@ export const AXE: Weapon = {
     const butt = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.03, 8), IRON());
     g.add(butt);
 
-    return { group: g, glow: [iron, edge] };
+    return g;
   },
 };
 
@@ -475,7 +475,7 @@ export const SPEAR: Weapon = {
     butt.position.y = -SPEAR_BUTT;
     g.add(butt);
 
-    return { group: g, glow: [iron, edge] };
+    return g;
   },
 };
 
