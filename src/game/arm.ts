@@ -1685,6 +1685,47 @@ export class Arm {
   }
 
   /**
+   * Bring the percussion point round onto a target: the yaw that puts it on
+   * the target's bearing from the shoulder, and the pitch that puts it at the
+   * target's height, at a given reach and roll.
+   *
+   * Not the same as aiming the arm at it. The weapon leaves the hand at an
+   * angle and the elbow's pole throws the forearm across, so an axe whose arm
+   * points straight at you comes down a third of a metre to one side of you.
+   * Where every other swing sweeps across and does not mind, a chop with
+   * nothing to bring it round onto you does. The same two bisections
+   * `aimPointAt` alternates, asking where the part that does the work arrives
+   * rather than which way the weapon points.
+   */
+  aimCutAt(
+    target: THREE.Vector3, reachFraction: number,
+    roll: number, t: Tuning, out: { yaw: number; pitch: number },
+  ): { yaw: number; pitch: number } {
+    const strikeAt = this.weapon.grip + this.weapon.span * this.strikePoint;
+    return this.withProbe(t, () => {
+      let yaw = 0;
+      let pitch = 0;
+      for (let round = 0; round < 3; round++) {
+        pitch = this.bisect(PITCH_MIN, PITCH_MAX, (p) => {
+          this.probePose(yaw, p, reachFraction, roll, t);
+          return this._probeDir.y * strikeAt + this._probeHand.y - target.y;
+        });
+        yaw = this.bisect(YAW_MIN, YAW_MAX, (y) => {
+          this.probePose(y, pitch, reachFraction, roll, t);
+          const px = this._probeHand.x + this._probeDir.x * strikeAt - this._shoulder.x;
+          const pz = this._probeHand.z + this._probeDir.z * strikeAt - this._shoulder.z;
+          const wanted = Math.atan2(
+            -(target.x - this._shoulder.x), -(target.z - this._shoulder.z));
+          return wrapPi(Math.atan2(-px, -pz) - wanted);
+        });
+      }
+      out.yaw = yaw;
+      out.pitch = pitch;
+      return out;
+    });
+  }
+
+  /**
    * Point this weapon AT something, rather than across it.
    *
    * For an edge weapon the question is where its arc crosses, which is what

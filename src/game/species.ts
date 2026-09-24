@@ -79,6 +79,38 @@ export interface Cut {
    * distance is the shaft.
    */
   readonly at?: { readonly min?: number; readonly max?: number };
+  /**
+   * How much more often than the other shapes that reach the same part of you
+   * it throws this one: a relative weight, 1 if omitted. What a creature
+   * reaches for first is most of what it is like to fight.
+   */
+  readonly favour?: number;
+}
+
+/**
+ * Coming after you through the air: a run at you with the weapon going up, a
+ * jump, and the swing brought down out of it.
+ *
+ * Only once you have got away. Something that had you in reach a moment ago
+ * and has just watched you open the ground between you closes it the fastest
+ * way it has; something that has never had you in reach walks up like
+ * anything else. The jump is yours -- the same key, the same height for its
+ * size, and the same line it cannot change once its feet are off the floor --
+ * which is the answer to it: be off that line when it comes down.
+ */
+export interface Leap {
+  /** The shape it brings down, by name. */
+  readonly cut: string;
+  /**
+   * How far off you have to be for it, as fractions of its own strike reach:
+   * past where a step in would do, and no further than a run and a jump will
+   * carry it.
+   */
+  readonly at: { readonly min: number; readonly max: number };
+  /** How recently you must have been in its reach, seconds, for it to count as you getting away. */
+  readonly memory: number;
+  /** The least time between one leap and the next, seconds. */
+  readonly rest: number;
 }
 
 /**
@@ -146,6 +178,8 @@ export interface Species {
   /** How it shares its swings between the parts of you: relative weights. */
   readonly aim: Readonly<Record<Aim, number>>;
   readonly cuts: readonly Cut[];
+  /** Whether, and how, it comes after you through the air. */
+  readonly leap?: Leap;
 }
 
 /**
@@ -267,7 +301,9 @@ export const ORC: Species = {
   cuts: [
     {
       // Over the top and down through whatever is in the way, stepping in
-      // behind it. One line, so it is the one you can step off.
+      // behind it. It is what an orc does: three times as often as it goes
+      // round, which makes the axe going up the thing to watch, and one line,
+      // so it is the one you can step off.
       //
       // It cuts across more than a radian of roll, and near the middle of that
       // it takes a quarter of your health a swing: twice what the old cleave
@@ -279,6 +315,7 @@ export const ORC: Species = {
       to: { yaw: [0, 0.1], pitch: [-0.85, -0.65], reach: [1, 1] },
       roll: [0.45, 0.8], step: 1,
       at: { min: 0.72 },
+      favour: 3,
     },
     {
       // The whole axe round at waist height. It runs out of arc: give ground.
@@ -297,6 +334,10 @@ export const ORC: Species = {
       roll: [-1.8, -1.5], step: 0,
     },
   ],
+  // Back out of its reach and it comes after you through the air, the axe
+  // over its head, from a little over two of its reaches to a little over
+  // three: see Leap.
+  leap: { cut: "overhead", at: { min: 2.0, max: 3.3 }, memory: 3, rest: 4 },
 };
 
 // --- the goblin --------------------------------------------------------------
