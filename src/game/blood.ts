@@ -134,14 +134,15 @@ export class Blood {
    * A cut that did not come apart.
    *
    * `strength` is the damage the hit actually did, normalised: a flat slap
-   * produces nothing, a clean cut produces a visible spray. Tying it to the
+   * produces nothing, a clean cut produces a visible spray, and the heaviest
+   * blows in the game three times that, thrown further. Tying it to the
    * damage rather than to the contact means the blood agrees with the number
    * in the HUD, which is the whole reason to draw it.
    */
   spray(at: THREE.Vector3, along: THREE.Vector3, strength: number, tint = BLOOD): void {
     const s = clamp01(strength);
     if (s <= 0.02) return;
-    this.emit(at, along, Math.round(2 + s * 12), 0.7 + s * 2.4, tint, 1);
+    this.emit(at, along, Math.round(2 + s * 34), 0.8 + Math.sqrt(s) * 2.9, tint, 1 + s * 0.3);
   }
 
   /** A joint parting: a hard burst, and cut faces that go on emptying. */

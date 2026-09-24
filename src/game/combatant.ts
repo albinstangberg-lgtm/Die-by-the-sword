@@ -453,11 +453,12 @@ export class Combatant {
   /**
    * Per frame. `alpha` is how far through the current physics step the frame
    * falls, which is what the posed legs need to ease between their last two
-   * poses; every rigid body is placed by the Interpolator instead.
+   * poses; every rigid body is placed by the Interpolator instead. Only the
+   * player's arm ever shows its ghost: see `Arm.syncMeshes`.
    */
-  syncMeshes(tuning: Tuning, alpha: number): void {
+  syncMeshes(alpha: number, showGhost = false): void {
     this.fighter.applyPose(alpha);
-    this.arm.syncMeshes(tuning);
+    this.arm.syncMeshes(showGhost);
   }
 }
 

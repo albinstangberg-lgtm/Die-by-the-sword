@@ -287,6 +287,93 @@ function aimBladeAt(rig: Rig, target: THREE.Vector3, rounds = 4): void {
   }
 }
 
+/** The swordsman's own forehand: what the player's arm is swung with here. */
+const FOREHAND = SWORDSMAN.cuts.find((c) => c.name === "forehand")!;
+
+/** The middle of a band. */
+function mid([lo, hi]: readonly [number, number]): number {
+  return (lo + hi) / 2;
+}
+
+/**
+ * A human hand on the mouse, in pixels a step: the budget an opponent drives
+ * its own arm under (`HAND_SPEED` in ai.ts).
+ */
+const HAND_PX = 1100 / 60;
+
+interface ArmPose { yaw: number; pitch: number; reach: number }
+
+/**
+ * Take the aim, the edge and the reach toward a pose, each at most `cap`
+ * pixels (or wheel notches, four) a step -- the way `Ai.steerArm` does.
+ */
+function steerTo(
+  rig: Rig, want: ArmPose, roll: number, steps: number,
+  cap = HAND_PX, each?: () => void,
+): void {
+  const t = rig.tuning;
+  const within = (v: number, c: number) => Math.max(-c, Math.min(c, v));
+  for (let i = 0; i < steps; i++) {
+    const aim = rig.arm.aim;
+    rig.input.dx = -within((want.yaw - aim.yaw) / t.sensitivity, cap);
+    rig.input.dy = -within((want.pitch - aim.pitch) / t.sensitivity, cap);
+    rig.input.rollDx = within((roll - aim.roll) / t.rollSensitivity, cap);
+    rig.input.wheel = within((rig.arm.reachAt(want.reach) - aim.reach) / t.reachRate, 4);
+    rig.hold(1);
+    each?.();
+  }
+}
+
+/**
+ * The two poses of a forehand through a point, and the roll it cuts at.
+ *
+ * Solved by the arm's own probe, not driven there. `aimBladeAt` drives the
+ * blade TO a point, and against a body that means into it -- which a blade
+ * that is stopped by flesh cannot do, and the wind-up from there went back
+ * through the body it was resting on.
+ *
+ * `level` throws it flat across at the target's height rather than down
+ * across it: the cut a shield held over the chest is there to stop.
+ */
+function forehandAt(
+  rig: Rig, target: THREE.Vector3, level = false,
+): { from: ArmPose; to: ArmPose; roll: number } {
+  const roll = mid(FOREHAND.roll);
+  const shoulder = rig.fighter.shoulderWorld(new THREE.Vector3());
+  let yaw = Math.atan2(-(target.x - shoulder.x), -(target.z - shoulder.z)) - rig.fighter.yaw;
+  while (yaw > Math.PI) yaw -= Math.PI * 2;
+  while (yaw < -Math.PI) yaw += Math.PI * 2;
+  const pitch = rig.arm.solvePitchForHeight(target.y, yaw, 1, roll, rig.tuning);
+  const drop = level ? 0 : 1;
+  return {
+    from: {
+      yaw: yaw + mid(FOREHAND.from.yaw),
+      pitch: pitch + mid(FOREHAND.from.pitch) * drop,
+      reach: mid(FOREHAND.from.reach),
+    },
+    to: { yaw: yaw + mid(FOREHAND.to.yaw), pitch: pitch + mid(FOREHAND.to.pitch) * drop, reach: 1 },
+    roll,
+  };
+}
+
+/**
+ * Throw a forehand through a point, as the swordsman throws its own.
+ *
+ * Swinging at someone is not swinging at air: the blade stops on the first
+ * thing of theirs it meets, as it does on a wall. So this does what a player
+ * does. The edge is rolled to where the forehand cuts, the weapon is drawn
+ * back clear of the target, and it comes through from the same side every
+ * time, at a hand's speed, never back through the body it just landed on.
+ * The hold stands the foe still, so a knock is felt and nothing swings back.
+ */
+function throwForehand(
+  rig: Rig, target: THREE.Vector3, how: { level?: boolean; each?: () => void } = {},
+): void {
+  const cut = forehandAt(rig, target, how.level);
+  steerTo(rig, cut.from, cut.roll, 45, HAND_PX, how.each);
+  steerTo(rig, cut.to, cut.roll, 30, HAND_PX, how.each);
+}
+
 // --- tiny assertion harness ---------------------------------------------------
 
 let failures = 0;
@@ -604,27 +691,23 @@ async function aRealSwingSevers(): Promise<void> {
   // DUMMY_AT.x + 1.25, and standing off at +1.3 put the fighter inside it and
   // shoved it a third of a metre sideways before it could swing.
   //
-  // Close in, so the arc sweeps THROUGH the body rather than grazing its near
-  // surface at the limit of reach. That would have been hopeless while the
-  // blade still collided with flesh — it would have been embedded from the
-  // start — but a blade that passes through can be swung from inside its own
-  // reach, and a sweep that crosses the target's centre line puts real speed
-  // along the contact normal instead of skidding across it.
+  // At a sword's working distance, a little over a metre. This used to stand
+  // close in so the arc swept THROUGH the body, which only a blade that passed
+  // through flesh could do. One that is stopped by it meets the near surface,
+  // and from close in that is the strong of the blade by the hand, where there
+  // is no leverage; from here it is the percussion point.
   // Aim at the dummy's RIGHT UPPER ARM, not its chest. The chest is what the
   // dummy hangs from, so it is the one part with no joint to cut it off at --
   // a swing perfectly aimed there can never satisfy what this test asserts.
   // It passed for a while anyway, because the aiming routine drifted high and
   // kept taking the head off by accident.
   const arm = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
-  rig.place(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
+  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  rig.place(standAt);
   rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
-  rig.pin(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
+  rig.pin(standAt);
   rig.step(90);
 
-  // Count from before the aiming pass. Aiming whips the arm hard, and now that
-  // the blade passes through flesh those corrections are themselves cuts —
-  // measuring only after it had settled reported zero hits on a dummy that had
-  // already lost an arm.
   let best = 0;
   let peakClosing = 0;
   const severed: string[] = [];
@@ -635,68 +718,109 @@ async function aRealSwingSevers(): Promise<void> {
     best = Math.max(best, cutDamage(i));
   });
 
-  aimBladeAt(rig, arm);
-
-  // Wind up to one side, then sweep through at a CONSTANT mouse velocity --
-  // about 1.8 radians in a fifth of a second, which is what a swing is.
-  // Driving toward a fixed yaw instead makes the delta shrink as the arm
-  // arrives, so the blade decelerates into the target and lands a push: the
-  // same "aim through, not at" the opponent's strokes are built on.
-  const sweepRate = 0.13 / rig.tuning.sensitivity;
-
+  // Swung THROUGH the arm to a pose past it, not at it: driving to the
+  // target itself makes the delta shrink as the arm arrives, so the blade
+  // decelerates into it and lands a push -- the same "aim through, not at"
+  // the opponent's strokes are built on.
   let swings = 0;
-  for (; swings < 24 && severed.length === 0; swings++) {
-    if (swings % 4 === 0) aimBladeAt(rig, arm, 2);
-    const dir = swings % 2 === 0 ? 1 : -1;
-    aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
-    for (let i = 0; i < 14; i++) {
-      rig.input.dx = dir * sweepRate;
-      rig.step(1);
-    }
-    rig.step(10);
-  }
+  for (; swings < 24 && severed.length === 0; swings++) throwForehand(rig, arm);
 
   check("a swung blade severs something", severed.length > 0,
     severed.length
       ? `took off ${severed.join(", ")} in ${swings} swings`
       : "nothing came off in 24 swings");
-  // A sweep is largely tangential even when it lands well, so the normal
-  // component is a fraction of the 20 m/s the tip is doing. What matters is
-  // that it clears the 2 m/s floor by a wide margin instead of sitting just
-  // under it, which is where every cut landed before blades stopped colliding
-  // with flesh.
+  // What matters is that it clears the 2 m/s floor by a wide margin instead
+  // of sitting just under it, which is where every cut landed while a blade
+  // that met flesh was measured after the solver had stopped it.
   check("the cut carries real speed", peakClosing > 5,
     `peak closing ${peakClosing.toFixed(1)} m/s, best cut ${best.toFixed(1)} damage`);
 }
 
-async function bladesPassThroughFleshNotStone(): Promise<void> {
-  console.log("\na blade goes through a body and stops at a wall");
+async function aBladeStopsOnABody(): Promise<void> {
+  console.log("\na blade stops on a body as it does on a wall, and lands at the speed it arrived");
   const rig = await buildRig();
   rig.step(60);
 
-  // Regression guard for the fix that restored cutting. A blade that collides
-  // with flesh is stopped by it, and a stopped blade cannot cut: swings became
-  // two dozen grazing contacts at 3 m/s instead of one arriving at twelve.
-  const chest = new THREE.Vector3(DUMMY_AT.x, 1.5, DUMMY_AT.z + 0.15);
-  rig.place(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
+  // Blades used to pass through flesh, because a blade the solver stops had
+  // been braked by the time anything read it: swings became two dozen grazing
+  // contacts at 3 m/s instead of one arriving at twelve. A hit is measured
+  // from the blade's motion before the step now, so it can be stopped like
+  // any other blow and still be worth what it was swung at.
+  const chest = new THREE.Vector3(DUMMY_AT.x, 1.45, DUMMY_AT.z);
+  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  rig.place(standAt);
   rig.fighter.yaw = 0;
-  rig.pin(new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 0.85));
+  rig.pin(standAt);
   rig.step(90);
-  aimBladeAt(rig, chest);
 
-  let peak = 0;
-  for (let i = 0; i < 26; i++) {
-    const to = rig.arm.aim.yaw - 0.7;
-    rig.input.dx = -(to - rig.arm.aim.yaw) / rig.tuning.sensitivity * 0.5;
-    rig.step(1);
-    peak = Math.max(peak, rig.arm.state.tipSpeed);
+  const hits: Impact[] = [];
+  rig.impacts.addBlade(rig.arm, (i) => {
+    if (rig.dummy.receive(i) && i.closingSpeed > 1.2) hits.push(i);
+  });
+  const cut = forehandAt(rig, chest);
+  steerTo(rig, cut.from, cut.roll, 45);
+
+  // The tip's speed the step before the blade landed, and the least it came
+  // down to in the three after.
+  let before = 0;
+  let after = Infinity;
+  let landed = -1;
+  let redAtHit = 0;
+  for (let k = 0; k < 30; k++) {
+    const was = rig.arm.state.tipSpeed;
+    steerTo(rig, cut.to, cut.roll, 1);
+    if (landed < 0 && hits.length > 0) {
+      landed = k;
+      before = was;
+      redAtHit = rig.impacts.streaks.flesh;
+    } else if (landed >= 0 && k <= landed + 3) {
+      after = Math.min(after, rig.arm.state.tipSpeed);
+    }
   }
-  check("the blade is not braked by the body it passes through", peak > 5,
-    `tip reached ${peak.toFixed(1)} m/s sweeping through the dummy`);
+  const hit = hits[0];
+  const red = hits.length > 0 && redAtHit > 0;
+  check("a blade that meets a body is stopped by it",
+    hit !== undefined && after < before / 3,
+    hit ? `tip at ${before.toFixed(1)} m/s into ${hit.what}, ${after.toFixed(1)} m/s after`
+      : "the swing never landed");
+  check("and the blow is worth the speed it arrived at, not the speed it was left with",
+    hit !== undefined && hit.closingSpeed > 5 && hit.bladeVelocity.length() > before * 0.6,
+    hit ? `landed at ${hit.bladeVelocity.length().toFixed(1)} m/s, `
+      + `${hit.closingSpeed.toFixed(1)} of it into the body` : "no hit");
+  check("and it throws red where it landed", red,
+    `${redAtHit} red streaks for ${hit ? cutDamage(hit).toFixed(1) : 0} damage`);
+}
 
-  // Stone is another matter entirely — that is checked against the west wall
-  // in "blocked blade defeats the arm", which still passes.
-  check("stone still stops it", true, "see blocked blade defeats the arm");
+async function aHitSaysHowHardItWas(): Promise<void> {
+  console.log("\na hit says how hard it was: red off flesh, as much as the damage");
+  const rig = await buildRig();
+  rig.step(30);
+  const torso = rig.dummy.limbs.get("torso")!.collider.handle;
+  const burst = (i: Impact, flesh: boolean) => {
+    const was = { ...rig.impacts.streaks, blood: rig.impacts.blood.live };
+    if (flesh) rig.impacts.bleed(i); else rig.impacts.strike(i);
+    const now = rig.impacts.streaks;
+    return {
+      red: now.flesh - was.flesh, gold: now.stone - was.stone,
+      blood: rig.impacts.blood.live - was.blood, damage: cutDamage(i),
+    };
+  };
+
+  const slap = burst(fakeImpact(torso, { edgeAlign: 0.05 }), true);
+  const light = burst(fakeImpact(torso, { closingSpeed: 4 }), true);
+  const heavy = burst(fakeImpact(torso, {
+    closingSpeed: 14, weapon: AXE, massKg: AXE.mass, alongBlade: 0.92,
+  }), true);
+  const stone = burst(fakeImpact(torso, { closingSpeed: 9 }), false);
+
+  check("a flat slap throws nothing", slap.red === 0 && slap.blood === 0,
+    `${slap.damage.toFixed(1)} damage: ${slap.red} red streaks, ${slap.blood} droplets`);
+  check("a cut throws red, and a harder one throws more of it and more blood",
+    light.red > 0 && heavy.red > light.red * 2 && heavy.blood > light.blood * 2,
+    `${light.damage.toFixed(1)} damage: ${light.red} streaks, ${light.blood} droplets; `
+      + `${heavy.damage.toFixed(1)}: ${heavy.red} streaks, ${heavy.blood} droplets`);
+  check("and stone throws gold, never red", stone.gold > 0 && stone.red === 0,
+    `${stone.gold} gold streaks, ${stone.red} red`);
 }
 
 async function resetRebuildsCleanly(): Promise<void> {
@@ -800,13 +924,20 @@ async function theOpponentCanHurtYou(): Promise<void> {
     if (firstCutAt < 0 && rig.player.health < 100) firstCutAt = i;
   }
 
-  check("it lands its first cut quickly", firstCutAt >= 0 && firstCutAt < 900,
+  // Usually inside six seconds, its first or second swing. Now and then the
+  // first few meet your sword where you are holding it, or your forearm in
+  // front of you, and stop there -- a guard held still is a guard, since a
+  // blade stopped passing through the arm behind it into the body. Over
+  // fifty-odd runs one in ten waited past eleven seconds, and one over twenty.
+  check("it lands its first cut quickly", firstCutAt >= 0 && firstCutAt < 1500,
     firstCutAt < 0 ? "never landed a cut" : `first blood at ${(firstCutAt / 60).toFixed(1)}s`);
   // Before the fighters were rebuilt this left a passive player on 6/100. A
   // human-shaped target is a far harder one than the barrel it replaced: the
   // torso is 0.17m wide instead of 0.24 and no longer spans knee to head, so
   // the same strokes graze where they used to bite. Some of that drop is the
   // change working as intended; how much is a judgement for someone playing it.
+  // Blades stopping on bodies took it from dead in forty seconds to about
+  // half: a blow that went through your arm into your body landed twice.
   check("a passive player is worn down", rig.player.health < 85,
     `player at ${rig.player.health.toFixed(1)}/100 after 40s of standing still`);
 }
@@ -2265,20 +2396,14 @@ async function realBlowsAreWeighed(): Promise<void> {
     if (e === "stagger" || e === "down") rocked++;
   });
   const target = new THREE.Vector3(0, ORC.build.standing.crown * 0.7, at.z);
-  const sweepRate = 0.2 / rig.tuning.sensitivity;
+  const where = new THREE.Vector3();
   for (let swings = 0; swings < 16; swings++) {
-    if (swings % 4 === 0) {
-      aimBladeAt(rig, target, 2);
-    }
-    const dir = swings % 2 === 0 ? 1 : -1;
-    aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
-    for (let i = 0; i < 14; i++) {
-      rig.input.dx = dir * sweepRate;
-      rig.hold(1);
-      const p = rig.foe.position(new THREE.Vector3());
-      moved = Math.max(moved, Math.hypot(p.x - at.x, p.z - at.z));
-    }
-    rig.hold(10);
+    throwForehand(rig, target, {
+      each: () => {
+        const p = rig.foe.position(where);
+        moved = Math.max(moved, Math.hypot(p.x - at.x, p.z - at.z));
+      },
+    });
   }
   check("and nothing you swing moves an orc", hits > 10 && rocked === 0 && moved < 0.03,
     `${hits} hits, ${rocked} rocked it, furthest it moved ${(moved * 100).toFixed(1)} cm`);
@@ -3125,18 +3250,10 @@ async function aShieldStopsABlade(): Promise<void> {
       }
       if (rig.foe.receive(i)) damage += cutDamage(i);
     });
+    // Level, across the chest: a cut down across it goes under the shield
+    // and into the hips, which says nothing about the shield either way.
     const target = new THREE.Vector3(0, SWORDSMAN.build.standing.crown * 0.72, at.z);
-    const sweepRate = 0.2 / rig.tuning.sensitivity;
-    for (let swings = 0; swings < 12; swings++) {
-      if (swings % 4 === 0) aimBladeAt(rig, target, 2);
-      const dir = swings % 2 === 0 ? 1 : -1;
-      aimAngles(rig, rig.arm.aim.yaw + dir * 0.8, rig.arm.aim.pitch, 30);
-      for (let i = 0; i < 14; i++) {
-        rig.input.dx = dir * sweepRate;
-        rig.hold(1);
-      }
-      rig.hold(10);
-    }
+    for (let swings = 0; swings < 12; swings++) throwForehand(rig, target, { level: true });
     return { blocks, damage, weight };
   };
   const bare = await run(false);
@@ -3332,7 +3449,8 @@ async function run(): Promise<void> {
   await severingTakesChildrenWithIt();
   await resetRebuildsCleanly();
   await aRealSwingSevers();
-  await bladesPassThroughFleshNotStone();
+  await aBladeStopsOnABody();
+  await aHitSaysHowHardItWas();
   await theOpponentClosesAndSwings();
   await theOpponentPlaysByTheSameRules();
   await theOpponentCanHurtYou();

@@ -101,15 +101,21 @@ export class Impacts {
 
   /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
   private lastAt = new Map<number, number>();
+  /** Off stone and steel. */
   private sparks: Sparks;
+  /**
+   * Off flesh, and only when the blow did damage: the same streaks as off a
+   * wall, but red, and as many as the damage is worth -- see `bleed`.
+   */
+  private wounds: Sparks;
   /**
    * Blood, and who gets it.
    *
-   * The two hit paths already know the difference: a solver contact is stone
-   * or steel, because a blade collides with nothing else, and a swept hit is
-   * flesh, because that is the only thing a sweep looks for. So sparks come
-   * off the wall and blood comes out of the body, and neither needs to be
-   * told which it is hitting.
+   * What counts as flesh is what the blade's sweep is allowed to cut: the
+   * other team's bodies and the practice dummy, `Side.cuttableFilter`. A
+   * blade meets those in the solver now, like a wall, so a contact is sorted
+   * by what it touched rather than by which path found it. Sparks come off
+   * the wall, blood comes out of the body.
    */
   readonly blood: Blood;
 
@@ -127,7 +133,10 @@ export class Impacts {
     /** Read live, for how much of an arm lands behind its weapon. */
     private tuning: Tuning,
   ) {
-    this.sparks = new Sparks(scene);
+    this.sparks = new Sparks(scene, SPARK_GOLD, 64);
+    // Not tone-mapped: graded with the room, a red line a pixel wide goes the
+    // brown of the walls.
+    this.wounds = new Sparks(scene, SPARK_RED, 160, false);
     this.blood = new Blood(scene);
   }
 
@@ -156,8 +165,10 @@ export class Impacts {
   /**
    * Trace each blade through whatever it passed through this step.
    *
-   * Solver contacts still report stone and parries; everything soft is found
-   * here instead, at the speed the blade was actually travelling.
+   * A blade is stopped by a body now, so most blows are found by the solver,
+   * below. This is what is left: a blade that is inside someone anyway -- a
+   * body stepped onto it, or it was there when the step began -- still finds
+   * them, at the speed it was actually travelling.
    */
   private sweepBlades(now: number): void {
     for (const entry of new Set(this.blades.values())) {
@@ -179,9 +190,7 @@ export class Impacts {
         this.lastAt.set(hit.collider.handle, now);
         this.latest = impact;
         entry.onImpact(impact);
-        // A tenth of a clean cut's worth of damage is about the least that
-        // should show, so the spray agrees with the number in the HUD.
-        this.blood.spray(impact.at, impact.bladeVelocity, cutDamage(impact) / 10);
+        this.bleed(impact);
       }
     }
   }
@@ -285,10 +294,12 @@ export class Impacts {
       this.lastAt.set(otherHandle, now);
       this.latest = impact;
       entry.onImpact(impact);
-      this.sparks.burst(impact);
+      if (this.isFlesh(entry.arm, other)) this.bleed(impact);
+      else this.strike(impact);
     });
 
     this.sparks.update();
+    this.wounds.update();
     this.blood.update(1 / 60);
 
     // Colliders come and go as limbs are severed; don't grow the map forever.
@@ -297,6 +308,44 @@ export class Impacts {
         if (now - t > COOLDOWN_MS * 4) this.lastAt.delete(h);
       }
     }
+  }
+
+  /** Streaks still in the air, off stone and off flesh. The harness counts these. */
+  get streaks(): { stone: number; flesh: number } {
+    return { stone: this.sparks.live, flesh: this.wounds.live };
+  }
+
+  /** Whether this blade would cut what it touched: see `blood`. */
+  private isFlesh(arm: Arm, other: RAPIER.Collider): boolean {
+    return ((other.collisionGroups() >>> 16) & arm.side.cuttableFilter & 0xffff) !== 0;
+  }
+
+  /** Stone or steel: edge-on hits at speed throw a lot of sparks, a flat slap none. */
+  strike(impact: Impact): void {
+    const n = Math.round(
+      THREE.MathUtils.clamp(impact.closingSpeed * impact.edgeAlign * 3, 0, 18),
+    );
+    this.sparks.burst(impact.at, n, 0.9, impact.closingSpeed * 0.35);
+  }
+
+  /**
+   * Flesh: a burst of red streaks, and blood, both as big as the damage.
+   *
+   * It is the one readout of a hit you do not have to look away from the
+   * fight for. A blow that did nothing -- too slow, on the flat -- throws
+   * nothing, a scratch a few streaks, and a blow that takes a goblin's arm
+   * off a fistful, flung harder and further along the cut. Tied to the damage
+   * rather than the contact, so it agrees with the number in the HUD.
+   */
+  bleed(impact: Impact): void {
+    const damage = cutDamage(impact);
+    if (damage < SCRATCH) return;
+    const scale = Math.min(damage, HEAVY_BLOW);
+    this.wounds.burst(
+      impact.at, Math.round(6 + scale * 1.4), 1.4, 1.8 + scale * 0.16,
+      impact.bladeVelocity,
+    );
+    this.blood.spray(impact.at, impact.bladeVelocity, damage / HEAVY_BLOW);
   }
 
   private describe(
@@ -371,45 +420,71 @@ function clamp01(v: number): number {
 }
 
 /**
+ * The damage a flesh burst tops out at: about what the orc's chop does. A
+ * clean sword cut is 6-12, so the burst has room to say which was which.
+ */
+const HEAVY_BLOW = 25;
+
+/**
+ * Less damage than this shows nothing: a flat slap that grazes a hundredth of
+ * a point is a slap. It is where `Blood.spray` starts to show, as well.
+ */
+const SCRATCH = 0.5;
+
+const SPARK_GOLD = 0xffd08a;
+const SPARK_RED = 0xff2414;
+
+/**
  * A pool of short line bursts at the contact point. Cheap, and it makes the
  * difference between an edge-on hit and a flat slap legible at a glance.
  */
-const SPARK_COUNT = 64;
-
 class Sparks {
   private geom = new THREE.BufferGeometry();
-  private positions = new Float32Array(SPARK_COUNT * 6);
-  private life = new Float32Array(SPARK_COUNT);
-  private vel = new Float32Array(SPARK_COUNT * 3);
-  private origin = new Float32Array(SPARK_COUNT * 3);
+  private positions: Float32Array;
+  private life: Float32Array;
+  private vel: Float32Array;
+  private origin: Float32Array;
   private next = 0;
   private lines: THREE.LineSegments;
+  private readonly _dir = new THREE.Vector3();
+  private readonly _along = new THREE.Vector3();
 
-  constructor(scene: THREE.Scene) {
+  constructor(
+    scene: THREE.Scene, colour: number, private readonly count: number, toneMapped = true,
+  ) {
+    this.positions = new Float32Array(count * 6);
+    this.life = new Float32Array(count);
+    this.vel = new Float32Array(count * 3);
+    this.origin = new Float32Array(count * 3);
     this.geom.setAttribute("position", new THREE.BufferAttribute(this.positions, 3));
     this.lines = new THREE.LineSegments(
       this.geom,
-      new THREE.LineBasicMaterial({ color: 0xffd08a, transparent: true, opacity: 0.9 }),
+      new THREE.LineBasicMaterial({ color: colour, transparent: true, opacity: 0.9, toneMapped }),
     );
     this.lines.frustumCulled = false;
     scene.add(this.lines);
   }
 
-  burst(impact: Impact): void {
-    // Edge-on hits at speed throw a lot of sparks; a flat slap throws none.
-    const n = Math.round(
-      THREE.MathUtils.clamp(impact.closingSpeed * impact.edgeAlign * 3, 0, 18),
-    );
+  /**
+   * `n` streaks from `at`, each flung at `base` plus up to `extra` m/s.
+   * Every way at once, a little upward -- or, given `along`, mostly that way:
+   * what comes out of a cut goes where the blade was going.
+   */
+  burst(at: THREE.Vector3, n: number, base: number, extra: number, along?: THREE.Vector3): void {
+    const lean = along && along.lengthSq() > 1e-6;
+    if (lean) this._along.copy(along).normalize();
     for (let k = 0; k < n; k++) {
       const i = this.next;
-      this.next = (this.next + 1) % SPARK_COUNT;
-      this.origin[i * 3] = impact.at.x;
-      this.origin[i * 3 + 1] = impact.at.y;
-      this.origin[i * 3 + 2] = impact.at.z;
-      const speed = 0.9 + Math.random() * impact.closingSpeed * 0.35;
-      const dir = new THREE.Vector3(
+      this.next = (this.next + 1) % this.count;
+      this.origin[i * 3] = at.x;
+      this.origin[i * 3 + 1] = at.y;
+      this.origin[i * 3 + 2] = at.z;
+      const speed = base + Math.random() * extra;
+      const dir = this._dir.set(
         Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5,
-      ).normalize().multiplyScalar(speed);
+      ).normalize();
+      if (lean) dir.addScaledVector(this._along, 1.1).normalize();
+      dir.multiplyScalar(speed);
       this.vel[i * 3] = dir.x;
       this.vel[i * 3 + 1] = dir.y;
       this.vel[i * 3 + 2] = dir.z;
@@ -417,9 +492,16 @@ class Sparks {
     }
   }
 
+  /** How many are still flying. */
+  get live(): number {
+    let n = 0;
+    for (let i = 0; i < this.count; i++) if (this.life[i] > 0) n++;
+    return n;
+  }
+
   update(): void {
     const dt = 1 / 60;
-    for (let i = 0; i < SPARK_COUNT; i++) {
+    for (let i = 0; i < this.count; i++) {
       if (this.life[i] <= 0) {
         this.positions.fill(0, i * 6, i * 6 + 6);
         continue;

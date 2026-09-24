@@ -1859,10 +1859,13 @@ export class Arm {
    * The limb meshes are placed by the Interpolator. Only the ghost is snapped —
    * it is pure input with no physics state, and showing it a step in the past
    * would understate the very lag it exists to reveal.
+   *
+   * Whether to draw it at all is the caller's: it is a readout of the arm you
+   * are steering, and an opponent's is nobody's business but its own.
    */
-  syncMeshes(t: Tuning): void {
-    this.ghostMesh.visible = t.showGhost;
-    if (t.showGhost) {
+  syncMeshes(showGhost: boolean): void {
+    this.ghostMesh.visible = showGhost;
+    if (showGhost) {
       this.ghostMesh.position.copy(this._ghostPos);
       this.ghostMesh.quaternion.copy(this._bladeQuat);
     }

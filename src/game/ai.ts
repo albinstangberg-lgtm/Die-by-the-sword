@@ -226,6 +226,21 @@ const RECOVER: Span = [0.12, 0.7];
 const THERE = { windup: 0.1, strike: 0.15, recover: 0.12 } as const;
 
 /**
+ * A weapon that has been stopped dead: the tip slower than this, m/s, for
+ * this long, s, once the least of a part of a swing has gone by.
+ *
+ * A blade that lands on someone stops there now, as it does on a wall, so
+ * the pose it was sent through is one it will never get to, and a swing that
+ * waited for it leaned the weapon on you until its time ran out -- a third
+ * of a second of sword held against your ribs, every blow. Getting the guard
+ * back up is the same: close in, the guard it wants is where you are standing.
+ * A stopped blade sits well under a metre a second; one checked for a step by
+ * your sword and going on through is at two or more, and not for long.
+ */
+const STALLED = 1;
+const STALL_TIME = 0.08;
+
+/**
  * The furthest an edge comes round off your chest toward the part of you it
  * is after, radians.
  */
@@ -409,6 +424,8 @@ export class Ai implements ArmInput {
   /** The nearest your swinging blade came to it, flat: the side to step away from. */
   private readonly _near = new THREE.Vector3();
   private snag = 0;
+  /** Seconds its weapon has been all but still in this part of a swing. See `STALLED`. */
+  private stall = 0;
   /** Seconds of "I know where you are" left. Zero means it holds its post. */
   private seen = 0;
 
@@ -541,6 +558,7 @@ export class Ai implements ArmInput {
     this.face(self, toFoe);
     this.timer -= dt;
     this.clock += dt;
+    this.stall = self.arm.state.tipSpeed < STALLED ? this.stall + dt : 0;
 
     // Disarmed: no weapon, no plan. It backs away rather than pretending.
     if (self.arm.disarmed) {
@@ -742,7 +760,11 @@ export class Ai implements ArmInput {
           s.cut.step > 0 && range > strike ? 1
             : s.cut.step < 0 && this.roomFor(self, -1, 0, 0.3) ? -1 : 0,
           0);
-        if (this.done(self, STRIKE, THERE.strike)) this.begin("recover", 0);
+        // Over when the weapon is through -- or when it has been stopped, on
+        // you or on anything else, because then the rest of it is not coming.
+        if (this.stopped(STRIKE) || this.done(self, STRIKE, THERE.strike)) {
+          this.begin("recover", 0);
+        }
         break;
       }
 
@@ -751,7 +773,9 @@ export class Ai implements ArmInput {
         // time behind a sword, long enough to make an axe pay for itself.
         this.guard();
         this.hold(range < close && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
-        if (this.done(self, RECOVER, THERE.recover)) this.afterSwing(self);
+        if (this.stopped(RECOVER) || this.done(self, RECOVER, THERE.recover)) {
+          this.afterSwing(self);
+        }
         break;
 
       case "reeling":
@@ -977,6 +1001,14 @@ export class Ai implements ArmInput {
    */
   private chopAt(closing = this.closing): number {
     return this.strikeReach * LAND + Math.max(0, closing) * CHOP;
+  }
+
+  /**
+   * Has its weapon been stopped short in this part of a swing? It knows the
+   * way you know your own arm has stopped. See `STALLED`.
+   */
+  private stopped([least]: Span): boolean {
+    return this.clock >= least && this.stall >= STALL_TIME;
   }
 
   /**
@@ -1400,6 +1432,7 @@ export class Ai implements ArmInput {
     this.state = state;
     this.timer = seconds;
     this.clock = 0;
+    this.stall = 0;
   }
 
   private idle(): void {
