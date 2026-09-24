@@ -128,7 +128,7 @@ export interface Tuning {
   airControl: number;
 
   // --- debug view ---
-  showGhost: boolean;   // draw the kinematic target the mouse actually controls
+  showGhost: boolean;   // draw the kinematic target the mouse actually controls (yours only)
   showTrail: boolean;   // draw the blade's swept arc
   showSkeleton: boolean;// draw joint anchors
 }

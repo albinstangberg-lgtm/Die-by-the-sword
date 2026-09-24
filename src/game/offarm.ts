@@ -509,10 +509,10 @@ export class OffArm {
         .setMass(SHIELD.mass * s * s)
         .setFriction(0.4)
         .setRestitution(0.1)
-        // A blade's own groups: it meets the world and other blades, and
-        // nothing that bleeds. So an enemy's cut that finds it is stopped
-        // like a parry, and the sweep that finds flesh never sees it.
-        .setCollisionGroups(this.side.bladeFilter),
+        // A blade's membership, but not a blade's filter: it meets the world
+        // and other blades, and nothing that bleeds. So an enemy's cut that
+        // finds it is stopped like a parry, and is never taken for flesh.
+        .setCollisionGroups(this.side.shieldFilter),
       l.fore,
     );
     // A shield swung fast into a thin blade should not tunnel through it.

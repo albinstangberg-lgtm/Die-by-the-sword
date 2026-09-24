@@ -6,9 +6,9 @@ import * as THREE from "three";
  * Like a weapon it is not a stat. It is a disc of wood with an iron rim and a
  * boss, with a mass the off arm has to hold up and swing about, and a shape a
  * blade has to get round. It collides with blades the way another blade does
- * -- membership of its owner's weapon group, see `Side.bladeFilter` -- so a cut
- * that meets it is stopped by the solver like a parry, and never reaches the
- * sweep that finds flesh. It does no damage and takes none. What it cannot do
+ * -- membership of its owner's weapon group, see `Side.shieldFilter` -- so a
+ * cut that meets it is stopped by the solver like a parry, and is never taken
+ * for flesh. It does no damage and takes none. What it cannot do
  * is make a blow weigh less: the momentum still arrives, through the arm.
  *
  * Every length here is at human scale and multiplied by the build's.

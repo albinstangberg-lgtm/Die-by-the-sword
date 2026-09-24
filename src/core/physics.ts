@@ -51,15 +51,23 @@ export interface Side {
   /**
    * For the weapon.
    *
-   * Deliberately excludes everything soft. A sword that physically collides
-   * with a body is stopped by it, and a stopped blade cannot cut: the swing
-   * arrives at 3 m/s having been braked from first contact. Blades meet stone
-   * and they meet each other; flesh they pass through, and the hit is found by
-   * sweeping the blade's line (see cutting.ts).
+   * A blade meets stone, other blades, and the bodies of the other team --
+   * the practice dummy's too. It used to pass through flesh, because a blade
+   * the solver stops arrives having been braked, and a braked blade cannot
+   * cut. It no longer needs to: a hit is measured from the blade's motion as
+   * it was BEFORE the step that stopped it (see `Arm.snapshotBlade`), so the
+   * blow scores the speed it arrived at, and the blade stops where it landed,
+   * as it does on a wall. An ally's body it still passes through.
    */
   readonly bladeFilter: number;
-  /** What a weapon's swept cut may find: soft targets on the other team. */
+  /** What a weapon's swept cut may find, and what counts as flesh: soft targets on the other team. */
   readonly cuttableFilter: number;
+  /**
+   * For a shield: a blade's membership, so an enemy's cut is stopped by it
+   * like a parry, but it meets only stone and blades. It is not a weapon, and
+   * nothing it touches bleeds.
+   */
+  readonly shieldFilter: number;
   /**
    * For the invisible locomotion hull.
    *
@@ -125,8 +133,9 @@ export function makeSides(teams: readonly number[]): Side[] {
       body: mine.body,
       blade: mine.blade,
       bodyFilter: groups(mine.body, GROUP.WORLD | GROUP.PROP | otherBodies | foeBlades),
-      bladeFilter: groups(mine.blade, GROUP.WORLD | otherBlades),
+      bladeFilter: groups(mine.blade, GROUP.WORLD | GROUP.PROP | otherBlades | foeBodies),
       cuttableFilter: groups(mine.blade, GROUP.PROP | foeBodies),
+      shieldFilter: groups(mine.blade, GROUP.WORLD | otherBlades),
       hullFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP | otherHulls),
       hitOnlyFilter: groups(mine.body, foeBlades),
       groundFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP),

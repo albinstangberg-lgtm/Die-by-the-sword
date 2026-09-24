@@ -28,7 +28,7 @@ cut, climb a ledge, and vault what is waist high.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 250 checks, no browser needed
+npm run smoke    # headless physics harness — 254 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -78,7 +78,8 @@ Three pieces, in order of importance.
 **1. A kinematic ghost hand.** Mouse deltas accumulate into a target point on a
 sphere in front of the shoulder. It is pure intent: no collision, no mass, it
 goes exactly where you point. Turn on *show ghost hand* in the panel and it is
-the cyan wireframe.
+the cyan wireframe — on your own arm only. Every opponent has one too, driven
+by the AI's mouse, and none of them is ever drawn.
 
 **2. A physical arm.** Upper arm on a spherical shoulder, forearm on a hinged
 elbow, weapon in a hand that turns about its length and bends at the wrist.
@@ -204,25 +205,41 @@ There is no light attack or heavy attack. The only way to raise the number is to
 swing faster, with the edge leading, and connect on the right part of the weapon
 — which is to say, to actually cut properly.
 
-### A sword does not bounce off a person
+### A sword stops where it lands
 
-Blades do not collide with anything soft. They collide with the world and with
-each other — stone stops a sword, and a parry is still two swords meeting — but
-against a body a blade passes through, and the hit is found by casting the
-blade's own line from where it was last step to where it is now.
+A blade collides with a body the way it collides with stone and with another
+blade: the other team's bodies, and the practice dummy. A cut lands on the first
+thing it meets and stops there. An arm held across a chest takes the blow the
+chest would have taken, a shield takes it before either, and a blade that meets
+a hip does not carry on into the ribs. An ally's body it still passes through.
 
-This is not a shortcut. It is the difference between the mechanic working and
-not working. Modelling flesh as a rigid collider means a 1.4kg blade meeting a
-20kg torso stops dead, and a stopped blade cannot cut: the swing that should
-have arrived at 12 m/s instead registered two dozen grazing contacts at 3 m/s
-while the sword wiped across the target like a windscreen wiper, braked from
-first touch onward. Every cut in the game was worth about a tenth of a point of
-damage.
+For a long time it was the other way round, and for a good reason. Modelling
+flesh as something a blade collides with means the solver brakes the blade the
+moment it touches, and a braked blade cannot cut: the swing that should have
+arrived at 12 m/s registered two dozen grazing contacts at 3 m/s while the sword
+wiped across the target like a windscreen wiper. So blades passed through
+flesh, and a hit was found by casting the blade's own line from where it was
+last step to where it is now.
 
-Sweeping the blade's line reports the speed it was *actually* travelling when it
-arrived, which is the number the whole damage model is built on. It also means
-you can swing from inside your own reach, where the arc crosses a target's
-centre rather than skidding off its near surface.
+What made that necessary is gone. Every hit is measured from the blade's motion
+as it was *before* the step it landed in (see *Contact events arrive too late to
+measure a hit*, below), so a blade the solver stops dead still scores the speed
+it arrived at. In the harness a forehand into the dummy arrives at 9.6 m/s at
+the tip, is scored at 9.1 m/s where it touched, and is down to 1 m/s a step
+later. The sweep is still there, as a backstop for a blade that ends up inside
+someone anyway — a body stepping onto it — but nearly every blow is the
+solver's now.
+
+What it costs is reach and multiplicity. You cannot swing from inside your own
+reach any more: close in, the blade meets the near surface with the strong of
+the blade by the hand, where there is no leverage, so a sword does its work
+from a little over a metre. And a swing cuts one thing where it used to cut
+everything along its arc — yours and theirs alike. An opponent's blow that went
+through your arm and on into your body used to land twice; it lands once. Stood
+still in front of the swordsman you used to be dead in forty seconds; you are
+on about half. Much of what this document says about how hard the opponents
+hit was measured while blades passed through bodies, and is an upper bound
+now.
 
 ### Weight
 
@@ -326,14 +343,19 @@ second and a half afterwards. Both are local points on meshes that are already
 placed every frame, so the arm bleeds all the way to the floor and the stump
 bleeds from the shoulder rather than from where the shoulder used to be.
 
-Lesser cuts spray in proportion to the damage they actually did, so a flat slap
-produces nothing and the blood agrees with the number in the HUD.
+**And a hit says how hard it was.** A blade that meets stone throws gold
+sparks. One that meets flesh and does damage throws the same streaks in red,
+flung along the cut, and blood with them — both as many, and as far, as the
+damage is worth. A scratch is a few streaks and a spatter; a clean sword cut,
+6 to 12 points, a burst; the orc's full chop, around 25, a fistful thrown
+across the room. A flat slap does nothing and throws nothing, so the burst
+agrees with the number in the HUD, and you can read a hit without looking
+away from the fight. It is everyone's: an opponent's blow on you bursts too.
 
-Which hits bleed and which throw sparks is not a lookup. The two hit paths
-already know: **a solver contact is stone or steel**, because a blade collides
-with nothing else, and **a swept hit is flesh**, because that is the only thing
-a sweep looks for. Sparks come off the wall, blood comes out of the body, and
-neither has to be told what it hit.
+Which hits bleed and which throw sparks is not a lookup of names. Flesh is what
+the blade is allowed to cut — the other team's bodies and the practice dummy,
+the same collision groups its sweep looks for — and anything else it meets is
+stone or steel.
 
 ## The other arm, and what you carry
 
@@ -361,9 +383,10 @@ and settle back. Standing still it now reads 0.00 rad/s.
 A round shield of wood and iron, 3.2 kilos, strapped to the off forearm as a
 collider on the forearm's own body — so it goes wherever the forearm goes,
 including onto the floor if the forearm is cut off. It has a blade's collision
-groups: it meets the world and other blades, and nothing that bleeds. So an
-enemy's cut that finds it is stopped by the solver exactly as a parry is, and
-never reaches the sweep that finds flesh. It does no damage and takes none.
+membership but not a blade's filter: it meets the world and other blades, and
+nothing that bleeds. So an enemy's cut that finds it is stopped by the solver
+exactly as a parry is, and is never taken for flesh. It does no damage and
+takes none.
 
 What it cannot do is make a blow weigh less. A blocked blow is weighed like any
 other (see [Weight](#weight)): an axe caught on a shield still staggers you, it
@@ -374,9 +397,9 @@ guard across the chest, the elbow out and forward so the forearm — and the
 shield on it — runs across the body and faces ahead. Hold the left button and
 move the mouse to put it somewhere else; let go and it stays there, as the
 sword does. Held still at its guard, against opponents that do not know it is
-there, it takes six to nine blows a bout; in the harness a dozen scripted cuts
-at a chest behind it do a third of the damage they do without it. Where it
-goes is up to you.
+there, it takes six to nine blows a bout; in the harness a dozen level
+forehands at a chest behind it do a fiftieth of the damage they do without it.
+Where it goes is up to you.
 
 There are two. One hangs on a rack against the training room's east wall: take
 it down to practise with and hang it back to fight without, as often as you
@@ -585,8 +608,8 @@ hand. Almost everything that distinguishes them falls out of that.
   is enormous, so it is slow to start, slow to stop, and once it is moving the
   arm's torque budget cannot change its mind. Given the same arm and the same
   mouse command, a sword comes through 94° in three tenths of a second and the
-  axe manages 47°. Catch someone with the head and it goes through them; catch
-  them with the haft and you have hit them with a stick.
+  axe manages 47°. Catch someone with the head and it bites deep; catch them
+  with the haft and you have hit them with a stick.
 - **The spear** weighs a kilo and is held **choked up**, a third of a metre from
   the butt, which is how a spear is actually held and the only reason a 32kg
   goblin can aim one. Gripped at the end its moment of inertia is higher than
@@ -785,7 +808,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Forty-two things the physics taught us
+## Forty-four things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1007,7 +1030,7 @@ body that dies lets go of its head and off arm. *Nothing must drive a corpse*,
 including the last thing that did.
 
 **A practice dummy is for practising cuts.** The dummy used to ignore blows —
-a blade passes through it, so nothing pushed. Given the struck limb's share of
+a blade passed through it, so nothing pushed. Given the struck limb's share of
 a blow, a slap flung a forearm most of a metre. Given the whole dummy's share
 at the point it landed, a blow to a hand spun the slender body round its rope.
 Given it through the middle, it swung for five seconds on a free pin. All three
@@ -1165,7 +1188,17 @@ short. It takes a squat as deep as the legs go and a bow of sixty-odd degrees �
 which is what a person does — and even then the last few centimetres are the
 wrist's.
 
-And four about the harness rather than the game:
+**A swing that has landed is over.** Once blades stopped on bodies, every blow
+an opponent landed was followed by a third of a second of it leaning on the
+weapon: a swing is over when the arm reaches its follow-through, and a blade
+stopped on your hip never reaches it, so the swing waited out its longest.
+Close in, getting its guard back was the same, because the guard it wanted was
+where you were standing. A swing now also ends when the weapon has stopped
+dead, under a metre a second for eighty milliseconds — which a blade checked
+for a step by your sword and going on through never is. It knows the way you
+know your own arm has stopped.
+
+And five about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
 aim by the whole measured error, on both axes, including the part of the error
@@ -1194,6 +1227,17 @@ on their back, and passed — and passed just as well with the code that stops a
 sheathed sword being swept for cuts taken out. The body shoves the dummy aside
 before the scabbard gets there. It measured nothing, and now asks only what is
 true: that a sword on your back is out of the world.
+
+**A swing at a ghost is not a swing at a body.** The scripted cuts aimed the
+blade *at* the target with `aimBladeAt`, then wound up from there and swept
+back through it — which a blade that passes through flesh can do, and one that
+stops on it cannot. Against a solid dummy the blade was pressed into the body
+before the swing began and dragged round it on the flat, and a swing that had
+taken an arm off in nine tries took nothing off in twenty-four. They throw the
+swordsman's own forehand now: edge rolled to where it cuts, drawn back clear
+of the target, and through it from the same side every time. It also showed
+what the old swings had been: mostly on the flat, scoring by passing through
+four or five parts at a time.
 
 **The scripted player is part of the test.** The footwork checks roll dice, so
 they were run across dozens of seeds before their numbers were set, and three
@@ -1334,9 +1378,10 @@ Some things look like bugs and are not:
 - **Space puts you on top of a low wall instead of jumping.** Only when you
   are moving forward at something you can stand on; standing still it is a
   jump. Going over it is V's.
-- **Standing still gets you killed in well under a minute** by whichever of
-  them you have walked in on, and much faster by both, if you manage to bring
-  them together.
+- **Standing still gets you killed** — by the orc in about a minute, by the
+  goblin in about two, and much faster by both, if you manage to bring them
+  together. Twice as fast, while blades passed through bodies: your guard,
+  held still, now stops blows that used to go through it.
 
 ## Structure
 
@@ -1371,13 +1416,13 @@ src/
                      ledge to climb, and where the things lying about go
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
-    cutting.ts       swept-segment hit detection: how a weapon finds flesh
+    cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
     balance.ts       what a blow does to a body that has to stay on its feet
     skin.ts          the visible body: tapered shells over the capsules
     blood.ts         droplets, and the two faces a cut leaves behind
-    impacts.ts       contact events -> impact quality
+    impacts.ts       contact events -> impact quality; gold sparks off stone, red off flesh
     targets.ts       collider -> name registry
     trail.ts         the swept arc
   ui/                HUD and tuning panel

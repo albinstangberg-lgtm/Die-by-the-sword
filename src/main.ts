@@ -377,7 +377,7 @@ async function main(): Promise<void> {
     },
     render: (alpha, dt) => {
       interp.apply(alpha);
-      for (const c of everyone) c.syncMeshes(tuning, alpha);
+      for (const c of everyone) c.syncMeshes(alpha, c === player && tuning.showGhost);
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
       hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded, kit());
