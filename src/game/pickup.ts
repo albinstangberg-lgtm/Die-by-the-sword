@@ -3,7 +3,7 @@ import type { Keys } from "../input/input";
 import type { Combatant } from "./combatant";
 import { wrap } from "./clearance";
 import { smoothstep } from "./motion";
-import { holds, inRange, refusal, take, type Item, type Items, type Outcome } from "./items";
+import { holds, inRange, PULLED, refusal, take, type Item, type Items, type Outcome } from "./items";
 
 /**
  * Picking something up, as a thing a body does.
@@ -17,16 +17,24 @@ import { holds, inRange, refusal, take, type Item, type Items, type Outcome } fr
  * shield strapped to the other arm, a piece of somebody -- or their weapon --
  * kept in the hand.
  *
+ * A lever is gone to the same way, and the hand takes hold of its handle --
+ * jointed to it, where the hand got to -- and pulls it down: the hand's own
+ * ghost is taken down the arc the handle goes round, and the arm follows it
+ * under the same clamped drive as ever, the lever's spring pulling back on
+ * the hand through the joint the whole way. The body leans into it. Down far
+ * enough, the lever catches (see gate.ts), and the hand lets go of it.
+ *
  * The body is walked the way a player walks it, through the same keys, so the
  * same feet and the same walls apply -- and a key the player presses that was
  * not already down takes the body straight back, and the pick-up is off.
  *
  *   approach   to where the thing is under the sword hand, facing it
  *   reach      down to it, the hand going for it
+ *   pull       a lever: the hand on it, bringing it down
  *   rise       back up with it
  */
 
-type Phase = "approach" | "reach" | "rise";
+type Phase = "approach" | "reach" | "pull" | "rise";
 
 /**
  * Where a body stands to take something, metres at human scale: how far
@@ -52,6 +60,24 @@ const REACH_GRACE = 2.2;
 /** How fast a stoop goes down and comes back up, per second. */
 const STOOP_RATE = 7;
 
+/**
+ * Close enough to a lever's handle to take hold of it, metres at human scale:
+ * nearer than for anything picked up. The hand is jointed on where it has got
+ * to, and a hand held off the bar would be pulling on air.
+ */
+const GRAB_LEVER = 0.03;
+/** Bringing a lever down, seconds at human scale, and how much longer than that it may take. */
+const PULL_TIME = 0.75;
+const PULL_GRACE = 2.5;
+/**
+ * How far past its bottom stop the hand's ghost is taken, radians: a hand
+ * holding a spring back lags its ghost by as much as the spring pulls, and
+ * sent only to the stop it would stop short of the catch.
+ */
+const PULL_PAST = 0.4;
+/** How far a body leans into a pull by the end of it: a share of a stoop. */
+const PULL_LEAN = 0.2;
+
 /** Every key the player could be holding, to know when they press a new one. */
 const KEYS: readonly (keyof Keys)[] = [
   "forward", "back", "left", "right", "turnLeft", "turnRight", "jump", "vault", "crouch",
@@ -68,6 +94,11 @@ export class Pickup {
   private low = false;
   /** What the hand has hold of, once it has. */
   private holding = false;
+  /** A lever: the angle the hand took hold of it at, and whether it came down and caught. */
+  private pullFrom = 0;
+  private pulled = false;
+  /** Where the hand was last sent, pulling: where it lets go of the lever from. */
+  private readonly pullTo = new THREE.Vector3();
   /** Keys that were already down when it started, until they come up. */
   private readonly held = new Set<keyof Keys>();
   private readonly keys: Keys = {
@@ -121,6 +152,7 @@ export class Pickup {
     this.phase = "approach";
     this.time = 0;
     this.holding = false;
+    this.pulled = false;
     this.held.clear();
     for (const k of KEYS) if (held[k]) this.held.add(k);
     return { ok: true, text: `going for ${item.kind === "rack" ? "the rack" : item.name}` };
@@ -138,10 +170,12 @@ export class Pickup {
     const f = who.fighter;
 
     // Anything that takes the body or the hand away calls it off: a blow, a
-    // fall, the sword drawn, or a key that was not already down.
+    // fall, the sword drawn, the hand cut off, or a key that was not already
+    // down.
     for (const k of KEYS) if (!player[k]) this.held.delete(k);
     const pressed = KEYS.some((k) => player[k] && !this.held.has(k));
-    if (pressed || who.dead || f.down || f.reeling || !who.arm.sheathed || who.arm.stowing) {
+    if (pressed || who.dead || f.down || f.reeling || !who.arm.sheathed || who.arm.stowing
+      || who.arm.disarmed) {
       this.cancel();
       if (!pressed && !who.dead && !f.down) done({ ok: false, text: "" });
       return null;
@@ -187,8 +221,22 @@ export class Pickup {
         const u = Math.min(1, this.time / span);
         if (this.low) f.stoop += (1 - f.stoop) * Math.min(1, STOOP_RATE * dt);
         who.arm.guide(item.grip, smoothstep(0, 1, u));
-        const near = who.arm.handPosition.distanceTo(item.grip) < GRAB * s;
+        const lever = item.lever;
+        const near = who.arm.handPosition.distanceTo(item.grip) < (lever ? GRAB_LEVER : GRAB) * s;
         if ((u >= 1 && near) || this.time > span * REACH_GRACE) {
+          // A lever the hand got to, it takes hold of, and pulls. One it
+          // could not get a hand on -- or that has come down meanwhile -- it
+          // leaves be.
+          if (lever) {
+            if (!near || !lever.takeHold(who.arm)) {
+              this.cancel();
+              done({ ok: false, text: lever.caught ? "the lever is down" : "can't get a hand on the lever" });
+              return null;
+            }
+            this.pullFrom = lever.angle;
+            this.next("pull");
+            break;
+          }
           // Hanging a shield back up: it goes onto the rack as the hand gets
           // there. Anything else comes away in the hand.
           if (item.kind === "rack" && item.taken) {
@@ -201,12 +249,37 @@ export class Pickup {
         }
         break;
       }
+      case "pull": {
+        // Down the handle's arc, and on past the stop, as fast as a hand
+        // brings a lever down; the lever comes as far as the arm can make it.
+        const lever = item.lever!;
+        const span = PULL_TIME * Math.sqrt(s);
+        const u = Math.min(1, this.time / span);
+        const to = lever.bottom - PULL_PAST;
+        lever.gripAt(this.pullFrom + (to - this.pullFrom) * smoothstep(0, 1, u), this.pullTo);
+        who.arm.guide(this.pullTo, 1);
+        f.stoop += (PULL_LEAN * smoothstep(0, 1, u) - f.stoop) * Math.min(1, STOOP_RATE * dt);
+        if (lever.caught || this.time > span * PULL_GRACE) {
+          this.pulled = lever.caught;
+          lever.letGo();
+          this.pullTo.copy(who.arm.handPosition);
+          this.next("rise");
+        }
+        break;
+      }
       case "rise": {
         const u = Math.min(1, this.time / (RISE_TIME * Math.sqrt(s)));
         f.stoop += (0 - f.stoop) * Math.min(1, STOOP_RATE * dt);
-        who.arm.guide(item.grip, 1 - smoothstep(0, 1, u));
+        // Off a lever, from wherever the hand let go of it.
+        who.arm.guide(item.lever ? this.pullTo : item.grip, 1 - smoothstep(0, 1, u));
         if (this.holding) this.items.settle(smoothstep(0, 0.5, u));
         if (u >= 1) {
+          if (item.lever) {
+            const caught = this.pulled;
+            this.finish();
+            done(caught ? { ok: true, text: PULLED } : { ok: false, text: "the lever springs back up" });
+            return null;
+          }
           const held = this.holding;
           // A piece of somebody stays in the hand that has it.
           this.finish(held && holds(item));
@@ -219,16 +292,21 @@ export class Pickup {
     return keys;
   }
 
-  /** Off: the hand goes back to the aim, the body straightens, and anything in the hand goes back where it was. */
+  /**
+   * Off: the hand goes back to the aim, the body straightens, and anything in
+   * the hand goes back where it was -- or, a lever, is let go of.
+   */
   cancel(): void {
     this.finish();
   }
 
   /** Done: the hand and the body back to themselves -- and what the hand has, unless it `keep`s it. */
   private finish(keep = false): void {
-    if (!this.item) return;
+    const item = this.item;
+    if (!item) return;
     this.item = null;
     this.holding = false;
+    item.lever?.letGo();
     this.who.arm.guide(null);
     this.who.fighter.stoop = 0;
     if (!keep) this.items.putBack();

@@ -797,6 +797,11 @@ export class Ai implements ArmInput {
   private stall = 0;
   /** Whether it is after you: it has noticed you and not yet given you up. */
   private engaged = false;
+  /**
+   * After you only because it heard something, and not yet having seen you:
+   * see `hear`.
+   */
+  private heard = false;
   /** Seconds since it last saw you. */
   private lost = Infinity;
   /**
@@ -985,13 +990,15 @@ export class Ai implements ArmInput {
   }
 
   /**
-   * All the fight panel says about it: whether it has noticed you, and whether
-   * it has anything left to fight with. Never what it is about to do. That is
-   * on its arm, where anybody's is.
+   * All the fight panel says about it: whether it has noticed you -- or only
+   * heard something, and gone to look -- and whether it has anything left to
+   * fight with. Never what it is about to do. That is on its arm, where
+   * anybody's is.
    */
-  get outlook(): "waiting" | "fighting" | "beaten" {
+  get outlook(): "waiting" | "looking" | "fighting" | "beaten" {
     if (this.state === "waiting" || this.state === "return") return "waiting";
-    return this.state === "beaten" ? "beaten" : "fighting";
+    if (this.state === "beaten") return "beaten";
+    return this.heard ? "looking" : "fighting";
   }
 
   /**
@@ -2072,6 +2079,7 @@ export class Ai implements ArmInput {
 
   /** Come for you, and look for an opening once there. */
   private engage(): void {
+    this.heard = false;
     this.patience = this.rollPatience();
     this.side = Math.random() < OFF_HAND ? 1 : -1;
     this.weave = Math.random() < 0.65 ? this.side : 0;
@@ -2095,6 +2103,7 @@ export class Ai implements ArmInput {
     this.sighted = (this.engaged || near) && self.sees(foe);
     if (this.sighted) {
       this.engaged = true;
+      this.heard = false;
       this.lost = 0;
       this._lastSeen.copy(this._foe);
       const v = foe.fighter.body.linvel();
@@ -2202,9 +2211,37 @@ export class Ai implements ArmInput {
     this._gaze.z -= Math.cos(yaw) * 4;
   }
 
+  /**
+   * It heard something, at `at` -- the pen's gate going up. If it is not
+   * already after you, it goes to look, as it would where it last saw you:
+   * there, on a little the way `on` points if there is floor that way, and a
+   * look round from there. It learns nothing of you by it. The same ray it
+   * always casts decides whether it finds you, from wherever looking takes
+   * it -- and once it has heard something it is after it, so that ray is not
+   * held to the distance at which it would notice you -- and if it does not
+   * find you, it gives up and goes home the way it came.
+   */
+  hear(at: THREE.Vector3, on: THREE.Vector3): void {
+    if (this.engaged || (this.state !== "waiting" && this.state !== "return")) return;
+    // Not at its post yet: it would have nowhere to go home to.
+    if (this.trail.length === 0) return;
+    this.engaged = true;
+    this.heard = true;
+    this.lost = GLIMPSE;
+    this._lastSeen.copy(at);
+    this._lastChest.copy(at);
+    this._lastEyes.copy(at);
+    // As if whatever it was had gone on that way at a walk.
+    const len = Math.hypot(on.x, on.z);
+    if (len > 1e-6) this._heading.set(on.x / len, 0, on.z / len).multiplyScalar(2 * MOVING);
+    else this._heading.set(0, 0, 0);
+    this.hunt();
+  }
+
   /** It has lost you, and looked, and it has had enough. */
   private giveUp(): void {
     this.engaged = false;
+    this.heard = false;
     this.stand();
     this.idle();
     this.begin("return", 0);
@@ -3067,6 +3104,7 @@ export class Ai implements ArmInput {
     this.state = "waiting";
     this.timer = 0;
     this.engaged = false;
+    this.heard = false;
     this.lost = Infinity;
     this.leg = "go";
     // Its post is wherever it next stands.
@@ -3135,3 +3173,28 @@ export class Ai implements ArmInput {
     this.idle();
   }
 }
+
+/**
+ * A noise at `at` -- the pen's gate going up: every one of `listeners` alive
+ * and within `earshot` of it, flat metres, hears it (see `Ai.hear`) and goes
+ * to see, on out the far side of it from where it stood. How many did.
+ */
+export function noise(
+  at: THREE.Vector3, earshot: number,
+  listeners: readonly { readonly combatant: Combatant; readonly ai: Ai }[],
+): number {
+  let heard = 0;
+  for (const { combatant, ai } of listeners) {
+    if (combatant.dead) continue;
+    combatant.position(_listener);
+    const dx = at.x - _listener.x;
+    const dz = at.z - _listener.z;
+    if (Math.hypot(dx, dz) > earshot) continue;
+    ai.hear(at, _on.set(dx, 0, dz));
+    heard++;
+  }
+  return heard;
+}
+
+const _listener = new THREE.Vector3();
+const _on = new THREE.Vector3();

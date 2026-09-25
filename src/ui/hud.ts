@@ -22,7 +22,7 @@ export interface Kit {
   holding: string | null;
   /** Drinking one: health still to come back. */
   healing: number;
-  stance: "standing" | "crouching" | "vaulting" | "climbing" | "picking up" | "airborne" | "down";
+  stance: "standing" | "crouching" | "vaulting" | "climbing" | "picking up" | "pulling" | "airborne" | "down";
   /** The left button is held: the mouse is on the other arm. */
   guarding: boolean;
   /** What F would do right now, or null. */
@@ -149,7 +149,7 @@ export class Hud {
           <dt>C</dt><dd>crouch</dd>
           <dt>X</dt><dd>sheathe / draw / wield</dd>
           <dt>Z</dt><dd>shield on back / arm</dd>
-          <dt>F</dt><dd>pick up &middot; into bag</dd>
+          <dt>F</dt><dd>pick up &middot; pull &middot; into bag</dd>
           <dt>G</dt><dd>let go &middot; mid-swing, throw</dd>
           <dt>H</dt><dd>drink a potion</dd>
           <dt>B</dt><dd>inventory</dd>

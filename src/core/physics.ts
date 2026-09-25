@@ -7,21 +7,32 @@ export type Rapier = typeof RAPIER;
  * Collision groups. Rapier packs membership in the high 16 bits, filter in the
  * low 16, so there are sixteen bits to spend.
  *
- * Two go to the scenery. The rest are handed out three at a time -- body,
- * weapon, hull -- to each fighter in the arena, which is what lets more than
- * two of them share a room without a blade cutting the wrong person.
+ * Two go to the scenery, and one to every walking hull. The rest are handed
+ * out two at a time -- body, weapon -- to each fighter in the arena, which is
+ * what lets more than two of them share a room without a blade cutting the
+ * wrong person.
  */
 export const GROUP = {
   WORLD: 0x0001,
   PROP: 0x0002,
 } as const;
 
-/** Three bits each, after the two scenery bits: sixteen bits, four fighters. */
-export const MAX_FIGHTERS = 4;
+/**
+ * The walking hulls' one bit, shared.
+ *
+ * A hull bumps into every other hull, whoever's side it is on, and a body
+ * never meets its own colliders -- so a bit of its own told nothing apart
+ * that needed telling. Each fighter used to have one anyway, three bits a
+ * fighter, which left room for four: the pen's two orcs made five.
+ */
+const HULL = 1 << 2;
+
+/** Two bits each, after the scenery's and the hulls': sixteen bits, six fighters. */
+export const MAX_FIGHTERS = 6;
 
 function slotBits(i: number): { body: number; blade: number; hull: number } {
-  const base = 2 + i * 3;
-  return { body: 1 << base, blade: 1 << (base + 1), hull: 1 << (base + 2) };
+  const base = 3 + i * 2;
+  return { body: 1 << base, blade: 1 << (base + 1), hull: HULL };
 }
 
 export function groups(membership: number, filter: number): number {
