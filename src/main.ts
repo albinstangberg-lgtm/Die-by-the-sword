@@ -142,6 +142,20 @@ async function main(): Promise<void> {
       hud.showSever({ label: `${f.combatant.name} is down`, at: new THREE.Vector3() });
   }
 
+  // Two weapons met and one was knocked aside: say so, when it was yours or
+  // theirs by you, and hard enough to be an opening rather than a tap.
+  impacts.onClash = (c) => {
+    if (c.share < 0.2) return;
+    const other = (a: typeof arm) => foes.find((f) => f.combatant.arm === a)?.combatant;
+    if (c.knocked === arm) {
+      const by = other(c.by);
+      hud.showNote(`your ${arm.weapon.name} is knocked aside${by ? ` by ${by.name}` : ""}`, true);
+    } else if (c.by === arm) {
+      const them = other(c.knocked);
+      if (them) hud.showNote(`you knock ${them.name}'s ${c.knocked.weapon.name} aside`);
+    }
+  };
+
   player.onDisarm = (_where, wound) => {
     hud.showSever({ label: "your sword arm", at: wound.at });
     blood.wound(wound);

@@ -245,6 +245,23 @@ const SHEATH_DIR = new THREE.Vector3(-0.42, -0.9, 0).normalize();
 const EMPTY_HAND = 0.5;
 
 /**
+ * An arm getting over a knock on its weapon (see `Arm.jolt`) brings the weapon
+ * back under control, not as a swing: once the knock has done its carrying,
+ * the hand's drive is damped this many times harder until the hand is back
+ * within `REGAINED` of where it is aimed, metres at human scale, or `REGAIN_TIME`
+ * has gone by, seconds -- and never harder than `REGAIN_STABLE` of what an
+ * explicit step on the forearm and weapon can take.
+ *
+ * Brought back at full strength and the usual damping, a guard the orc's axe
+ * had beaten aside came back through the orc's forearm at cutting speed: in
+ * four minutes out of ten, standing still behind one took the arm off.
+ */
+const REGAIN_DAMP = 4;
+const REGAINED = 0.1;
+const REGAIN_TIME = 0.6;
+const REGAIN_STABLE = 0.9;
+
+/**
  * How far out of the scabbard the grip stands with the point just in its
  * mouth, metres at human scale: where the hand takes a sword to put it up,
  * and how far it draws one before bringing it over the shoulder. Not the
@@ -389,6 +406,16 @@ export class Arm {
    * not lift it; that is not a special case, it is a bigger animal.
    */
   power = 1;
+  /**
+   * How much of that the arm has for the moment lost to a knock on its weapon,
+   * 0..1, how long before it starts coming back, seconds, and then how fast,
+   * per second. See `jolt`.
+   */
+  private shaken = 0;
+  private stunned = 0;
+  private recovery = 0;
+  /** Seconds it may yet spend bringing its weapon back under control. See `REGAIN_DAMP`. */
+  private regaining = 0;
 
   private readonly upperLen: number;
   private readonly foreLen: number;
@@ -1239,6 +1266,8 @@ export class Arm {
     // goblin's arm dragged its own corpse six metres across the floor in ten
     // seconds and threw it into the air. Limp has to mean nothing at all.
     if (this.severedAt !== null || this.limp) {
+      // Nothing to get over: there is no drive to have been knocked.
+      this.shaken = this.stunned = this.regaining = 0;
       for (const b of [this.upper, this.fore, this.blade]) {
         b.resetForces(false);
         b.resetTorques(false);
@@ -1294,7 +1323,20 @@ export class Arm {
     const err = this._v2.copy(this._ghostPos).sub(this._handPos);
     this.state.trackingError = err.length();
 
-    const maxForce = t.maxForce * this.power;
+    // A knock on the weapon takes some of the arm's strength for a moment, and
+    // it comes back: see `jolt`.
+    const dt = this.phys.world.timestep;
+    if (this.stunned > 0) this.stunned -= dt;
+    else this.shaken = Math.max(0, this.shaken - this.recovery * dt);
+    const power = this.power * (1 - this.shaken);
+    const maxForce = t.maxForce * power;
+    // Getting over it, the weapon comes back under control: see REGAIN_DAMP.
+    let regain = 1;
+    if (this.regaining > 0 && this.stunned <= 0) {
+      this.regaining -= dt;
+      if (this.shaken <= 0 && this.state.trackingError < REGAINED * this.build.scale) this.regaining = 0;
+      else regain = REGAIN_DAMP;
+    }
     // An empty hand is a fraction of the mass the linear drive was tuned to
     // push: see EMPTY_HAND.
     const lin = holding ? 1 : EMPTY_HAND;
@@ -1304,8 +1346,12 @@ export class Arm {
     // trailed it by a hand's breadth would be holding air.
     const moving = this._relVel.copy(this._handVel)
       .addScaledVector(this._ghostVel, -this.guideWeight);
-    const force = err.multiplyScalar(t.armKp * this.power * lin)
-      .addScaledVector(moving, -t.armKd * this.power * lin);
+    // The damping is explicit, so no more of it than the hand end of the arm
+    // can take in a step without being thrown back past still.
+    const kd = Math.min(t.armKd * power * lin * regain,
+      regain > 1 ? (REGAIN_STABLE * (this.fore.mass() + this.blade.mass())) / dt : Infinity);
+    const force = err.multiplyScalar(t.armKp * power * lin)
+      .addScaledVector(moving, -kd);
     const mag = force.length();
     this.state.saturation = maxForce > 0 ? Math.min(1, mag / maxForce) : 1;
     if (mag > maxForce) force.multiplyScalar(maxForce / mag);
@@ -1341,8 +1387,8 @@ export class Arm {
       error.set(this._q2.x, this._q2.y, this._q2.z).multiplyScalar(angle / sinHalf);
     }
 
-    const kpRot = t.armKpRot * this.power;
-    const kdRot = t.armKdRot * this.power;
+    const kpRot = t.armKpRot * power;
+    const kdRot = t.armKdRot * power;
 
     if (!holding) {
       // The hand is empty. The drive was tuned on a forearm with a weapon in
@@ -1393,7 +1439,7 @@ export class Arm {
       .addScaledVector(foreAxis, along);
     const bladeTorque = this.weaponTorque(kpRot, kdRot);
 
-    const maxTorque = t.maxTorque * this.power;
+    const maxTorque = t.maxTorque * power;
     const tmag = torque.length() + bladeTorque.length();
     this.state.torqueSaturation = maxTorque > 0 ? Math.min(1, tmag / maxTorque) : 1;
     if (tmag > maxTorque) {
@@ -1407,7 +1453,7 @@ export class Arm {
     // the elbow swivel is left to gravity, the physical forearm ends up pointing
     // somewhere the target never predicted, and the angular drive spends itself
     // fighting the hand instead of aiming the blade.
-    this.applyUpperArmTorque(t, rollGain * wristGain, sin2);
+    this.applyUpperArmTorque(t, rollGain * wristGain, sin2, power);
 
     // The weapon bent at the wrist and turned in the grip, toward the line
     // and the edge that were asked for.
@@ -1703,7 +1749,7 @@ export class Arm {
    * `rollGain` and `sin2` (the squared sine of the elbow's bend) bound its
    * roll about its own length, as for the forearm.
    */
-  private applyUpperArmTorque(t: Tuning, rollGain: number, sin2: number): void {
+  private applyUpperArmTorque(t: Tuning, rollGain: number, sin2: number, power: number): void {
     const uq = this.upper.rotation();
     this._q3.set(uq.x, uq.y, uq.z, uq.w);
     this._q4.copy(this._q3).invert().premultiply(this._upperQuat);
@@ -1717,8 +1763,8 @@ export class Arm {
       const angle = 2 * Math.atan2(sinHalf, this._q4.w);
       error.set(this._q4.x, this._q4.y, this._q4.z).multiplyScalar(angle / sinHalf);
     }
-    const kp = t.armKpRot * UPPER_TORQUE_SCALE * this.power;
-    const kd = t.armKdRot * UPPER_TORQUE_SCALE * this.power;
+    const kp = t.armKpRot * UPPER_TORQUE_SCALE * power;
+    const kd = t.armKdRot * UPPER_TORQUE_SCALE * power;
     const av = this.upper.angvel();
     const torque = this._v.copy(error).multiplyScalar(kp);
     torque.x -= av.x * kd;
@@ -1729,7 +1775,7 @@ export class Arm {
       torque, this._ta.set(0, 1, 0).applyQuaternion(this._q3), error, av,
       kp, kd, this.upperRoll + this.foreRoll + this.foreSwing * sin2, rollGain);
 
-    const cap = t.maxTorque * UPPER_TORQUE_SCALE * this.power;
+    const cap = t.maxTorque * UPPER_TORQUE_SCALE * power;
     const tmag = torque.length();
     if (tmag > cap) torque.multiplyScalar(cap / tmag);
     this.upper.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
@@ -2149,13 +2195,50 @@ export class Arm {
     roll: [ROLL_MIN, ROLL_MAX] as const,
   };
 
+  /**
+   * Its weapon has been knocked by a heavier blow: lose `share` of the arm's
+   * strength at once, for the first half of `seconds`, and get it back over
+   * the second. Never less than it has already lost. The wrist and the grip
+   * keep theirs -- the weapon stays in line with the forearm, and it is the
+   * arm that is carried off with it.
+   *
+   * Held before it comes back, because coming straight back it hardly gave:
+   * a knock that carries a weapon 22 cm against an arm that holds it carried
+   * it 36 cm against one coming straight back, and carries it 42 now.
+   */
+  jolt(share: number, seconds: number): void {
+    if (share <= 0 || seconds <= 0 || this.limp || this.severedAt !== null) return;
+    if (share <= this.shaken) return;
+    this.shaken = Math.min(1, share);
+    this.stunned = seconds / 2;
+    this.recovery = this.shaken / (seconds / 2);
+    this.regaining = seconds / 2 + REGAIN_TIME;
+  }
+
+  /** How much of its strength the arm has for the moment lost to a knock, 0..1. */
+  get jarred(): number {
+    return this.shaken;
+  }
+
   /** How far in and out this particular arm can go, metres from the shoulder. */
   get reachLimits(): readonly [number, number] {
     return [this.minReach, this.maxReach];
   }
 
+  /**
+   * How far from the shoulder this arm puts the part of its weapon that does
+   * the work, at full stretch, metres: what anyone looking at it can see of
+   * how far it reaches. Nothing with an empty hand.
+   */
+  get strikeLength(): number {
+    return this.wielding ? this.maxReach + this.weapon.grip + this.weapon.span * this.strikePoint : 0;
+  }
+
   /** Re-seat the arm after a reset, so it doesn't whip back across the room. */
   reset(t: Tuning): void {
+    this.shaken = 0;
+    this.stunned = 0;
+    this.regaining = 0;
     const wasSevered = this.severedAt;
     // Back in the hand before anything is laid out: it is jointed on again
     // below, once the arm is where the joint expects it.
@@ -2230,6 +2313,9 @@ export class Arm {
    */
   regain(t: Tuning): void {
     this.limp = false;
+    this.shaken = 0;
+    this.stunned = 0;
+    this.regaining = 0;
     this.guide(null);
     if (this.severedAt !== null) return;
 

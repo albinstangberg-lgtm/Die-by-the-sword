@@ -109,9 +109,23 @@ export interface Tuning {
    * what differs is how much each one weighs.
    */
   balance: number;
+  /**
+   * How far an arm gives when its weapon is knocked by a heavier blow, 0..1:
+   * the most of its strength a knock can take for a moment. At 0 an arm holds
+   * its weapon wherever it is hit, as it used to. See impacts.ts, `clash`.
+   */
+  clash: number;
 
   // --- locomotion ---
   moveSpeed: number;   // m/s
+  /**
+   * Seconds the feet take to get a body from standing to walking pace, and
+   * from walking pace to a stop. At 0 a step is at full pace the moment the
+   * key goes down and stops dead when it comes up, which reads as a figure
+   * slid about rather than a body shifting its weight. Everyone's, yours and
+   * theirs.
+   */
+  stepEase: number;
   turnSpeed: number;   // rad/s
   /**
    * How high a standing jump clears, metres. The take-off speed is derived
@@ -164,8 +178,10 @@ export const DEFAULTS: Tuning = {
 
   armBehindBlow: 1,
   balance: 0.4,
+  clash: 0.85,
 
   moveSpeed: 3.1,
+  stepEase: 0.1,
   turnSpeed: 2.5,
   jumpHeight: 0.62,
   airControl: 0.055,
@@ -229,7 +245,12 @@ export const CONTROLS: Control[] = [
   { group: "Impact", key: "balance", label: "balance  (Froude no.)", min: 0.15, max: 1, step: 0.01,
     hint: "How big a shove a body can step out of: speed over √(gravity × leg length). Lower, and everything goes over more easily — but the orc still takes five times the goblin, because it weighs five times as much." },
 
+  { group: "Impact", key: "clash", label: "weapon knocked aside", min: 0, max: 1, step: 0.05,
+    hint: "When two weapons meet, the one with less weight and speed behind it is knocked, and the arm holding it loses up to this much of its strength for a moment -- more, and for longer, the harder the knock. That moment is an opening. At 0 an arm holds its weapon wherever it is hit." },
+
   { group: "Movement", key: "moveSpeed", label: "move speed  (m/s)", min: 0, max: 8, step: 0.1 },
+  { group: "Movement", key: "stepEase", label: "step ease  (s)", min: 0, max: 0.4, step: 0.01,
+    hint: "How long the feet take to get up to walking pace and to stop. At 0 every step starts and stops dead. Everyone's, the opponents' included." },
   { group: "Movement", key: "turnSpeed", label: "turn speed  (rad/s)", min: 0, max: 6, step: 0.1 },
   { group: "Movement", key: "jumpHeight", label: "jump height  (m)", min: 0, max: 2, step: 0.02 },
   { group: "Movement", key: "airControl", label: "air control", min: 0, max: 1, step: 0.005,

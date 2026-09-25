@@ -326,6 +326,44 @@ The practice dummy takes a blow like a punching bag, through its middle
 wherever it lands, and its mount drags, so it rocks and settles inside half a
 second.
 
+### Weapons meeting
+
+A blade that met another used to be a parry and nothing more: the solver
+stopped both, and a driven arm had its weapon back where it was sent inside two
+centimetres. Now the two blows are weighed the way a blow on a body is — each
+weapon and the arm behind it, meeting and sticking — and the speed they share
+afterwards says which one carried on and which was sent back:
+
+```
+shared speed = (m₁ × a₁ + m₂ × a₂) / (m₁ + m₂)      along the line they met on
+```
+
+The side with more weight times speed behind it carries on its way. The other
+is **knocked aside**: its arm loses some of its strength for a moment — more,
+and for longer, the harder the knock, up to `weapon knocked aside` (0.85) of it
+and back in full within 0.6 seconds — so the weapon is carried off, and comes
+back to where it was being aimed. It comes back under control, not as a swing:
+until the hand is back where it was sent, its drive is damped four times
+harder. Brought back at full strength, a guard the orc's axe had beaten aside
+came back through the orc's forearm at cutting speed, and standing still behind
+one took its arm off in four minutes out of ten. The aim itself is never moved;
+your mouse is still where you left it. That moment is an opening, and it works
+both ways:
+
+| | knocked | |
+|---|---|---|
+| a goblin's thrust, 2.7kg at 8 m/s, into your sword held still (5.6kg) | your sword, at 2.6 m/s | it still stops the spear |
+| your sword swung at 9 m/s into the goblin's spear held still | the spear, at 6.1 m/s | a clean opening |
+| the orc's axe, 11.2kg at 8 m/s, into your sword | your sword, at 5.3 m/s | a guard against an orc goes where the axe sends it |
+| your sword at 9 m/s into the orc's axe held still | the axe, at 3.0 m/s | even an orc's guard can be beaten aside |
+| two equal swings meeting | neither | they stop each other |
+
+An opponent reads it off the arm, as you do. Its own weapon knocked aside, it
+loses the swing it was drawing back for or throwing, and starts nothing new
+until its arm is its own again; the time its guard takes to come back up behind
+a weak arm is yours. Yours knocked aside, it steps in on it — every time. The
+readout says when it was your weapon, or theirs by you.
+
 ### What a cut looks like
 
 Underneath, a fighter is what it always was: an invisible capsule that walks,
@@ -617,10 +655,21 @@ noticed you, sight alone keeps it coming. So you can stand in the training room
 and look through the door at an orc that has not seen you yet, and walk through
 that door and find that it has.
 
-Losing sight does not stop a fight dead either: it keeps coming for two and a
-half seconds after the line breaks, which is about one pillar's worth. An
-opponent that downed tools every time you stepped behind something would be
-trivial to beat and absurd to watch.
+Losing sight does not stop a fight dead either, but it knows no more of you
+than it saw. For four tenths of a second after the line breaks — about one
+pillar's worth — it carries on as it was, squared up to where you were. Past
+that it goes to look: to where it last saw you, on a little the way you were
+going, and a look round from there. If it still has not found you, it walks back
+to its post the way it came — it drops a mark every metre on the way out and
+keeps only the corners, so the way back goes through the door and not into the
+wall beside it — and turns to face the way it stood. The fight panel says
+`waiting` again once it has given you up.
+
+It used to keep coming for two and a half seconds after the line broke, and for
+all of them it knew where you actually were. Step through the door out of the
+orc's hall and along the other side of the wall, and it walked most of the way
+across its hall toward you, into the stone, and gave up there — wherever there
+was — and waited against the wall.
 
 ## The bestiary
 
@@ -824,6 +873,21 @@ swings are footwork now:
   back out, the weapon at the guard throughout: a question put to your nerve,
   not a tell that lies. The weapon going back still means a swing is coming,
   every time.
+- **It rocks in and out.** Some of its steps round you are half-steps straight
+  in or out across the edge of its reach instead — in, out, in — so you are
+  never sure whether the next step in is the one it swings from. It used to go
+  in only to correct its distance, on a slant, and in twenty-five seconds of a
+  swordsman circling you it never once stepped straight back out.
+- **It answers your feet.** Step in on it and, a reaction time later, it gives
+  ground step for step — or stands, and swings as you walk into its reach.
+  Back off and it follows, rather than let you set the distance.
+- **It offers you a target.** Now and then it steps inside your reach on
+  purpose, guard up, holds there a beat, and steps back out. It gets out of the
+  way of what that draws more readily than of anything else.
+- **Miss, and you pay for it.** A swing of yours that came at it and went by
+  leaves you open while your weapon comes back, and it often steps in and
+  swings — always, if it was baiting you. So does your weapon knocked aside
+  (see [Weapons meeting](#weapons-meeting)).
 - **It gets out of the way.** A swing of yours that comes at it is noticed
   once, weighed once against how wary a creature it is, and answered — if at
   all — a reaction time later, 0.12 to 0.22 seconds, by which point a quick
@@ -837,8 +901,8 @@ swings are footwork now:
 - **It looks where it puts its feet.** Every step asks the stone first, knee
   high and a body wide, so it turns back at a wall instead of walking into one,
   and on its way to you it steps round a pillar rather than into it.
-- **It swings at what it can see.** Memory brings it round a pillar after you;
-  only sight lets it commit.
+- **It swings at what it can see.** Out of sight it goes to where it last saw
+  you and looks round from there; only sight lets it commit.
 
 None of this is a way of moving you lack. It steps on the same keys you do —
 its sidestep is Q and E too — at the same speed, and it sees nothing of you but
@@ -853,10 +917,40 @@ shapes of swing:
 | **goblin** | 0.6–1.8s | hardly at all | six in ten | more than half |
 | **swordsman** | 0.5–1.5s | a beat | one in three | one in three |
 
+And in and out:
+
+| | half-steps in and out | step in on it and it | steps into your reach to draw a swing | makes you pay for a miss |
+|---|---|---|---|---|
+| **orc** | now and then | stands and meets you, nine times in ten | never | half the time |
+| **goblin** | about a third of its steps | gives ground, eight times in ten | now and then | nearly half the time |
+| **swordsman** | four steps in ten | either, as often | now and then | seven times in ten |
+
 So the orc stalks: a heavy step, a long plant, and never long before the axe
-goes up — it spends most of a fight swinging. The goblin never stops moving: it
-goes round you nearly two metres off, where your sword does its work at 1.1, and
-hops back from what you swing at it. You have to go and get it.
+goes up — it spends most of a fight swinging, and walking at it is walking into
+it. The goblin never stops moving: it goes round you nearly two metres off,
+where your sword does its work at 1.1, gives ground as you come, and hops back
+from what you swing at it. You have to go and get it — and a swing that falls
+short of it costs you. Against a player who swings once a second whatever is
+in reach, all three do about the damage they did before any of this — what has
+changed is when: on your misses, and as you walk in.
+
+### Steps have weight
+
+A step used to be at full pace the moment the key went down and stopped dead
+when it came up, for you and for everything else: a figure slid about rather
+than a body shifting its weight. Now the feet take a body up to pace and down
+from it in a tenth of a second (`step ease`, under Movement; 0 is the old snap),
+at a flat rate, so turning a step round — in and straight back out — takes
+twice as long as starting one. The in-and-out above only reads as footwork
+because of it.
+
+A jump is still a stride: the legs push the body off at the pace the keys ask
+for. Before steps were eased the jump got that by accident — the ground probe
+finds the floor for two steps after the feet leave it, and those two set the
+pace outright — and the orc's leap got its run from it; eased, it came down
+short and none of ten chops landed. And anything that walks a body to a spot
+lets go early by as far as the feet will carry it: the pick-up held on to the
+last centimetre and went past, back, and past again until it gave up.
 
 ### The jump
 
@@ -1398,20 +1492,24 @@ you aimed along. The wrist is far stiffer than a real one on purpose, and its
 range starts above where the resting arm begins to shake. Input adds `flick speed cap` and `flick accel cap`: anything
 slower reaches the arm untouched.
 
-Impact adds two, and they apply to every blow, yours and theirs: `arm behind the
+Impact adds three, and they apply to every blow, yours and theirs: `arm behind the
 blow`, how much of the swinging arm's weight lands with the weapon — at 0 only
 the steel arrives and nobody is knocked over, which is the truth about a sword
 on its own — and `balance`, the Froude number, how big a shove anything can
 step out of. Lower it and everything goes over more easily, but the orc still
-takes five times what the goblin does: it weighs five times as much.
+takes five times what the goblin does: it weighs five times as much. And
+`weapon knocked aside`: how much of its strength an arm loses when its weapon
+is knocked by a heavier blow, at 0 none, and the weapon is held wherever it is
+hit.
 
-Movement adds `jump height` and `air control`. Presets: **heavy** (a sword that
+Movement adds `step ease` — how long the feet take to get to walking pace and
+to stop, everyone's — `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
 to lift it). Try `rigid` for ten seconds to hear what the mechanic sounds like
 when you take the clamp away.
 
 The arm's knobs drive your arm only. An orc's force budget is its own, scaled
-from its size. The world's — gravity, and the two impact knobs — are everyone's.
+from its size. The world's — gravity, the impact knobs and step ease — are everyone's.
 
 ## Deliberate behaviours
 
@@ -1446,6 +1544,10 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **An opponent that loses you goes to look, then goes home.** It walks to
+  where it last saw you, a little further the way you were going, and looks
+  round. It does not know where you went, only where you were. If it finds
+  nothing, it walks back to its post the way it came.
 - **An opponent sometimes steps out of your swing.** It saw it start, and moved
   a reaction time later — so a quick cut usually lands and a slow, big one often
   does not. Never in the middle of a swing of its own. The goblin does it
@@ -1456,6 +1558,12 @@ Some things look like bugs and are not:
 - **An opponent sometimes darts in and straight back out without swinging.**
   That is a feint with its feet. Its weapon stays at the guard; only a real
   swing draws it back.
+- **An opponent sometimes steps into your reach and stands there.** It is
+  offering you a target. Swing, and it is already on its way out; miss, and it
+  steps back in.
+- **Your sword gets knocked aside.** Something heavier met it — the orc's axe
+  above all — and your arm gives for a moment before it brings the sword back
+  to where you are aiming. Hold a guard against the orc and it goes through.
 - **Nothing tells you what an opponent is about to do.** The fight panel says
   whether it has seen you and whether it can still fight, and that is all.
   What is coming is on its arm: watch the weapon go back, and where to.

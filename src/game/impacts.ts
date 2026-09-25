@@ -8,6 +8,7 @@ import { Blood } from "./blood";
 import { cutDamage } from "./damage";
 import type { Weapon } from "./weapons";
 import type { Tuning } from "../tuning";
+import { judgeClash } from "./balance";
 
 /**
  * Impact quality.
@@ -41,7 +42,28 @@ const COOLDOWN_MS = 180;
  */
 const RESTING_SPEED = 0.35;
 
+/**
+ * A weapon knocked by another: the speed it is sent back at, m/s, below which
+ * nothing comes of it and at which an arm loses all it can (`Tuning.clash`),
+ * and how long the hardest knock takes to get over, seconds.
+ */
+const KNOCK_MIN = 0.5;
+const KNOCK_FULL = 4;
+const KNOCK_TIME = 0.6;
+
 export type Quality = "touch" | "flat" | "glance" | "bite" | "clean";
+
+/** Two weapons met, and one was knocked: see `Impacts.clash`. */
+export interface Clash {
+  /** The weapon knocked back, and the one that knocked it. */
+  knocked: Arm;
+  by: Arm;
+  /** How much its speed along the line they met on was changed, m/s. */
+  speed: number;
+  /** The share of its strength the arm holding it lost for the moment. */
+  share: number;
+  at: THREE.Vector3;
+}
 
 export interface Impact {
   quality: Quality;
@@ -88,6 +110,9 @@ interface BladeEntry {
 
 export class Impacts {
   latest: Impact | null = null;
+  /** The last time two weapons met and one was knocked, and who wants to hear of it. */
+  latestClash: Clash | null = null;
+  onClash?: (c: Clash) => void;
 
   /**
    * One reporter serves every blade in the fight.
@@ -296,6 +321,9 @@ export class Impacts {
       entry.onImpact(impact);
       if (this.isFlesh(entry.arm, other)) this.bleed(impact);
       else this.strike(impact);
+      // Weapon on weapon: after the hit is told, so what came of it is the
+      // last word.
+      if (b1 && b2 && b1.arm !== b2.arm) this.clash(entry.arm, (entry === b1 ? b2 : b1).arm, impact);
     });
 
     this.sparks.update();
@@ -308,6 +336,42 @@ export class Impacts {
         if (now - t > COOLDOWN_MS * 4) this.lastAt.delete(h);
       }
     }
+  }
+
+  /**
+   * Two weapons have met: whichever had less behind it along the line they met
+   * on is knocked back along it, and the arm holding it gives.
+   *
+   * Weighed the way a blow on a body is (see balance.ts): each weapon, and as
+   * much of the arm behind it as lands with it, meeting and sticking. The
+   * speed they share afterwards says who won -- the side with more mass times
+   * speed along the line carries on its way, the other is sent back -- and the
+   * loser's change of speed says how hard. So a spear thrust into a sword held
+   * still moves the sword, a sword swung hard into a spear held still moves
+   * the spear, the orc's axe moves anything it meets, and two equal blows stop
+   * each other and knock neither.
+   *
+   * The solver has already made them bounce. What this adds is the arm: a
+   * driven arm holds its hand where it was sent at a few hundred newtons, and
+   * without giving it would have the knocked weapon back in two centimetres.
+   */
+  private clash(striker: Arm, struck: Arm, impact: Impact): void {
+    const into = impact.into;
+    const a1 = impact.bladeVelocity.dot(into);
+    const a2 = struck.velocityAt(impact.at, this._v).dot(into);
+    const m2 = struck.liveWeaponMass + this.tuning.armBehindBlow * struck.armBehind;
+    const { knocked: which, speed } = judgeClash(impact.blowMass, a1, m2, a2);
+    const knocked = which === 2 ? struck : which === 1 ? striker : null;
+    if (knocked === null || !knocked.wielding) return;
+    const hard = Math.min(1, Math.max(0, (speed - KNOCK_MIN) / (KNOCK_FULL - KNOCK_MIN)));
+    if (hard <= 0) return;
+    const share = hard * this.tuning.clash;
+    knocked.jolt(share, KNOCK_TIME * hard);
+    const clash: Clash = {
+      knocked, by: knocked === struck ? striker : struck, speed, share, at: impact.at.clone(),
+    };
+    this.latestClash = clash;
+    this.onClash?.(clash);
   }
 
   /** Streaks still in the air, off stone and off flesh. The harness counts these. */
