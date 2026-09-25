@@ -106,6 +106,8 @@ interface BladeEntry {
   arm: Arm;
   onImpact: (i: Impact) => void;
   cutter: Cutter;
+  /** The weapon's collider handles as they were last routed here. */
+  handles: number[];
 }
 
 export class Impacts {
@@ -123,6 +125,8 @@ export class Impacts {
    * collider handle instead.
    */
   private blades = new Map<number, BladeEntry>();
+  /** Every weapon, once each, whatever its colliders are this step. */
+  private readonly entries: BladeEntry[] = [];
 
   /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
   private lastAt = new Map<number, number>();
@@ -174,17 +178,34 @@ export class Impacts {
    * not forget where it was and cut the whole room on its next sweep.
    */
   addBlade(arm: Arm, onImpact: (i: Impact) => void): void {
-    const existing = this.blades.get(arm.bladeCollider.handle);
-    const entry: BladeEntry = {
-      arm, onImpact,
-      cutter: existing?.cutter ?? new Cutter(this.phys, arm, arm.side.cuttableFilter),
-    };
-    for (const c of arm.weaponColliders) this.blades.set(c.handle, entry);
+    const existing = this.entries.find((e) => e.arm === arm);
+    if (existing) {
+      existing.onImpact = onImpact;
+    } else {
+      this.entries.push({
+        arm, onImpact, handles: [], cutter: new Cutter(this.phys, arm, arm.side.cuttableFilter),
+      });
+    }
+    this.route(existing ?? this.entries[this.entries.length - 1]);
+  }
+
+  /**
+   * Route a weapon's colliders to it, if they have changed: a hand that has
+   * taken up another weapon has another weapon's colliders (see `Arm.takeUp`).
+   * A weapon that has changed in the hand has nowhere to sweep from.
+   */
+  private route(entry: BladeEntry): void {
+    const now = entry.arm.weaponColliders;
+    if (now.length === entry.handles.length && now.every((c, i) => c.handle === entry.handles[i])) return;
+    for (const h of entry.handles) if (this.blades.get(h) === entry) this.blades.delete(h);
+    entry.handles = now.map((c) => c.handle);
+    for (const h of entry.handles) this.blades.set(h, entry);
+    entry.cutter.reset();
   }
 
   /** After teleporting a blade, so its next sweep does not cut the whole room. */
   resetSweeps(): void {
-    for (const b of new Set(this.blades.values())) b.cutter.reset();
+    for (const b of this.entries) b.cutter.reset();
   }
 
   /**
@@ -196,7 +217,7 @@ export class Impacts {
    * them, at the speed it was actually travelling.
    */
   private sweepBlades(now: number): void {
-    for (const entry of new Set(this.blades.values())) {
+    for (const entry of this.entries) {
       // A weapon on its owner's back, or on its way there or back, cuts
       // nothing, and when it is back in the hand it must not sweep from the
       // back to the hand through whatever is between. Nor does one nobody is
@@ -272,6 +293,7 @@ export class Impacts {
 
   /** Drain this step's contact events. Call right after `world.step()`. */
   update(now: number): void {
+    for (const entry of this.entries) this.route(entry);
     this.sweepBlades(now);
 
     this.phys.events.drainContactForceEvents((e) => {

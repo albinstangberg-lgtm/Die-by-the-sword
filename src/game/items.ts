@@ -31,7 +31,8 @@ import { discardStandIn, Piece, piecesOf } from "./remains";
  * lie where they came to rest -- so where one is is asked of its bodies each
  * step. And they are not put away as they are taken: they stay in the hand
  * that took them, until F puts them in the bag, or G lets go of them. From
- * the bag they come back out into the hand.
+ * the bag they come back out into the hand. A weapon held can be taken up,
+ * with X, and fought with: see `wield`.
  */
 
 export type ItemKind = "potion" | "shield" | "rack" | "remains" | "weapon";
@@ -245,11 +246,48 @@ export class Items {
       }
     }
     // A hand taken away from what it holds -- a blow on the floor, a cut, the
-    // sword coming out -- lets go of it.
+    // sword coming out -- lets go of it. A weapon taken up is held as the
+    // arm's own would be: a fall keeps it, and a cut takes it with the arm.
     const h = this.holder;
-    if (h && (h.dead || h.fighter.down || h.arm.disarmed || !h.arm.sheathed || h.arm.stowing)) {
+    if (h?.arm.wieldsTaken) {
+      if (h.arm.disarmed) this.forget(h);
+    } else if (h && (h.dead || h.fighter.down || h.arm.disarmed || !h.arm.sheathed || h.arm.stowing)) {
       this.letGo(h);
     }
+  }
+
+  /** Whatever `who` held is not theirs to hold any more, wherever it is. */
+  private forget(who: Combatant): void {
+    if (this.holder !== who) return;
+    who.held = null;
+    this.holder = null;
+  }
+
+  /**
+   * X with a weapon in the hand: take it up and fight with it (see
+   * `Arm.takeUp`). The copy in the hand goes, and the arm's weapon is the
+   * real thing from here, with that weapon's own shape and weight; the one it
+   * was taken off stays out of the world meanwhile, and comes back into it
+   * where the arm's weapon is when the hand lets go.
+   */
+  wield(who: Combatant): Outcome {
+    const item = who.held;
+    if (item?.kind !== "weapon" || !item.piece || this.holder !== who) return { ok: false, text: "" };
+    if (!who.arm.takeUp(item.piece.owner.arm.weapon)) return { ok: false, text: "" };
+    const c = this.carried;
+    if (c?.piece === item.piece) {
+      this.carried = null;
+      discardStandIn(c.mesh);
+    }
+    return { ok: true, text: `you take up ${item.name}` };
+  }
+
+  /** X again: put it up -- a thing held in the hand again, the sword on the back. */
+  unwield(who: Combatant): Outcome {
+    const item = who.held;
+    if (!item || this.holder !== who || !who.arm.putUp()) return { ok: false, text: "" };
+    this.hold(who, item);
+    return { ok: true, text: `you lower ${item.name}` };
   }
 
   /**
@@ -269,11 +307,13 @@ export class Items {
     return { ok: true, text: `holding ${item.name}` };
   }
 
-  /** F with something in the hand: into the bag with it. */
+  /** F with something in the hand -- taken up, or only held: into the bag with it. */
   bag(who: Combatant): Outcome {
     const item = who.held;
     if (!item || this.holder !== who) return { ok: false, text: "nothing in your hand" };
+    if (who.arm.wieldsTaken && !who.arm.putUp()) return { ok: false, text: "" };
     this.putBack();
+    this.forget(who);
     who.inventory.stow(item);
     return { ok: true, text: `put ${item.name} in your bag` };
   }
@@ -295,6 +335,27 @@ export class Items {
   letGo(who: Combatant): Outcome {
     const item = who.held;
     if (!item?.piece || this.holder !== who) return { ok: false, text: "nothing in your hand" };
+    if (who.arm.wieldsTaken) {
+      // A weapon taken up leaves the hand as it is: where the arm's weapon
+      // is, turned as it is and moving as it is. It was that weapon all along.
+      const b = who.arm.blade;
+      const p = b.translation();
+      const q = b.rotation();
+      const v = b.linvel();
+      const w = b.angvel();
+      if (!who.arm.putUp()) return { ok: false, text: "" };
+      const body = item.piece.bits[0].body;
+      body.setTranslation(p, true);
+      body.setRotation(q, true);
+      body.setLinvel(v, true);
+      body.setAngvel(w, true);
+      body.resetForces(true);
+      body.resetTorques(true);
+      this.forget(who);
+      this.setTaken(item, false);
+      item.piece.locate(item.at, item.grip);
+      return { ok: true, text: `let go of ${item.name}` };
+    }
     const from = who.arm.handPosition.y;
     this.putBack();
     this.putDown(who, item.piece, from);
@@ -504,7 +565,14 @@ export function inRange(who: Combatant, items: Items): Item | null {
 
 /** What F would do here, for the prompt, or null if there is nothing to go and get. */
 export function promptFor(who: Combatant, items: Items): string | null {
-  if (who.held) return `F — put ${who.held.name} in your bag · G — let go`;
+  if (who.held) {
+    // Taken up, it is a weapon like any other: nothing to prompt.
+    if (who.arm.wieldsTaken) return null;
+    const name = who.held.name;
+    return who.held.kind === "weapon"
+      ? `X — wield ${name} · F — put it in your bag · G — let go`
+      : `F — put ${name} in your bag · G — let go`;
+  }
   const item = inRange(who, items);
   if (!item) return null;
   const verb = item.kind === "rack" && item.taken ? "hang your shield on the rack"

@@ -36,7 +36,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 317 checks, no browser needed
+npm run smoke    # headless physics harness — 327 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -54,7 +54,7 @@ npm run build    # production bundle
 | **Space** | jump — or, with **W** held at a ledge, climb it |
 | **V** | vault whatever is in front of you, if it is waist high |
 | **C** | hold to crouch |
-| **X** | sword on your back, and back in your hand |
+| **X** | sword on your back, and back in your hand — or, holding an opponent's weapon, take it up and fight with it, and put it up again |
 | **Z** | shield on your back, and back on your arm |
 | **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
 | **G** | let go of what is in your hand |
@@ -639,7 +639,28 @@ picks up nothing else — it offers to bag what you hold instead — and it is
 not a hand to drink with. **X** lets go of it to draw your sword, and so does
 anything else that takes the hand away: a blow that puts you down, a cut.
 Held is not wielded: what is in your hand is out of the world, and the orc's
-axe in it cuts nothing.
+axe in it cuts nothing — until you take it up.
+
+### Wielding what you took
+
+Holding an opponent's weapon, **X** takes it up, and you fight with it. It is
+not a skin on your sword: the body in your hand is given the axe's colliders,
+the axe's 3.65 kilos and the axe's shape, as they were made for the orc —
+an axe is an axe, whoever's hand it is in — and jointed into your hand the way
+your sword is drawn into it. So it swings with the axe's inertia on your arm's
+strength, which is a man's, not an orc's: it comes round slower than your
+sword and commits you to every swing, and it cuts with the axe's edge and
+heft. The goblin's spear takes up the same way, and bites with its point. Your sword stays
+in its scabbard, drawn there, and the orc's axe itself stays out of the world
+while the arm has it.
+
+**X** again puts it up — held in your hand again, your sword on your back as
+it was, with the weight the panel gives it. **G** lets go of it where it is in
+the hand, turned as it is and moving as it is, to fall; **F** puts it straight
+in the bag. Put down, it is a weapon nobody is swinging again, and cuts
+nobody. A knockdown keeps it in your hand, as it would your sword; a cut
+takes it with the arm. A reset puts your sword back in your hand and the axe
+back in the orc's.
 
 These are physical, unlike the potions. They fell where the cut threw them
 and lie where they came to rest, so where one is is asked of its bodies every
@@ -1709,7 +1730,9 @@ Some things look like bugs and are not:
 - **Your sword comes out and the head you were holding hits the floor.** The
   hand lets go of it to take the sword. F first, to keep it.
 - **The orc's axe in your hand cuts nothing.** You are holding it, not
-  wielding it: it is out of the world until you let it go.
+  wielding it: it is out of the world until you take it up with X.
+- **The orc's axe is slow in your hand.** It weighs what it weighs, and your
+  arm is a man's. The orc swings it on an orc's strength.
 - **F takes the body away from you for a moment.** It walks you over, turns
   you, and puts you on your haunches. Press a key and you have it back.
 - **X takes a second, and a sword half put away is not one you can swing.**
@@ -1793,7 +1816,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 317 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 327 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1925,6 +1948,16 @@ gave it; that a reset puts every piece back on, from the hand and the bag, and
 the sword back in the fist; and that Z, B, G and the numbers are where the
 HUD says.
 
+And that the orc's axe, taken off it dead, is a weapon in your hand: that X
+takes it up with the axe's weight and shape, jointed in your hand, your sword
+drawn in its scabbard and the orc's axe out of the world; that swung at the
+dummy every hit is the axe's; that ten seconds of the worst input there is
+spins nothing in your hand, as for every weapon in its owner's; that X again
+puts it up, your sword back on your back at its own weight; that let go of
+while wielded it is where yours was, falls, and cuts nobody; that F bags it
+straight out of the fight; and that a reset puts your sword back in your hand,
+the axe back in the orc's, and your sword cuts as a sword again.
+
 ## Stack
 
 TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
@@ -1935,8 +1968,8 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. Fighting with what an
-opponent dropped — the orc's axe, which you can pick up and carry now but not
-swing. A shield for an opponent, and the second hand a spear actually
+Rounds and a reason to be in the rooms. Friendly fire. A scabbard or a belt
+for what you take off someone, so the orc's axe can go on you rather than in a
+bag. A shield for an opponent, and the second hand a spear actually
 wants. Blood that stays on the
 floor, and on the blade.

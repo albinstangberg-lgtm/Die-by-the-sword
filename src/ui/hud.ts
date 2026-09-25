@@ -145,7 +145,7 @@ export class Hud {
           <dt>Space</dt><dd data-f="jumphint">jump &middot; W+Space climb</dd>
           <dt>V</dt><dd>vault</dd>
           <dt>C</dt><dd>crouch</dd>
-          <dt>X</dt><dd>sheathe / draw</dd>
+          <dt>X</dt><dd>sheathe / draw / wield</dd>
           <dt>Z</dt><dd>shield on back / arm</dd>
           <dt>F</dt><dd>pick up &middot; into bag</dd>
           <dt>G</dt><dd>let go</dd>

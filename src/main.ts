@@ -201,8 +201,14 @@ async function main(): Promise<void> {
     switch (a) {
       case "sheathe": {
         // Whatever the hand was doing -- going for something, holding
-        // something -- it is wanted for the sword now.
+        // something -- it is wanted for the sword now. Unless what it holds
+        // is a weapon: then that is the one it takes up, and puts up again.
         pickup.cancel();
+        if (player.arm.wieldsTaken || player.held?.kind === "weapon") {
+          const out = player.arm.wieldsTaken ? items.unwield(player) : items.wield(player);
+          hud.showNote(out.text, !out.ok);
+          break;
+        }
         if (player.held) hud.showNote(items.letGo(player).text);
         if (!player.arm.stowing) {
           if (player.arm.sheathed) player.arm.draw(); else player.arm.sheathe();
@@ -381,6 +387,7 @@ async function main(): Promise<void> {
   /** What you carry and how you stand, for the HUD. */
   const kit = (): Kit => ({
     sword: arm.disarmed ? "lost"
+      : arm.wieldsTaken ? "back"
       : arm.stowing ? (arm.drawing ? "drawing" : "sheathing")
         : arm.sheathed ? "back" : "hand",
     shield: player.offArm.slinging ? (player.offArm.slingingOn ? "slinging" : "unslinging")
@@ -390,7 +397,7 @@ async function main(): Promise<void> {
           : "none",
     potions: player.potions,
     bagged: player.inventory.pieces.length,
-    holding: player.held?.name ?? null,
+    holding: player.held ? `${player.held.name}${arm.wieldsTaken ? " (wielded)" : ""}` : null,
     healing: player.healing,
     stance: player.dead || fighter.down ? "down"
       : fighter.vaulting ? "vaulting"
