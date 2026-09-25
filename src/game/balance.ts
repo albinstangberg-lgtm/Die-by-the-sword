@@ -164,6 +164,25 @@ export function judgeBlow(
   return out;
 }
 
+/**
+ * Two weapons meeting along a line: `m1` arriving at `a1` m/s, `m2` at `a2`,
+ * both measured along the line from the first into the second. They meet and
+ * stick, the way a blow meets a body, and the speed they share afterwards says
+ * which one carried on and which was sent back: 1 if the first was knocked, 2
+ * if the second, 0 if neither -- and how much the knocked one's speed along
+ * the line was changed, m/s. A weapon's mass here is the blow's: the weapon and
+ * as much of the arm as lands with it.
+ */
+export function judgeClash(
+  m1: number, a1: number, m2: number, a2: number,
+): { knocked: 0 | 1 | 2; speed: number } {
+  if (m1 + m2 <= 0) return { knocked: 0, speed: 0 };
+  const shared = (m1 * a1 + m2 * a2) / (m1 + m2);
+  if (shared > 0) return { knocked: 2, speed: shared - a2 };
+  if (shared < 0) return { knocked: 1, speed: a1 - shared };
+  return { knocked: 0, speed: 0 };
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }

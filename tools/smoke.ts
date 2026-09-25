@@ -18,17 +18,20 @@ import {
   buildArena, CRATE, DUMMY_AT, GOBLIN_POST, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, ORC_POST, ROOMS,
   SPAWN, THIN_POST,
 } from "../src/game/arena";
-import { interact, Items } from "../src/game/items";
+import { interact, Items, promptFor, type Item } from "../src/game/items";
+import { OFF_GUARD } from "../src/game/offarm";
+import { SLUNG, SLUNG_TURN } from "../src/game/shield";
 import { Pickup } from "../src/game/pickup";
 import { Targets } from "../src/game/targets";
 import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
-  GOBLIN, ORC, SWORDSMAN, jointScaleFor, maxHealthFor, type Species,
+  GOBLIN, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, type Cut, type Species,
 } from "../src/game/species";
-import { AXE, SPEAR, SWORD, weaponMassProperties } from "../src/game/weapons";
+import { AXE, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon } from "../src/game/weapons";
 import { Ai, type Swing } from "../src/game/ai";
+import { judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
 import type { Fighter } from "../src/game/fighter";
@@ -337,9 +340,9 @@ function steerTo(
  * across it: the cut a shield held over the chest is there to stop.
  */
 function forehandAt(
-  rig: Rig, target: THREE.Vector3, level = false,
+  rig: Rig, target: THREE.Vector3, level = false, cut: Cut = FOREHAND,
 ): { from: ArmPose; to: ArmPose; roll: number } {
-  const roll = mid(FOREHAND.roll);
+  const roll = mid(cut.roll);
   const shoulder = rig.fighter.shoulderWorld(new THREE.Vector3());
   let yaw = Math.atan2(-(target.x - shoulder.x), -(target.z - shoulder.z)) - rig.fighter.yaw;
   while (yaw > Math.PI) yaw -= Math.PI * 2;
@@ -348,11 +351,11 @@ function forehandAt(
   const drop = level ? 0 : 1;
   return {
     from: {
-      yaw: yaw + mid(FOREHAND.from.yaw),
-      pitch: pitch + mid(FOREHAND.from.pitch) * drop,
-      reach: mid(FOREHAND.from.reach),
+      yaw: yaw + mid(cut.from.yaw),
+      pitch: pitch + mid(cut.from.pitch) * drop,
+      reach: mid(cut.from.reach),
     },
-    to: { yaw: yaw + mid(FOREHAND.to.yaw), pitch: pitch + mid(FOREHAND.to.pitch) * drop, reach: 1 },
+    to: { yaw: yaw + mid(cut.to.yaw), pitch: pitch + mid(cut.to.pitch) * drop, reach: 1 },
     roll,
   };
 }
@@ -368,9 +371,9 @@ function forehandAt(
  * The hold stands the foe still, so a knock is felt and nothing swings back.
  */
 function throwForehand(
-  rig: Rig, target: THREE.Vector3, how: { level?: boolean; each?: () => void } = {},
+  rig: Rig, target: THREE.Vector3, how: { level?: boolean; each?: () => void; cut?: Cut } = {},
 ): void {
-  const cut = forehandAt(rig, target, how.level);
+  const cut = forehandAt(rig, target, how.level, how.cut);
   steerTo(rig, cut.from, cut.roll, 45, HAND_PX, how.each);
   steerTo(rig, cut.to, cut.roll, 30, HAND_PX, how.each);
 }
@@ -1485,7 +1488,10 @@ async function swingsAreReadOffTheArm(): Promise<void> {
     let from = rig.foe.arm.aim;
     let told = "";
     let lied = "";
-    for (let i = 0; i < 60 * 30; i++) {
+    // Three quarters of a minute: a swing's length is a median over a bout,
+    // and since an opponent swings on your misses and as you walk in as well
+    // as when it is ready, half a minute of them is a noisier one than it was.
+    for (let i = 0; i < 60 * 45; i++) {
       const before = rig.ai.intent;
       rig.fight(1);
       const now = rig.ai.intent;
@@ -1541,7 +1547,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
       `${swings.length} swings at your ${[...parts].join(", ")}; ` +
       `${alike} different ones, in ${plural(new Set(swings.map((s) => s.cut.name)).size, "shape")}`);
     check("and nothing but the arm gives it away", told === "" && lied === "",
-      told || lied || "30s of fighting: the panel only ever said it was fighting");
+      told || lied || "45s of fighting: the panel only ever said it was fighting");
 
   }
 
@@ -1779,6 +1785,62 @@ async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
     `closed to ${closest.toFixed(2)} m once it had the line`);
   check("and swings once it is there", peakTip > 5,
     `peak tip ${peakTip.toFixed(1)} m/s`);
+}
+
+async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
+  console.log("\nan opponent that loses you looks where it saw you, then goes home");
+  const rig = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const where = () => rig.foe.position(new THREE.Vector3());
+  const flat = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
+
+  // It sees you in its hall, and then you are on the far side of the wall
+  // into the training room. It used to know where for two and a half seconds
+  // after, and walked most of the way across its hall toward you, into the
+  // wall.
+  const seenAt = new THREE.Vector3(ORC_POST.x + 3, SPAWN.y, ORC_POST.z + 3.5);
+  rig.place(seenAt);
+  rig.fight(60);
+  rig.place(new THREE.Vector3(-4, SPAWN.y, 3));
+  let north = -Infinity;
+  let nearest = Infinity;
+  for (let i = 0; i < 60 * 15; i++) {
+    rig.fight(1);
+    north = Math.max(north, where().z);
+    nearest = Math.min(nearest, flat(where(), seenAt));
+  }
+  check("lost behind a wall, it goes to where it saw you and not to you",
+    nearest < 0.8 && north < seenAt.z + 1,
+    `came within ${nearest.toFixed(2)} m of where it saw you, ` +
+    `and no further toward the wall than z ${north.toFixed(2)}`);
+  check("finds nothing there, and goes back to its post",
+    rig.ai.intent === "waiting" && flat(where(), ORC_POST) < 0.3,
+    `intent "${rig.ai.intent}", ${flat(where(), ORC_POST).toFixed(2)} m from its post`);
+
+  // Now lead it out of its hall and into the training room, and vanish. The
+  // straight line home from there runs into the wall beside the door.
+  const led = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const at = () => led.foe.position(new THREE.Vector3());
+  led.place(new THREE.Vector3(0, SPAWN.y, -3));
+  led.fight(150);
+  // How far it got, not where it happens to be at the end: one time in ten,
+  // after a swing, it gives ground, and it gave it back into the hall once.
+  let followed = -Infinity;
+  for (let i = 0; i < 132 + 90; i++) {
+    led.fight(1, i < 132 ? { ...NO_KEYS, back: true } : NO_KEYS);
+    followed = Math.max(followed, at().z);
+  }
+  led.place(new THREE.Vector3(GOBLIN_POST.x, SPAWN.y, GOBLIN_POST.z + 2));
+  led.fight(60 * 20);
+  const yaw = led.foe.fighter.yaw;
+  const facing = Math.abs(Math.atan2(Math.sin(yaw), Math.cos(yaw)));
+  // Through, not in it: the doorway's far face is at 0.2, and its body is
+  // four tenths of a metre across the middle.
+  check("backed out through the door, it follows you through", followed > 0.5,
+    `it got to z ${followed.toFixed(2)}, the training-room side of the door`);
+  check("and lost there, it goes home the way it came, and faces the way it stood",
+    led.ai.intent === "waiting" && flat(at(), ORC_POST) < 0.3 && facing < 0.1,
+    `intent "${led.ai.intent}", ${flat(at(), ORC_POST).toFixed(2)} m from its post, ` +
+    `${(facing * 180 / Math.PI).toFixed(0)}deg off how it stood`);
 }
 
 async function severingBleeds(): Promise<void> {
@@ -2965,6 +3027,10 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
   // One step's worth of its walking pace, metres.
   const pace = rig.tuning.moveSpeed * rig.foe.fighter.build.scale * STEP;
   let way = 0;
+  // How long the keys it is holding have been held: a step eases up to pace,
+  // so one only counts as going nowhere once the feet have had their time.
+  let keysWere = "";
+  let heldFor = 0;
   for (let i = 0; i < seconds * 60; i++) {
     const before = rig.ai.intent;
     rig.fight(1, drive(rig));
@@ -2980,8 +3046,11 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
     const mz = it.z - was.z;
     was.copy(it);
     const k = rig.ai.keys;
+    const keys = `${+k.forward}${+k.back}${+k.left}${+k.right}`;
+    heldFor = keys === keysWere ? heldFor + STEP : 0;
+    keysWere = keys;
     if (FOOTWORK.has(now) && (k.forward || k.back || k.left || k.right)
-      && Math.hypot(mx, mz) < pace * 0.3) bout.blocked++;
+      && heldFor > rig.tuning.stepEase && Math.hypot(mx, mz) < pace * 0.3) bout.blocked++;
 
     const dx = it.x - me.x;
     const dz = it.z - me.z;
@@ -3107,6 +3176,250 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
   check("and never in the middle of a swing of its own",
     from.every((s) => s === "close" || s === "circle" || s === "backoff"),
     `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
+}
+
+async function anOpponentMovesInAndOut(): Promise<void> {
+  console.log("\nit moves in and out as well as round");
+  // Between swings it went round you. It stepped in only to correct its
+  // distance, on a slant, and in twenty-five seconds of a swordsman circling
+  // you it never once stepped straight back out.
+  //
+  // Each of these is a chance rolled a step at a time, and a swordsman spends
+  // three quarters of a fight swinging rather than stepping, so they are
+  // counted over more than a bout -- or, where only the mechanism is in
+  // question, with the chance set to certain.
+  let rockIn = 0;
+  let rockOut = 0;
+  for (const species of [SWORDSMAN, GOBLIN]) {
+    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
+    rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+    watchBout(rig, 40);
+    rockIn += rig.ai.tally.rockIn;
+    rockOut += rig.ai.tally.rockOut;
+  }
+  check("it rocks in and out across the edge of its reach", rockIn >= 3 && rockOut >= 3,
+    `${rockIn} half-steps in and ${rockOut} out, the swordsman and the goblin in 80s`);
+
+  // Step in on it while it is going round you, and see how much ground it
+  // gives: how far it gets back, along the line from you, from the nearest it
+  // came -- against a goblin that never gives any. From the nearest, because
+  // for a reaction time after you start it is still finishing whatever step it
+  // was on, which as often as not was one in.
+  const given = async (species: Species) => {
+    const post = spawnFor(species, 12.2, -9.8);
+    const rig = await buildRig({}, species, post);
+    const keys = { ...NO_KEYS };
+    const me = new THREE.Vector3();
+    const it = new THREE.Vector3();
+    const toward = () => {
+      rig.player.position(me);
+      rig.foe.position(it);
+      faceToward(rig.fighter, it.x - me.x, it.z - me.z, keys);
+    };
+    const out: number[] = [];
+    for (let k = 0; k < 16; k++) {
+      // Back where you both started each time: every step in pushes it a
+      // metre and a half down the cell, and two or three of them put its back
+      // to the wall, where it gives no ground but swings.
+      rig.foe.reset(rig.tuning, post);
+      rig.ai.reset();
+      rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+      rig.fight(60 * 2);
+      for (let i = 0; i < 600 && rig.ai.intent !== "circle"; i++) {
+        toward();
+        rig.fight(1, keys);
+      }
+      toward();
+      const ux = (it.x - me.x) / Math.hypot(it.x - me.x, it.z - me.z);
+      const uz = (it.z - me.z) / Math.hypot(it.x - me.x, it.z - me.z);
+      const from = it.clone();
+      let nearest = 0;
+      let back = 0;
+      for (let i = 0; i < 42; i++) {
+        toward();
+        rig.fight(1, { ...keys, forward: i < 30 });
+        rig.foe.position(it);
+        const along = (it.x - from.x) * ux + (it.z - from.z) * uz;
+        nearest = Math.min(nearest, along);
+        back = Math.max(back, along - nearest);
+      }
+      out.push(back);
+    }
+    return median(out);
+  };
+  const goblin = await given(GOBLIN);
+  const stands = await given({ ...GOBLIN, footwork: { ...GOBLIN.footwork, give: 0 } });
+  check("step in on a goblin and it gives ground", goblin > stands + 0.1,
+    `${goblin.toFixed(2)} m back as you come, where one that never gives ground ` +
+    `goes ${stands.toFixed(2)} (medians of 16)`);
+
+  // Swing at it and miss, and you pay for it: it steps in while your weapon
+  // is on its way back.
+  const paid: string[] = [];
+  let punishes = 0;
+  for (const species of [SWORDSMAN, GOBLIN]) {
+    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
+    rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+    watchBout(rig, 60, fencer());
+    punishes += rig.ai.tally.punishes;
+    paid.push(`${species.name} ${rig.ai.tally.punishes}`);
+  }
+  check("swing at it and miss, and it steps in and makes you pay", punishes >= 5,
+    `${paid.join(", ")} times in a minute each of being swung at`);
+
+  // And it offers you something to miss: a step inside your reach, guard up,
+  // a beat there, and a step back out. A swordsman that always does when it
+  // can, and where your sword does its work, measured as in the bout above.
+  const bait = await buildRig({}, { ...SWORDSMAN, footwork: { ...SWORDSMAN.footwork, bait: 1 } },
+    spawnFor(SWORDSMAN, 12.2, -9.8));
+  bait.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+  bait.fight(1);
+  const at = bait.player.position(new THREE.Vector3());
+  const hits = bait.arm.probeStrike(0, 0, 1, 0, bait.tuning, new THREE.Vector3());
+  const yours = Math.hypot(hits.x - at.x, hits.z - at.z);
+  const me = new THREE.Vector3();
+  const it = new THREE.Vector3();
+  let inside = 0;
+  let outAgain = 0;
+  for (let i = 0; i < 60 * 30; i++) {
+    const before = bait.ai.tally.baits;
+    bait.fight(1);
+    if (bait.ai.tally.baits === before) continue;
+    // A bait has begun: how near it comes, and whether it goes back out --
+    // most of the way it came in.
+    bait.player.position(me);
+    bait.foe.position(it);
+    const start = Math.hypot(it.x - me.x, it.z - me.z);
+    let nearest = start;
+    let last = start;
+    for (let j = 0; j < 90 && bait.ai.intent === "circle"; j++, i++) {
+      bait.fight(1);
+      bait.player.position(me);
+      bait.foe.position(it);
+      last = Math.hypot(it.x - me.x, it.z - me.z);
+      nearest = Math.min(nearest, last);
+    }
+    if (nearest < yours) inside++;
+    if (last - nearest > 0.5 * (start - nearest)) outAgain++;
+  }
+  const baits = bait.ai.tally.baits;
+  check("and it steps inside your reach on purpose, and back out", baits >= 3
+    && inside >= baits / 2 && outAgain >= inside / 2,
+    `${baits} times in 30s: ${inside} inside the ${yours.toFixed(2)} m your sword works at, ` +
+    `${outAgain} back out again`);
+}
+
+async function weaponsKnockEachOther(): Promise<void> {
+  console.log("\nwhen weapons meet, the one with less behind it is knocked aside");
+  // It used to be a parry and nothing else: the solver stopped both blades,
+  // and a driven arm had its weapon back where it was in two centimetres.
+  // Now the two blows are weighed the way a blow on a body is -- weapon and
+  // arm, meeting and sticking -- and the one sent back is knocked aside.
+  const blow = (r: Rig, a: Arm) => a.liveWeaponMass + r.tuning.armBehindBlow * a.armBehind;
+  const you = await buildRig();
+  const goblin = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  const orc = await buildRig({}, ORC, foeSpawn(ORC));
+  const sword = blow(you, you.arm);
+  const spear = blow(goblin, goblin.foe.arm);
+  const axe = blow(orc, orc.foe.arm);
+  const thrust = judgeClash(spear, 8, sword, 0);
+  check("a spear thrust into a sword held still moves the sword",
+    thrust.knocked === 2 && thrust.speed > 1.5,
+    `${spear.toFixed(1)}kg at 8 m/s into ${sword.toFixed(1)}kg: the sword sent back at ${thrust.speed.toFixed(1)} m/s`);
+  const beat = judgeClash(sword, 9, spear, 0);
+  check("a sword swung hard into a spear held still moves the spear",
+    beat.knocked === 2 && beat.speed > 4,
+    `the spear sent back at ${beat.speed.toFixed(1)} m/s`);
+  const chop = judgeClash(axe, 8, sword, 0);
+  check("the orc's axe moves a sword much further than a spear does",
+    chop.knocked === 2 && chop.speed > 1.5 * thrust.speed,
+    `${axe.toFixed(1)}kg of axe and arm sends it back at ${chop.speed.toFixed(1)} m/s`);
+  const even = judgeClash(sword, 6, sword, -6);
+  check("two equal blows stop each other and knock neither", even.knocked === 0,
+    `knocked ${even.knocked}`);
+
+  // And the arm holding it gives. Without giving, the arm's drive has the
+  // weapon back where it was sent almost at once: the knock is a twitch.
+  const carried = async (share: number) => {
+    const rig = await buildRig();
+    rig.step(60);
+    const tip = () => rig.arm.tipPosition.clone().sub(rig.fighter.position(new THREE.Vector3()));
+    const from = tip();
+    // What a knock at 3 m/s does to the hand end of the arm, and to its strength.
+    rig.arm.jolt(share, 0.43);
+    for (const b of [rig.arm.blade, rig.arm.fore]) {
+      const v = b.linvel();
+      b.setLinvel({ x: v.x + 3, y: v.y, z: v.z }, true);
+    }
+    let most = 0;
+    for (let i = 0; i < 30; i++) {
+      rig.step(1);
+      most = Math.max(most, tip().distanceTo(from));
+    }
+    return most;
+  };
+  const held = await carried(0);
+  const gave = await carried(0.6);
+  check("knocked, the arm gives and the weapon is carried off",
+    gave > 1.5 * held && gave - held > 0.12,
+    `the tip carried ${(gave * 100).toFixed(0)} cm, against ${(held * 100).toFixed(0)} cm by an arm that holds`);
+
+  // Its own weapon knocked aside in the middle of a swing, the swing is gone.
+  const mid = await buildRig();
+  for (let i = 0; i < 60 * 10 && mid.ai.intent !== "windup"; i++) mid.fight(1);
+  const winding = mid.ai.intent === "windup";
+  mid.foe.arm.jolt(0.6, 0.43);
+  mid.fight(1);
+  check("its weapon knocked aside mid-swing, it loses the swing",
+    winding && mid.ai.intent === "recover" && mid.ai.committed === null,
+    `intent "${mid.ai.intent}", committed ${mid.ai.committed?.cut.name ?? "nothing"}`);
+
+  // Yours knocked aside while it is on its feet, it steps in on it.
+  const open = await buildRig();
+  let took = 0;
+  let tried = 0;
+  for (let k = 0; k < 6; k++) {
+    open.place(SPAWN);
+    for (let i = 0; i < 600 && open.ai.intent !== "circle"; i++) open.fight(1);
+    // On your feet with a sword in your hand: an arm on the floor has nothing
+    // to knock, and a passive player is on the floor now and then.
+    if (open.player.dead || open.fighter.down) continue;
+    tried++;
+    const before = open.ai.tally.punishes;
+    open.arm.jolt(0.6, 0.43);
+    open.fight(40);
+    if (open.ai.tally.punishes > before) took++;
+  }
+  check("your weapon knocked aside, it steps in on the opening", tried >= 3 && took >= 0.6 * tried,
+    `${took} of ${tried} times`);
+
+  // And in a fight: stand with your guard up over your head, in front of an
+  // orc bringing its axe down on it.
+  const guard = await buildRig({}, ORC, spawnFor(ORC, 12.2, -9.8));
+  guard.ai.aimOverride = "head";
+  const home = new THREE.Vector3(12.2, SPAWN.y, -6.0);
+  guard.place(home);
+  let yours = 0;
+  guard.impacts.onClash = (c) => { if (c.knocked === guard.arm && c.share >= 0.2) yours++; };
+  // Turned to face it, as anyone holding a guard up against something is:
+  // left facing the door, the orc went round to one side and brought its axe
+  // down past the guard, not into it.
+  const facing = { ...NO_KEYS };
+  const me = new THREE.Vector3();
+  const it = new THREE.Vector3();
+  for (let i = 0; i < 60 * 30; i++) {
+    const aim = guard.arm.aim;
+    const s = guard.tuning.sensitivity;
+    guard.input.dx = -(0.2 - aim.yaw) / s * 0.2;
+    guard.input.dy = -(0.9 - aim.pitch) / s * 0.2;
+    guard.player.position(me);
+    guard.foe.position(it);
+    faceToward(guard.fighter, it.x - me.x, it.z - me.z, facing);
+    guard.fight(1, facing);
+    if (guard.player.dead) guard.place(home);
+  }
+  check("hold your guard in front of the orc and its axe knocks it aside", yours >= 1,
+    `${yours} times in 30s`);
 }
 
 interface LeapTrial {
@@ -3604,6 +3917,59 @@ async function aShieldStopsABlade(): Promise<void> {
     `the hardest block moved the body ${held.weight.toFixed(2)} m/s`);
 }
 
+async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
+  console.log("\na shield on your back stops a cut from behind, and the blow still lands its weight");
+  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const run = async (shield: boolean, back = true) => {
+    const at = spawnFor(SWORDSMAN, 0, SPAWN.z - 1.1);
+    const rig = await buildRig({}, SWORDSMAN, at);
+    rig.foe.fighter.yaw = back ? 0 : Math.PI;  // its back to you, or its front
+    rig.holdFoe();
+    rig.pin(standAt);
+    rig.hold(30);
+    if (shield) {
+      rig.foe.equipShield();
+      rig.hold(30);
+      rig.foe.sling();
+    }
+    rig.hold(90);
+    let blocks = 0;
+    let damage = 0;
+    let weight = 0;
+    rig.impacts.addBlade(rig.arm, (i) => {
+      if (rig.foe.block(i)) {
+        blocks++;
+        weight = Math.max(weight, rig.foe.lastBlow?.speed ?? 0);
+        return;
+      }
+      if (rig.foe.receive(i)) damage += cutDamage(i);
+    });
+    // Level, across the shoulder blades, where the shield hangs.
+    const high = SWORDSMAN.build.standing.waist + SLUNG.y * SWORDSMAN.build.scale;
+    const target = new THREE.Vector3(0, high, at.z);
+    for (let swings = 0; swings < 12; swings++) throwForehand(rig, target, { level: true });
+    return { blocks, damage, weight, slung: rig.foe.shieldOnBack };
+  };
+  const bare = await run(false);
+  const held = await run(true);
+  check("a cut across the back meets the shield slung there, and is stopped by it",
+    held.slung && held.blocks >= 3,
+    `the blade met the shield on its back ${held.blocks} times in twelve swings`);
+  check("and the back behind it is cut far less",
+    bare.damage > 5 && held.damage < bare.damage * 0.5,
+    `${held.damage.toFixed(1)} damage behind a slung shield, ${bare.damage.toFixed(1)} without`);
+  check("the weight of a blow stopped on the back still arrives", held.weight > 0,
+    `the hardest moved the body ${held.weight.toFixed(2)} m/s`);
+  // The point of a cut to the front can reach round the hips and touch it
+  // from inside: that is no block, and it spares the front nothing.
+  const front = await run(true, false);
+  const bareFront = await run(false, false);
+  check("and it guards the back only: cuts to the front land as hard with it there as without",
+    front.slung && front.blocks <= 1 && front.damage > bareFront.damage * 0.7,
+    `${front.blocks} blocked; ${front.damage.toFixed(1)} damage to the front with a shield on the back, `
+      + `${bareFront.damage.toFixed(1)} without`);
+}
+
 async function theShieldArmIsSteered(): Promise<void> {
   console.log("\nthe left button steers the shield, and the sword stays put");
   const rig = await buildRig();
@@ -3664,6 +4030,9 @@ async function aCrouchGetsLow(): Promise<void> {
   const fast = z1 - f.body.translation().z;
   check("crouched, the steps are short", slow < fast * 0.55,
     `${slow.toFixed(2)} m a second crouched, ${fast.toFixed(2)} standing`);
+  // Stood still first: measured mid-stride it was the walk's bob it read, which
+  // sat on the edge of the tolerance and tipped over it when steps were eased.
+  rig.step(30);
   check("and letting go stands you back up", Math.abs(headOf() - soles() - standing) < 0.02,
     `head ${(headOf() - soles()).toFixed(2)} m`);
 }
@@ -3763,6 +4132,535 @@ async function aClimbGoesUp(): Promise<void> {
     `soles at ${low.soles.toFixed(2)} m`);
 }
 
+/** Sling or unsling the shield and step until it is done; the steps it took, or -1. */
+function sling(rig: Rig, limit = 240, each?: () => void): number {
+  if (!rig.player.sling().ok) return -1;
+  let n = 0;
+  while (rig.player.offArm.slinging && n < limit) {
+    rig.step(1);
+    each?.();
+    n++;
+  }
+  return n;
+}
+
+async function theShieldGoesOnYourBackToo(): Promise<void> {
+  console.log("\nZ: the shield goes on your back by the other hand, and comes back to the arm");
+  const rig = await buildRig();
+  rig.step(30);
+  rig.player.equipShield();
+  rig.step(60);
+  const off = rig.player.offArm;
+  const f = rig.fighter;
+  const handY = () => {
+    const l = f.offLimb;
+    const r = l.fore.rotation();
+    const t = l.fore.translation();
+    return new THREE.Vector3(0, SWORDSMAN.build.segment.foreArm.length / 2, 0)
+      .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w)).add(new THREE.Vector3(t.x, t.y, t.z)).y;
+  };
+  const shoulderY = () => f.offShoulderWorld(new THREE.Vector3()).y;
+
+  let over = -Infinity;
+  const on = sling(rig, 240, () => { over = Math.max(over, handY() - shoulderY()); });
+  const mesh = (off as unknown as { slungMesh: THREE.Object3D | null }).slungMesh;
+  check("Z puts it on your back in about a second, the hand going up over the shoulder with it",
+    on > 30 && on < 110 && over > 0.08,
+    `${(on / 60).toFixed(2)} s; the hand rose ${(over * 100).toFixed(0)} cm over the shoulder`);
+  check("where it rides the chest, off the arm: one collider on the back, none on the arm",
+    rig.player.shieldOnBack && !rig.player.hasShield && off.shieldCollider === null
+      && off.slungCollider !== null && mesh !== null && mesh.parent === f.chest,
+    `on the back ${rig.player.shieldOnBack}, on the arm ${off.shieldCollider !== null}, `
+      + `on the back ${off.slungCollider !== null}`);
+
+  // Walking and turning, the collider stays where the chest has the shield,
+  // behind the body and face out.
+  let drift = 0;
+  let facing = 1;
+  for (let i = 0; i < 90; i++) {
+    rig.step(1, { ...NO_KEYS, forward: i < 60, turnLeft: i > 20 && i < 70 });
+    const drawn = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    f.chestFrameWorld(SLUNG.clone().multiplyScalar(SWORDSMAN.build.scale), SLUNG_TURN, drawn, q);
+    const c = off.slungCollider!;
+    drift = Math.max(drift, drawn.distanceTo(new THREE.Vector3().copy(c.translation())));
+    const r = c.rotation();
+    const out = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+    facing = Math.min(facing, out.dot(new THREE.Vector3(Math.sin(f.yaw), 0, Math.cos(f.yaw))));
+  }
+  check("walking and turning, it stays on the back where the shield is drawn, facing out",
+    drift < 0.01 && facing > 0.8,
+    `${(drift * 1000).toFixed(1)} mm from where it is drawn at worst; facing out ${facing.toFixed(2)}`);
+
+  rig.step(40);
+  rig.player.health = 50;
+  rig.player.potions = 1;
+  const sip = rig.player.drink();
+  check("with the sword still in your hand, the other hand is free to drink",
+    rig.arm.wielding && sip.ok && rig.player.potions === 0, sip.text);
+  check("and it hangs at rest, not held at a guard",
+    Math.abs(off.aimNow.pitch - OFF_GUARD.pitch) > 0.3 && off.trackingError < 0.03,
+    `pitch ${off.aimNow.pitch.toFixed(2)}, ${(off.trackingError * 100).toFixed(1)} cm off its mark`);
+
+  over = -Infinity;
+  const back = sling(rig, 240, () => { over = Math.max(over, handY() - shoulderY()); });
+  rig.step(60);
+  check("Z again takes it down, the hand going up over the shoulder for it",
+    back > 30 && back < 110 && over > 0.08 && rig.player.hasShield && !rig.player.shieldOnBack,
+    `${(back / 60).toFixed(2)} s; the hand rose ${(over * 100).toFixed(0)} cm over the shoulder`);
+  const a = off.aimNow;
+  check("back on the arm it stops blades again, held at its guard",
+    off.shieldCollider !== null && Math.abs(a.yaw - OFF_GUARD.yaw) + Math.abs(a.pitch - OFF_GUARD.pitch) < 1e-6
+      && off.trackingError < 0.03,
+    `collider ${off.shieldCollider !== null}, ${(off.trackingError * 100).toFixed(1)} cm off its guard`);
+
+  // One on your back is still one shield: the rack takes it, and no other.
+  // The potion by the rack is nearer than the rack is.
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  for (const item of items.items) if (item.kind === "potion") items.setTaken(item, true);
+  const rack = ITEM_LAYOUT.rack.at;
+  rig.place(new THREE.Vector3(rack.x - 0.9, SPAWN.y, rack.z));
+  rig.step(20);
+  stow(rig, false);
+  const take = interact(rig.player, items);
+  rig.step(30);
+  sling(rig);
+  const second = rig.player.equipShield();
+  const hang = interact(rig.player, items);
+  check("slung, it is still the one shield: none on top of it, and the rack takes it back",
+    take.ok && !second && hang.ok && !rig.player.carriesShield && off.slungCollider === null,
+    `${take.text}; another ${second}; ${hang.text}`);
+
+  // Anything that takes the arm away leaves it where it had got to.
+  rig.place(SPAWN);
+  rig.step(20);
+  rig.player.equipShield();
+  rig.step(30);
+  sling(rig);
+  rig.player.sling();
+  rig.step(6);
+  rig.player.fighter.sever("offShoulder");
+  rig.step(30);
+  const stuck = rig.player.sling();
+  check("an arm cut off going for it leaves it on your back, with nothing to take it down",
+    rig.player.shieldOnBack && !off.slinging && !stuck.ok, stuck.text);
+}
+
+/** Step the rig and let the things lying about catch up with it. */
+function stepWith(rig: Rig, items: Items, n: number, keys: Keys = NO_KEYS): void {
+  for (let i = 0; i < n; i++) {
+    rig.step(1, keys);
+    items.update();
+  }
+}
+
+async function whatYouCutOffYouCanCarryOff(): Promise<void> {
+  console.log("\nwhat you cut off someone, and their weapon: into your hand, into your bag, and let go of");
+  // Out in the open floor of the training room, where nothing else is lying.
+  const at = spawnFor(SWORDSMAN, -1.2, 7.4);
+  const rig = await buildRig({}, SWORDSMAN, at);
+  rig.holdFoe();
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  items.watch([rig.foe]);
+  const pickup = new Pickup(rig.player, items);
+  const foe = rig.foe;
+  const part = (name: string) => foe.fighter.parts.find((p) => p.name === name)!;
+  const cut = (handle: number, times: number) => {
+    for (let i = 0; i < times; i++) foe.receive(fakeImpact(handle));
+  };
+  const wrist = () => (foe.arm as unknown as { wristJoint: unknown }).wristJoint;
+  const fist = () => (foe.arm as unknown as { handMeshObj: THREE.Object3D }).handMeshObj.parent;
+  stepWith(rig, items, 30);
+
+  // The sword forearm first: once the head is off, nothing else lands.
+  cut(foe.arm.fore.collider(0)!.handle, 4);
+  cut(part("head").collider.handle, 4);
+  stepWith(rig, items, 150);
+  const lying = items.items.filter((i) => i.piece);
+  const head = lying.find((i) => i.name === "the swordsman's head");
+  const fore = lying.find((i) => i.name === "the swordsman's forearm");
+  const sword = lying.find((i) => i.name === "the swordsman's sword");
+  const headBody = part("head").body!;
+  check("a head, a forearm, and the sword still in its fist lie on the floor to be taken",
+    foe.dead && lying.length === 3 && head?.kind === "remains" && fore?.kind === "remains"
+      && sword?.kind === "weapon" && head.at.y < 0.3
+      && head.at.distanceTo(new THREE.Vector3().copy(headBody.translation())) < 1e-6,
+    lying.map((i) => `${i.name} (${i.kind}) at ${i.at.y.toFixed(2)} m`).join("; "));
+
+  // Go and get it, as F does: sword away, over to it, down, and up -- from
+  // the side of it away from everything else lying there, as you would.
+  const go = (target: Item) => {
+    let outcome: { ok: boolean; text: string } | null = null;
+    const others = items.items.filter((i) => i.piece && !i.taken && i !== target);
+    const away = new THREE.Vector3(1.3, 0, 0.4);
+    if (others.length) {
+      const c = others.reduce((sum, i) => sum.add(i.at), new THREE.Vector3()).multiplyScalar(1 / others.length);
+      away.set(target.at.x - c.x, 0, target.at.z - c.z);
+      if (away.lengthSq() < 1e-6) away.set(1, 0, 0);
+      away.setLength(1.3);
+    }
+    const from = new THREE.Vector3(target.at.x + away.x, SPAWN.y, target.at.z + away.z);
+    rig.place(from);
+    stepWith(rig, items, 20);
+    stow(rig, false);
+    const start = pickup.start(NO_KEYS);
+    const aimedAt = pickup.target;
+    for (let i = 0; i < 600 && pickup.active; i++) {
+      const k = pickup.step(NO_KEYS, STEP, (o) => { outcome = o; }) ?? NO_KEYS;
+      stepWith(rig, items, 1, k);
+    }
+    return { start, aimedAt, outcome: outcome as { ok: boolean; text: string } | null };
+  };
+  const got = go(head!);
+  check("F goes for the head and keeps it in the hand, not the bag",
+    got.start.ok && got.aimedAt === head && got.outcome?.ok === true && rig.player.held === head
+      && head!.taken && !rig.player.inventory.pieces.includes(head!),
+    `${got.start.text}; ${got.outcome?.text}; holding ${rig.player.held?.name}`);
+  const busy = pickup.start(NO_KEYS);
+  const prompt = promptFor(rig.player, items);
+  check("held, it is out of the world, and the hand takes nothing else: F says it would bag it",
+    !headBody.isEnabled() && !part("head").mesh.visible && rig.arm.palm.children.length === 1
+      && !busy.ok && busy.text.startsWith("your hand is full")
+      && prompt?.startsWith("F — put the swordsman's head in your bag") === true,
+    `enabled ${headBody.isEnabled()}; ${busy.text}; prompt "${prompt}"`);
+
+  const bagged = items.bag(rig.player);
+  const entries = rig.player.inventory.entries();
+  check("F again puts it in the bag, and the hand is empty",
+    bagged.ok && rig.player.held === null && rig.arm.palm.children.length === 0
+      && entries.some((e) => e.kind === "piece" && e.item === head && e.verb === "hold")
+      && !headBody.isEnabled(),
+    `${bagged.text}; the bag lists ${entries.map((e) => `${e.name} (${e.verb})`).join(", ")}`);
+  const out = items.unbag(rig.player, head!);
+  check("and from the bag it comes back out into the hand",
+    out.ok && rig.player.held === head && !rig.player.inventory.pieces.includes(head!)
+      && rig.arm.palm.children.length === 1, out.text);
+
+  // Let go of, it comes back into the world in front of you and falls.
+  stepWith(rig, items, 20);
+  const hand = rig.arm.handPosition.y;
+  const drop = items.letGo(rig.player);
+  const f = rig.fighter;
+  const p = f.body.translation();
+  const h = headBody.translation();
+  const ahead = (h.x - p.x) * -Math.sin(f.yaw) + (h.z - p.z) * -Math.cos(f.yaw);
+  const startY = h.y;
+  stepWith(rig, items, 90);
+  const landed = headBody.translation().y;
+  check("G lets go of it: it comes back in front of you, from your hand, and falls to the floor",
+    drop.ok && headBody.isEnabled() && part("head").mesh.visible && !head!.taken
+      && rig.player.held === null && rig.arm.palm.children.length === 0
+      && ahead > 0.25 && Math.abs(startY - hand) < 0.05 && landed < 0.3,
+    `${drop.text}: ${ahead.toFixed(2)} m ahead, from ${startY.toFixed(2)} m (hand at ${hand.toFixed(2)}) to ${landed.toFixed(2)} m`);
+
+  // The sword: the dead fist lets go of it as it is taken, and the forearm
+  // stays where it lies.
+  const health = rig.player.health;
+  const blade = foe.arm.blade;
+  const took = go(sword!);
+  check("F takes the sword out of the dead fist: the sword in your hand, the forearm left lying",
+    took.outcome?.ok === true && rig.player.held === sword && !blade.isEnabled()
+      && wrist() === null && fist() === foe.arm.foreMesh
+      && foe.arm.fore.isEnabled() && !fore!.taken,
+    `${took.outcome?.text}; the fist still on the forearm ${fist() === foe.arm.foreMesh}`);
+
+  // Bagged, the next thing F goes for is the forearm it came out of.
+  items.bag(rig.player);
+  const next = pickup.start(NO_KEYS);
+  const nextOne = pickup.target;
+  pickup.cancel();
+  items.unbag(rig.player, sword!);
+  check("and the next F goes for the forearm it came out of",
+    next.ok && nextOne === fore, `${next.text}`);
+
+  // Drawing your own sword, the hand lets go of it.
+  stepWith(rig, items, 20);
+  rig.arm.draw();
+  stepWith(rig, items, 150);
+  check("drawing your own sword, the hand lets go of it, and it falls without cutting you",
+    rig.player.held === null && blade.isEnabled() && !sword!.taken && rig.arm.wielding
+      && blade.translation().y < 0.3 && rig.player.health === health,
+    `holding ${rig.player.held?.name ?? "nothing"}; the sword at ${blade.translation().y.toFixed(2)} m; `
+      + `health ${health.toFixed(1)} -> ${rig.player.health.toFixed(1)}`);
+
+  // Let go of facing a wall half a metre off, it lies across your front
+  // rather than into the stone, and settles rather than being thrown out.
+  const wall = ROOMS.training.maxZ;
+  rig.place(new THREE.Vector3(1.5, SPAWN.y, wall - 0.55));
+  rig.fighter.yaw = Math.PI;                  // facing +Z, the south wall
+  stepWith(rig, items, 30);
+  stow(rig, false);
+  const taken = items.hold(rig.player, sword!);
+  stepWith(rig, items, 10);
+  const walled = items.letGo(rig.player);
+  // Falling from where it was let go of is all the speed it should have.
+  const fall = Math.sqrt(2 * -rig.tuning.gravity * blade.translation().y);
+  let fastest = 0;
+  for (let i = 0; i < 120; i++) {
+    stepWith(rig, items, 1);
+    const v = blade.linvel();
+    fastest = Math.max(fastest, Math.hypot(v.x, v.y, v.z));
+  }
+  const deepest = blade.translation().z;
+  const tip = foe.arm.pointAlongBlade(1, new THREE.Vector3());
+  check("let go of against a wall, it lies across your front and settles on the floor",
+    taken.ok && walled.ok && Math.max(deepest, tip.z) < wall - 0.02 && blade.translation().y < 0.3
+      && fastest < fall + 1,
+    `nearest the wall ${(wall - Math.max(deepest, tip.z)).toFixed(2)} m off it, `
+      + `fastest ${fastest.toFixed(1)} m/s against ${fall.toFixed(1)} from the fall`);
+
+  // A reset puts every piece back on whoever lost it, from the hand or the bag.
+  go(head!);
+  items.bag(rig.player);
+  items.hold(rig.player, sword!);
+  items.reset();
+  rig.player.reset(rig.tuning, SPAWN);
+  foe.reset(rig.tuning, at);
+  rig.impacts.resetSweeps();
+  stepWith(rig, items, 60);
+  const torso = foe.position(new THREE.Vector3());
+  const headGap = torso.distanceTo(new THREE.Vector3().copy(headBody.translation()));
+  check("a reset puts the pieces back on, from the hand and the bag, and the sword back in the fist",
+    headBody.isEnabled() && part("head").mesh.visible && !part("head").severed && !foe.arm.disarmed
+      && blade.isEnabled() && wrist() !== null && fist() === foe.arm.bladeMesh && foe.arm.wielding
+      && headGap < 1.2 && rig.player.inventory.empty && rig.player.held === null
+      && rig.arm.palm.children.length === 0 && !items.items.some((i) => i.piece),
+    `head ${headGap.toFixed(2)} m from the torso; the sword in the fist ${fist() === foe.arm.bladeMesh}`);
+}
+
+async function theOrcsAxeCanBeWielded(): Promise<void> {
+  console.log("\nthe orc's axe, taken off it, is a weapon in your hand: its weight, its edge");
+  const orcAt = spawnFor(ORC, -1.5, 7.6);
+  const rig = await buildRig({}, ORC, orcAt);
+  rig.holdFoe();
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  items.watch([rig.foe]);
+  const arm = rig.arm;
+  const inner = (a: Arm) => a as unknown as { wristJoint: unknown; scabbardBlade: THREE.Object3D };
+  stepWith(rig, items, 30);
+
+  // Off with its head: dead, with the axe still in its fist.
+  const head = rig.foe.fighter.parts.find((p) => p.name === "head")!;
+  for (let i = 0; i < 8 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(head.collider.handle));
+  stepWith(rig, items, 150);
+  const axe = items.items.find((i) => i.kind === "weapon");
+  const axeBody = rig.foe.arm.blade;
+  check("the dead orc's axe lies there to be taken", rig.foe.dead && axe?.name === "the orc's axe",
+    items.items.filter((i) => i.piece).map((i) => i.name).join(", "));
+
+  // At the dummy, sword on the back, the axe in the hand, and X.
+  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  rig.place(standAt);
+  rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
+  rig.pin(standAt);
+  stepWith(rig, items, 60);
+  stow(rig, false);
+  const own = arm.liveWeaponMass;
+  items.hold(rig.player, axe!);
+  const up = items.wield(rig.player);
+  stepWith(rig, items, 60);
+  check("X takes it up: the arm's weapon is the axe, its weight and shape, jointed in the hand",
+    up.ok && arm.weapon === AXE && arm.wieldsTaken && arm.wielding && arm.liveWeaponMass === AXE.mass
+      && arm.weaponColliders.length === AXE.parts.length && inner(arm).wristJoint !== null
+      && arm.palm.children.length === 0 && rig.player.held === axe,
+    `${up.text}: ${arm.weapon.name}, ${arm.liveWeaponMass} kg in ${arm.weaponColliders.length} parts`);
+  check("the sword is on your back meanwhile, and the orc's own axe out of the world",
+    inner(arm).scabbardBlade.visible && !axeBody.isEnabled() && !arm.sheathed,
+    `sword drawn in the scabbard ${inner(arm).scabbardBlade.visible}, orc's axe in the world ${axeBody.isEnabled()}`);
+
+  // Swung at the dummy, it lands as an axe.
+  let hits = 0;
+  let asAxe = 0;
+  let best = 0;
+  const target = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
+  rig.impacts.addBlade(arm, (i) => {
+    if (!rig.dummy.receive(i)) return;
+    hits++;
+    if (i.weapon === AXE && i.massKg === AXE.mass) asAxe++;
+    best = Math.max(best, cutDamage(i));
+  });
+  for (let swings = 0; swings < 10; swings++) throwForehand(rig, target);
+  check("swung, it cuts with the axe's edge and weight",
+    hits > 0 && asAxe === hits && best > 0,
+    `${hits} hits on the dummy, ${asAxe} of them the axe's; best ${best.toFixed(1)} damage`);
+
+  // Ten seconds of the worst input there is, as every weapon gets in its
+  // owner's hand: a man's arm is not what the axe was tuned on.
+  let rand = 12345;
+  const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let spin = 0;
+  let turn = 0;
+  let bend = 0;
+  let sane = true;
+  const q = new THREE.Quaternion();
+  for (let i = 0; i < 600; i++) {
+    rig.input.dx = (next() - 0.5) * 600;
+    rig.input.dy = (next() - 0.5) * 600;
+    rig.input.wheel = next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0;
+    rig.input.rollDx = (next() - 0.5) * 220;
+    rig.hold(1);
+    const r = arm.blade.rotation();
+    const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+    const w = arm.blade.angvel();
+    spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
+    turn = Math.max(turn, Math.abs(arm.state.twist));
+    bend = Math.max(bend, arm.state.wrist);
+    sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
+  }
+  // The same bounds every weapon is held to in its own owner's hand.
+  check("under ten seconds of the worst input nothing spins in the hand",
+    sane && spin < 100 && turn < 1.65 && bend < 1.3 && inner(arm).wristJoint !== null,
+    `peak spin about its length ${spin.toFixed(0)} rad/s, grip never past `
+      + `${(turn * 180 / Math.PI).toFixed(0)}deg, wrist never past ${(bend * 180 / Math.PI).toFixed(0)}deg`);
+  rig.step(60);
+
+  // X again: held again, and the sword's own weight and shape back on the back.
+  const down = items.unwield(rig.player);
+  check("X again puts it up: held in the hand, the sword back on the back as it was",
+    down.ok && !arm.wieldsTaken && arm.weapon === SWORD && arm.sheathed && arm.liveWeaponMass === own
+      && arm.weaponColliders.length === SWORD.parts.length && !inner(arm).scabbardBlade.visible
+      && rig.player.held === axe && arm.palm.children.length === 1,
+    `${down.text}; ${arm.weapon.name} ${arm.liveWeaponMass} kg, sheathed ${arm.sheathed}`);
+
+  // Taken up again and let go of: it leaves the hand where the axe was.
+  items.wield(rig.player);
+  stepWith(rig, items, 30);
+  const was = new THREE.Vector3().copy(arm.blade.translation());
+  const health = rig.player.health;
+  const drop = items.letGo(rig.player);
+  const gap = was.distanceTo(new THREE.Vector3().copy(axeBody.translation()));
+  const swordBack = arm.sheathed && arm.weapon === SWORD;
+  stepWith(rig, items, 120);
+  check("let go of while wielded, the orc's axe is where yours was, falls, and cuts nobody",
+    drop.ok && axeBody.isEnabled() && gap < 1e-6 && swordBack && rig.player.held === null
+      && axeBody.translation().y < 0.3 && rig.player.health === health,
+    `${drop.text}: ${(gap * 1000).toFixed(2)} mm from where it was in the hand, `
+      + `now at ${axeBody.translation().y.toFixed(2)} m; health ${rig.player.health.toFixed(1)}`);
+
+  // Wielded, F puts it straight in the bag.
+  items.hold(rig.player, axe!);
+  items.wield(rig.player);
+  stepWith(rig, items, 20);
+  const bagged = items.bag(rig.player);
+  check("F puts it in the bag straight out of the fight, the sword back on the back",
+    bagged.ok && rig.player.inventory.pieces.includes(axe!) && arm.sheathed && arm.weapon === SWORD
+      && rig.player.held === null, bagged.text);
+
+  // With it up, a reset: the sword in your hand, the axe in the orc's.
+  items.unbag(rig.player, axe!);
+  items.wield(rig.player);
+  stepWith(rig, items, 10);
+  items.reset();
+  rig.player.reset(rig.tuning, standAt);
+  rig.fighter.yaw = 0;
+  rig.foe.reset(rig.tuning, orcAt);
+  rig.impacts.resetSweeps();
+  stepWith(rig, items, 60);
+  check("a reset puts your sword back in your hand and the axe back in the orc's",
+    arm.weapon === SWORD && !arm.wieldsTaken && arm.wielding && !inner(arm).scabbardBlade.visible
+      && arm.weaponColliders.length === SWORD.parts.length && rig.foe.arm.weapon === AXE
+      && axeBody.isEnabled() && inner(rig.foe.arm).wristJoint !== null && rig.player.held === null,
+    `yours ${arm.weapon.name}, the orc's ${rig.foe.arm.weapon.name}`);
+  hits = 0;
+  let asSword = 0;
+  rig.impacts.addBlade(arm, (i) => {
+    if (!rig.dummy.receive(i)) return;
+    hits++;
+    if (i.weapon === SWORD) asSword++;
+  });
+  for (let swings = 0; swings < 6 && hits === 0; swings++) throwForehand(rig, target);
+  check("and the sword cuts as a sword again", hits > 0 && asSword === hits,
+    `${hits} hits, ${asSword} of them the sword's`);
+}
+
+async function everyWeaponCanBeWielded(): Promise<void> {
+  console.log("\nevery weapon anything carries can be taken off it and fought with");
+  // Every weapon there is -- the list, and whatever anything in the bestiary
+  // carries, so a creature that brings a new one along is held to this too.
+  const weapons = new Set<Weapon>([...Object.values(WEAPONS), ...Object.values(SPECIES).map((s) => s.weapon)]);
+  const bestiary: Species[] = Object.values(SPECIES);
+  for (const weapon of weapons) {
+    // Taken off whatever carries it, and swung with that creature's own first
+    // shape of swing -- a spear is thrust, not swept.
+    const carrier = bestiary.find((s) => s.weapon === weapon) ?? { ...SWORDSMAN, weapon };
+    const cut = carrier.cuts[0];
+    const at = spawnFor(carrier, -1.5, 7.6);
+    const rig = await buildRig({}, carrier, at);
+    rig.holdFoe();
+    const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+    items.watch([rig.foe]);
+    const arm = rig.arm;
+    stepWith(rig, items, 30);
+    const head = rig.foe.fighter.parts.find((p) => p.name === "head")!;
+    for (let i = 0; i < 8 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(head.collider.handle));
+    stepWith(rig, items, 150);
+    const taken = items.items.find((i) => i.kind === "weapon");
+
+    // At its own distance: a cut at a sword's, a thrust with the point a
+    // hand's breadth short at full stretch. From a sword's distance a spear's
+    // point is past the target before the thrust has begun, and what goes
+    // into it is the shaft, side on.
+    const reach = SWORDSMAN.build.armLength - 0.08 + weapon.grip + weapon.span;
+    const standOff = weapon.bite === "point" ? reach - 0.2 : 1.1;
+    const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + standOff);
+    rig.place(standAt);
+    rig.fighter.yaw = 0;
+    rig.pin(standAt);
+    stepWith(rig, items, 60);
+    stow(rig, false);
+    if (taken) items.hold(rig.player, taken);
+    const up = items.wield(rig.player);
+    stepWith(rig, items, 60);
+    let hits = 0;
+    let own = 0;
+    let best = 0;
+    rig.impacts.addBlade(arm, (i) => {
+      if (!rig.dummy.receive(i)) return;
+      hits++;
+      if (i.weapon === weapon && i.massKg === weapon.mass) own++;
+      best = Math.max(best, cutDamage(i));
+    });
+    // A cut goes through the arm, where it can take it off; a thrust goes
+    // into the middle of the body, which is what a point is for -- aimed at
+    // an arm it goes past it and lays the shaft along the ribs.
+    const target = weapon.bite === "point"
+      ? new THREE.Vector3().copy(rig.dummy.limbs.get("torso")!.body.translation())
+      : new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
+    for (let swings = 0; swings < 10; swings++) throwForehand(rig, target, { cut });
+
+    let rand = 12345;
+    const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    let spin = 0;
+    let turn = 0;
+    let bend = 0;
+    let sane = true;
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < 600; i++) {
+      rig.input.dx = (next() - 0.5) * 600;
+      rig.input.dy = (next() - 0.5) * 600;
+      rig.input.wheel = next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0;
+      rig.input.rollDx = (next() - 0.5) * 220;
+      rig.hold(1);
+      const r = arm.blade.rotation();
+      const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+      const w = arm.blade.angvel();
+      spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
+      turn = Math.max(turn, Math.abs(arm.state.twist));
+      bend = Math.max(bend, arm.state.wrist);
+      sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
+    }
+    rig.step(60);
+    const down = items.unwield(rig.player);
+    check(`${carrier.name}'s ${weapon.name}: taken off it dead, taken up, and swung with its ${cut.name}, it lands as itself`,
+      taken?.name === `${carrier.name}'s ${weapon.name}` && up.ok && hits > 0 && own === hits && best > 0,
+      `${up.text || "not taken up"}; ${hits} hits on the dummy, ${own} of them its own; best ${best.toFixed(1)} damage`);
+    check(`${carrier.name}'s ${weapon.name}: nothing spins in your hand, and X puts it up again`,
+      sane && spin < 100 && turn < 1.65 && bend < 1.3 && down.ok && arm.weapon === SWORD && arm.sheathed,
+      `peak spin ${spin.toFixed(0)} rad/s, grip ${(turn * 180 / Math.PI).toFixed(0)}deg, `
+        + `wrist ${(bend * 180 / Math.PI).toFixed(0)}deg; ${down.text}`);
+  }
+}
+
 async function theNewKeysAreWhereTheySay(): Promise<void> {
   console.log("\nthe new keys are where the HUD says");
   check("C crouches", KEY_MAP.KeyC === "crouch", `C -> ${KEY_MAP.KeyC}`);
@@ -3771,6 +4669,13 @@ async function theNewKeysAreWhereTheySay(): Promise<void> {
   check("X sheathes and draws, F picks up, H drinks",
     ACTION_MAP.KeyX === "sheathe" && ACTION_MAP.KeyF === "interact" && ACTION_MAP.KeyH === "drink",
     `X -> ${ACTION_MAP.KeyX}, F -> ${ACTION_MAP.KeyF}, H -> ${ACTION_MAP.KeyH}`);
+  const one = ACTION_MAP.Digit1;
+  const nine = ACTION_MAP.Digit9;
+  check("G lets go of what is in your hand", ACTION_MAP.KeyG === "drop", `G -> ${ACTION_MAP.KeyG}`);
+  check("Z slings the shield, B opens the inventory, and 1 to 9 use what is in it",
+    ACTION_MAP.KeyZ === "sling" && ACTION_MAP.KeyB === "bag"
+      && typeof one === "object" && one.use === 0 && typeof nine === "object" && nine.use === 8,
+    `Z -> ${ACTION_MAP.KeyZ}, B -> ${ACTION_MAP.KeyB}, 1 -> ${JSON.stringify(one)}, 9 -> ${JSON.stringify(nine)}`);
 }
 
 async function run(): Promise<void> {
@@ -3812,6 +4717,7 @@ async function run(): Promise<void> {
   await everyMovingPartIsInterpolated();
   await theTestingAreaIsThreeRooms();
   await anOpponentWaitsUntilItSeesYou();
+  await anOpponentLooksWhereItLastSawYou();
   await severingBleeds();
 
   await theArmKeepsOutOfItsOwnChest();
@@ -3843,6 +4749,8 @@ async function run(): Promise<void> {
   await footworkAsksTheStone();
   await anOpponentMovesBetweenSwings();
   await anOpponentGetsOutOfTheWay();
+  await anOpponentMovesInAndOut();
+  await weaponsKnockEachOther();
   await crowdingItDoesNotStopIt();
   await theOrcComesAfterYouThroughTheAir();
 
@@ -3852,6 +4760,11 @@ async function run(): Promise<void> {
   await fGoesAndGetsIt();
   await aShieldStopsABlade();
   await theShieldArmIsSteered();
+  await theShieldGoesOnYourBackToo();
+  await aShieldOnYourBackStopsACutFromBehind();
+  await whatYouCutOffYouCanCarryOff();
+  await theOrcsAxeCanBeWielded();
+  await everyWeaponCanBeWielded();
   await aCrouchGetsLow();
   await aVaultGoesOver();
   await aClimbGoesUp();

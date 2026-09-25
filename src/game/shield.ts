@@ -1,7 +1,7 @@
 import * as THREE from "three";
 
 /**
- * A round shield, strapped to the off forearm.
+ * A round shield, strapped to the off forearm -- or slung on the back.
  *
  * Like a weapon it is not a stat. It is a disc of wood with an iron rim and a
  * boss, with a mass the off arm has to hold up and swing about, and a shape a
@@ -10,6 +10,10 @@ import * as THREE from "three";
  * cut that meets it is stopped by the solver like a parry, and is never taken
  * for flesh. It does no damage and takes none. What it cannot do
  * is make a blow weigh less: the momentum still arrives, through the arm.
+ *
+ * On the back it rides the chest, and it still stops blades -- the ones that
+ * come from behind (see `OffArm.hangOnBack`). What it buys there is the
+ * other hand.
  *
  * Every length here is at human scale and multiplied by the build's.
  */
@@ -28,6 +32,18 @@ export const SHIELD = {
    */
   along: 0.04,
 } as const;
+
+/**
+ * Where a shield rides slung on the back, in the chest's own frame -- the
+ * scabbard's: +X the sword side, +Y up from the waist pivot, +Z out of the
+ * back -- metres at human scale, face out. Across the shoulder blades and low
+ * enough that the sword's hilt stands clear over its rim, and far enough out
+ * to lie over the scabbard rather than through it. Up and across go with a
+ * body's length, and out with its thickness, as the back it lies on does.
+ */
+export const SLUNG = new THREE.Vector3(0, 0.2, 0.195);
+/** Face out of the back: the mesh's +Y turned onto the chest's +Z. */
+export const SLUNG_TURN = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
 
 const WOOD = () => new THREE.MeshStandardMaterial({ color: 0x6e4b2d, roughness: 0.86 });
 const PAINT = () => new THREE.MeshStandardMaterial({ color: 0x7a2a22, roughness: 0.8 });

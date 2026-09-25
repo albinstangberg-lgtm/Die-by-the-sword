@@ -3,7 +3,7 @@ import type { Keys } from "../input/input";
 import type { Combatant } from "./combatant";
 import { wrap } from "./clearance";
 import { smoothstep } from "./motion";
-import { inRange, refusal, take, type Item, type Items, type Outcome } from "./items";
+import { holds, inRange, refusal, take, type Item, type Items, type Outcome } from "./items";
 
 /**
  * Picking something up, as a thing a body does.
@@ -13,8 +13,9 @@ import { inRange, refusal, take, type Item, type Items, type Outcome } from "./i
  * `Fighter.stoop`) -- and reaches for it. The hand is guided there under the
  * arm's own clamped drive, so it gets as close as that arm does and no
  * closer; what it has hold of eases the last of the way into it. Then it
- * straightens up, and only then is the thing its: on the belt, or strapped
- * to the other arm.
+ * straightens up, and only then is the thing its: a potion in the bag, a
+ * shield strapped to the other arm, a piece of somebody -- or their weapon --
+ * kept in the hand.
  *
  * The body is walked the way a player walks it, through the same keys, so the
  * same feet and the same walls apply -- and a key the player presses that was
@@ -156,10 +157,19 @@ export class Pickup {
         const e = this._e.set(this.stand.x - p.x, 0, this.stand.z - p.z)
           .applyAxisAngle(UP, -f.yaw);
         const turn = wrap(this.face - f.yaw);
-        keys.forward = e.z < -THERE * s;
-        keys.back = e.z > THERE * s;
-        keys.right = e.x > THERE * s;
-        keys.left = e.x < -THERE * s;
+        // Letting go early by as far as the feet will carry it once the key
+        // comes up: holding on to the last centimetre, a body eased to a
+        // stop went past the spot, back, and past it again until it gave up.
+        const sin = Math.sin(f.yaw);
+        const cos = Math.cos(f.yaw);
+        const ahead = f.coast(-sin, -cos);
+        const behind = f.coast(sin, cos);
+        const right = f.coast(cos, -sin);
+        const left = f.coast(-cos, sin);
+        keys.forward = -e.z - ahead > THERE * s;
+        keys.back = e.z - behind > THERE * s;
+        keys.right = e.x - right > THERE * s;
+        keys.left = -e.x - left > THERE * s;
         keys.turnLeft = turn > SQUARE;
         keys.turnRight = turn < -SQUARE;
         const there = Math.hypot(e.x, e.z) < THERE * 1.5 * s && Math.abs(turn) < SQUARE * 1.5;
@@ -197,7 +207,8 @@ export class Pickup {
         if (this.holding) this.items.settle(smoothstep(0, 0.5, u));
         if (u >= 1) {
           const held = this.holding;
-          this.finish();
+          // A piece of somebody stays in the hand that has it.
+          this.finish(held && holds(item));
           if (held) done(take(who, this.items, item));
           return null;
         }
@@ -212,13 +223,14 @@ export class Pickup {
     this.finish();
   }
 
-  private finish(): void {
+  /** Done: the hand and the body back to themselves -- and what the hand has, unless it `keep`s it. */
+  private finish(keep = false): void {
     if (!this.item) return;
     this.item = null;
     this.holding = false;
     this.who.arm.guide(null);
     this.who.fighter.stoop = 0;
-    this.items.putBack();
+    if (!keep) this.items.putBack();
   }
 
   private next(phase: Phase): void {

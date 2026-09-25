@@ -8,6 +8,7 @@ import { Blood } from "./blood";
 import { cutDamage } from "./damage";
 import type { Weapon } from "./weapons";
 import type { Tuning } from "../tuning";
+import { judgeClash } from "./balance";
 
 /**
  * Impact quality.
@@ -41,7 +42,28 @@ const COOLDOWN_MS = 180;
  */
 const RESTING_SPEED = 0.35;
 
+/**
+ * A weapon knocked by another: the speed it is sent back at, m/s, below which
+ * nothing comes of it and at which an arm loses all it can (`Tuning.clash`),
+ * and how long the hardest knock takes to get over, seconds.
+ */
+const KNOCK_MIN = 0.5;
+const KNOCK_FULL = 4;
+const KNOCK_TIME = 0.6;
+
 export type Quality = "touch" | "flat" | "glance" | "bite" | "clean";
+
+/** Two weapons met, and one was knocked: see `Impacts.clash`. */
+export interface Clash {
+  /** The weapon knocked back, and the one that knocked it. */
+  knocked: Arm;
+  by: Arm;
+  /** How much its speed along the line they met on was changed, m/s. */
+  speed: number;
+  /** The share of its strength the arm holding it lost for the moment. */
+  share: number;
+  at: THREE.Vector3;
+}
 
 export interface Impact {
   quality: Quality;
@@ -84,10 +106,15 @@ interface BladeEntry {
   arm: Arm;
   onImpact: (i: Impact) => void;
   cutter: Cutter;
+  /** The weapon's collider handles as they were last routed here. */
+  handles: number[];
 }
 
 export class Impacts {
   latest: Impact | null = null;
+  /** The last time two weapons met and one was knocked, and who wants to hear of it. */
+  latestClash: Clash | null = null;
+  onClash?: (c: Clash) => void;
 
   /**
    * One reporter serves every blade in the fight.
@@ -98,6 +125,8 @@ export class Impacts {
    * collider handle instead.
    */
   private blades = new Map<number, BladeEntry>();
+  /** Every weapon, once each, whatever its colliders are this step. */
+  private readonly entries: BladeEntry[] = [];
 
   /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
   private lastAt = new Map<number, number>();
@@ -149,17 +178,34 @@ export class Impacts {
    * not forget where it was and cut the whole room on its next sweep.
    */
   addBlade(arm: Arm, onImpact: (i: Impact) => void): void {
-    const existing = this.blades.get(arm.bladeCollider.handle);
-    const entry: BladeEntry = {
-      arm, onImpact,
-      cutter: existing?.cutter ?? new Cutter(this.phys, arm, arm.side.cuttableFilter),
-    };
-    for (const c of arm.weaponColliders) this.blades.set(c.handle, entry);
+    const existing = this.entries.find((e) => e.arm === arm);
+    if (existing) {
+      existing.onImpact = onImpact;
+    } else {
+      this.entries.push({
+        arm, onImpact, handles: [], cutter: new Cutter(this.phys, arm, arm.side.cuttableFilter),
+      });
+    }
+    this.route(existing ?? this.entries[this.entries.length - 1]);
+  }
+
+  /**
+   * Route a weapon's colliders to it, if they have changed: a hand that has
+   * taken up another weapon has another weapon's colliders (see `Arm.takeUp`).
+   * A weapon that has changed in the hand has nowhere to sweep from.
+   */
+  private route(entry: BladeEntry): void {
+    const now = entry.arm.weaponColliders;
+    if (now.length === entry.handles.length && now.every((c, i) => c.handle === entry.handles[i])) return;
+    for (const h of entry.handles) if (this.blades.get(h) === entry) this.blades.delete(h);
+    entry.handles = now.map((c) => c.handle);
+    for (const h of entry.handles) this.blades.set(h, entry);
+    entry.cutter.reset();
   }
 
   /** After teleporting a blade, so its next sweep does not cut the whole room. */
   resetSweeps(): void {
-    for (const b of new Set(this.blades.values())) b.cutter.reset();
+    for (const b of this.entries) b.cutter.reset();
   }
 
   /**
@@ -171,11 +217,14 @@ export class Impacts {
    * them, at the speed it was actually travelling.
    */
   private sweepBlades(now: number): void {
-    for (const entry of new Set(this.blades.values())) {
+    for (const entry of this.entries) {
       // A weapon on its owner's back, or on its way there or back, cuts
       // nothing, and when it is back in the hand it must not sweep from the
-      // back to the hand through whatever is between.
-      if (entry.arm.stowed) {
+      // back to the hand through whatever is between. Nor does one nobody is
+      // swinging -- in a hand cut off, or let go of, or carried off by
+      // someone -- which falls on you, or is put down beside you, and is
+      // only steel.
+      if (!entry.arm.wielding) {
         entry.cutter.reset();
         continue;
       }
@@ -244,6 +293,7 @@ export class Impacts {
 
   /** Drain this step's contact events. Call right after `world.step()`. */
   update(now: number): void {
+    for (const entry of this.entries) this.route(entry);
     this.sweepBlades(now);
 
     this.phys.events.drainContactForceEvents((e) => {
@@ -296,6 +346,9 @@ export class Impacts {
       entry.onImpact(impact);
       if (this.isFlesh(entry.arm, other)) this.bleed(impact);
       else this.strike(impact);
+      // Weapon on weapon: after the hit is told, so what came of it is the
+      // last word.
+      if (b1 && b2 && b1.arm !== b2.arm) this.clash(entry.arm, (entry === b1 ? b2 : b1).arm, impact);
     });
 
     this.sparks.update();
@@ -308,6 +361,42 @@ export class Impacts {
         if (now - t > COOLDOWN_MS * 4) this.lastAt.delete(h);
       }
     }
+  }
+
+  /**
+   * Two weapons have met: whichever had less behind it along the line they met
+   * on is knocked back along it, and the arm holding it gives.
+   *
+   * Weighed the way a blow on a body is (see balance.ts): each weapon, and as
+   * much of the arm behind it as lands with it, meeting and sticking. The
+   * speed they share afterwards says who won -- the side with more mass times
+   * speed along the line carries on its way, the other is sent back -- and the
+   * loser's change of speed says how hard. So a spear thrust into a sword held
+   * still moves the sword, a sword swung hard into a spear held still moves
+   * the spear, the orc's axe moves anything it meets, and two equal blows stop
+   * each other and knock neither.
+   *
+   * The solver has already made them bounce. What this adds is the arm: a
+   * driven arm holds its hand where it was sent at a few hundred newtons, and
+   * without giving it would have the knocked weapon back in two centimetres.
+   */
+  private clash(striker: Arm, struck: Arm, impact: Impact): void {
+    const into = impact.into;
+    const a1 = impact.bladeVelocity.dot(into);
+    const a2 = struck.velocityAt(impact.at, this._v).dot(into);
+    const m2 = struck.liveWeaponMass + this.tuning.armBehindBlow * struck.armBehind;
+    const { knocked: which, speed } = judgeClash(impact.blowMass, a1, m2, a2);
+    const knocked = which === 2 ? struck : which === 1 ? striker : null;
+    if (knocked === null || !knocked.wielding) return;
+    const hard = Math.min(1, Math.max(0, (speed - KNOCK_MIN) / (KNOCK_FULL - KNOCK_MIN)));
+    if (hard <= 0) return;
+    const share = hard * this.tuning.clash;
+    knocked.jolt(share, KNOCK_TIME * hard);
+    const clash: Clash = {
+      knocked, by: knocked === struck ? striker : struck, speed, share, at: impact.at.clone(),
+    };
+    this.latestClash = clash;
+    this.onClash?.(clash);
   }
 
   /** Streaks still in the air, off stone and off flesh. The harness counts these. */

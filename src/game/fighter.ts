@@ -379,6 +379,14 @@ export class Fighter {
   private striding = 0;
   /** Which way the feet are asked to go: 1 forward, -1 back, 0 sideways. */
   private heading = 0;
+  /**
+   * Where the feet are carrying the body, horizontal, world, m/s: the pace
+   * the keys ask for, got to and come down from at a body's rate rather
+   * than at once. See `Tuning.stepEase`.
+   */
+  private readonly walking = new THREE.Vector3();
+  /** `Tuning.stepEase` as of the last step, for `coast`. */
+  private ease = 0;
   /** The legs' going, as the posture wants it. */
   private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0 };
   private headMesh!: THREE.Object3D;
@@ -921,10 +929,12 @@ export class Fighter {
   update(keys: Keys, t: Tuning, dt: number, drive: PostureDrive | null = null): void {
     // On the floor, or on the way up off it: nothing anyone asks reaches it.
     if (this.stance !== "up") {
+      this.walking.set(0, 0, 0);
       this.updateDown(t, dt);
       return;
     }
 
+    this.ease = t.stepEase;
     let turn = 0;
     if (keys.turnLeft) turn += 1;
     if (keys.turnRight) turn -= 1;
@@ -942,6 +952,7 @@ export class Fighter {
     // Going over something, or up it: the feet are off the floor and nothing
     // anyone asks of them reaches them until the far side, or the top.
     if (this.traverse) {
+      this.walking.set(0, 0, 0);
       this.stepTraverse(dt);
       this.finishStep(drive, t, dt, 0);
       return;
@@ -980,6 +991,7 @@ export class Fighter {
     // Going over something is its own key, and only ever goes over: with
     // nothing in front to vault, it does nothing.
     const takeOff = footed && this.coyote > 0 && this.jumpLock <= 0;
+    let push = false;
     if (keys.vault && takeOff && this.beginVault()) {
       this.leaveGround();
       this.stepTraverse(dt);
@@ -995,26 +1007,43 @@ export class Fighter {
         return;
       }
       vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
+      push = true;
     }
 
     const knock = this.knock;
+    const walk = this.walking;
     if (this.grounded) {
-      // On the ground the fighter simply IS its input velocity, which is what
+      // The feet get a body up to pace and down from it at the rate a body
+      // shifts its weight, not in one step. At a flat rate either way, so
+      // turning a step round -- in and straight back out -- takes twice as
+      // long as starting one.
+      const ease = t.stepEase;
+      const most = ease > 0 ? (t.moveSpeed * this.build.scale / ease) * dt : Infinity;
+      const dx = v.x - walk.x;
+      const dz = v.z - walk.z;
+      const change = Math.hypot(dx, dz);
+      const k = change > most ? most / change : 1;
+      walk.x += dx * k;
+      walk.z += dz * k;
+      // On the ground the fighter simply IS that velocity, which is what
       // lets it shove lighter things aside rather than be stopped by them --
       // plus whatever it has been knocked, which the feet have yet to catch.
-      this.body.setLinvel({ x: v.x + knock.x, y: vy, z: v.z + knock.z }, true);
+      this.body.setLinvel({ x: walk.x + knock.x, y: vy, z: walk.z + knock.z }, true);
     } else {
       // In the air there is nothing to push against, so intent only nudges the
       // line you left the ground on. This is also why a hard swing in mid-air
       // visibly shoves you sideways: the arm's reaction has nowhere to go.
-      const a = Math.min(1, t.airControl);
-      this.body.setLinvel({
-        x: current.x + (v.x - current.x) * a,
-        y: vy,
-        z: current.z + (v.z - current.z) * a,
-      }, true);
+      // Except at take-off: a jump is a stride, and the legs push the body
+      // off at the pace the keys ask for. The ground probe goes on finding
+      // the floor for two steps after the feet leave it, and before steps
+      // were eased those two set the pace outright -- which is where the
+      // orc's leap got its run from.
+      const a = push ? 1 : Math.min(1, t.airControl);
+      walk.set(current.x + (v.x - current.x) * a, 0, current.z + (v.z - current.z) * a);
+      this.body.setLinvel({ x: walk.x, y: vy, z: walk.z }, true);
       // A knock taken off the ground is already in the body's momentum, and
-      // there are no feet up here to catch it.
+      // there are no feet up here to catch it. Whatever it is doing when it
+      // comes down is what the feet take on from.
       knock.set(0, 0, 0);
     }
 
@@ -1024,7 +1053,7 @@ export class Fighter {
     // legs fold up.
     const target = this.grounded ? 0 : 1;
     this.tuck += (target - this.tuck) * Math.min(1, TUCK_RATE * dt);
-    const covered = Math.hypot(v.x + knock.x, v.z + knock.z);
+    const covered = Math.hypot(walk.x + knock.x, walk.z + knock.z);
     if (this.grounded) this.stridePhase += covered * dt * STRIDE;
     this.gait = covered;
     const walking = this.grounded && covered > 0.05;
@@ -1038,6 +1067,21 @@ export class Fighter {
     this.reel = Math.max(0, this.reel - dt);
 
     this.finishStep(drive, t, dt, crouch);
+  }
+
+  /** Where the feet are carrying the body, horizontal, world, m/s. Read only. */
+  get walkVelocity(): THREE.Vector3 {
+    return this.walking;
+  }
+
+  /**
+   * How far the feet go on carrying the body along a flat direction (a unit
+   * vector, world) once the keys come up, metres: what anything walking a
+   * body to a spot has to let go early by, to stop on it.
+   */
+  coast(dirX: number, dirZ: number): number {
+    const going = this.walking.x * dirX + this.walking.z * dirZ;
+    return Math.max(0, going) * this.ease / 2;
   }
 
   private leaveGround(): void {
@@ -2412,6 +2456,7 @@ export class Fighter {
     this.unlimp = 0;
     this.yaw = 0;
     this.hurt = 0;
+    this.walking.set(0, 0, 0);
     this.stridePhase = 0;
     this.striding = 0;
     this.tuck = 0;

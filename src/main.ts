@@ -20,6 +20,7 @@ import { Ai } from "./game/ai";
 import { Impacts } from "./game/impacts";
 import { Trail } from "./game/trail";
 import { Hud, type Kit } from "./ui/hud";
+import { Bag } from "./ui/bag";
 import { Panel, loadTuning } from "./ui/panel";
 
 /**
@@ -87,6 +88,8 @@ async function main(): Promise<void> {
   const impacts = new Impacts(phys, renderer.scene, targets, tuning);
   const dummy = new Dummy(phys, renderer.scene, targets, DUMMY_AT);
   const items = new Items(renderer.scene, ITEM_LAYOUT);
+  // Whatever comes off an opponent can be picked up and carried off.
+  items.watch(foes.map((f) => f.combatant));
   const pickup = new Pickup(player, items);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
   registerBodies();
 
   const hud = new Hud(hudEl, impactEl);
+  const bag = new Bag();
   hud.trackDummy(dummy);
   hud.trackFight(player, foes);
   const blood = impacts.blood;
@@ -142,6 +146,20 @@ async function main(): Promise<void> {
       hud.showSever({ label: `${f.combatant.name} is down`, at: new THREE.Vector3() });
   }
 
+  // Two weapons met and one was knocked aside: say so, when it was yours or
+  // theirs by you, and hard enough to be an opening rather than a tap.
+  impacts.onClash = (c) => {
+    if (c.share < 0.2) return;
+    const other = (a: typeof arm) => foes.find((f) => f.combatant.arm === a)?.combatant;
+    if (c.knocked === arm) {
+      const by = other(c.by);
+      hud.showNote(`your ${arm.weapon.name} is knocked aside${by ? ` by ${by.name}` : ""}`, true);
+    } else if (c.by === arm) {
+      const them = other(c.knocked);
+      if (them) hud.showNote(`you knock ${them.name}'s ${c.knocked.weapon.name} aside`);
+    }
+  };
+
   player.onDisarm = (_where, wound) => {
     hud.showSever({ label: "your sword arm", at: wound.at });
     blood.wound(wound);
@@ -171,21 +189,55 @@ async function main(): Promise<void> {
   const pending: Action[] = [];
   input.onAction = (a) => pending.push(a);
   const perform = (a: Action) => {
+    // A number, with the inventory open: whatever is on that line -- a
+    // potion drunk, anything else out of the bag and into the hand.
+    if (typeof a === "object") {
+      const entry = bag.open ? player.inventory.entries()[a.use] : undefined;
+      if (!entry) return;
+      const out = entry.kind === "potion" ? player.drink() : items.unbag(player, entry.item);
+      hud.showNote(out.text, !out.ok);
+      return;
+    }
     switch (a) {
       case "sheathe": {
-        // Whatever the hand was doing -- going for something -- it is
-        // wanted for the sword now.
+        // Whatever the hand was doing -- going for something, holding
+        // something -- it is wanted for the sword now. Unless what it holds
+        // is a weapon: then that is the one it takes up, and puts up again.
         pickup.cancel();
+        if (player.arm.wieldsTaken || player.held?.kind === "weapon") {
+          const out = player.arm.wieldsTaken ? items.unwield(player) : items.wield(player);
+          hud.showNote(out.text, !out.ok);
+          break;
+        }
+        if (player.held) hud.showNote(items.letGo(player).text);
         if (!player.arm.stowing) {
           if (player.arm.sheathed) player.arm.draw(); else player.arm.sheathe();
         }
         break;
       }
       case "interact": {
-        // Again, while going for something: never mind.
+        // Again, while going for something: never mind. With something in
+        // the hand: into the bag with it.
         if (pickup.active) { pickup.cancel(); break; }
+        if (player.held) {
+          const out = items.bag(player);
+          hud.showNote(out.text, !out.ok);
+          break;
+        }
         const out = pickup.start(input.keys);
         if (!out.ok) hud.showNote(out.text, true);
+        break;
+      }
+      case "drop": {
+        const out = items.letGo(player);
+        hud.showNote(out.text, !out.ok);
+        break;
+      }
+      case "sling": {
+        // The other hand, over its own shoulder: nothing to do with the sword
+        // hand, so a pick-up it is busy with goes on.
+        const out = player.sling();
+        hud.showNote(out.text, !out.ok);
         break;
       }
       case "drink": {
@@ -193,18 +245,23 @@ async function main(): Promise<void> {
         hud.showNote(out.text, !out.ok);
         break;
       }
+      case "bag":
+        bag.toggle();
+        break;
     }
   };
 
   input.onReset = () => {
+    // Before anyone is put back together: whatever was cut off and carried
+    // away has to be back in the world for its owner's reset to put it on.
+    pickup.cancel();
+    items.reset();
     player.reset(tuning, SPAWN);
     for (const f of foes) {
       f.combatant.reset(tuning, f.spawn);
       f.ai.reset();
     }
     dummy.reset();
-    pickup.cancel();
-    items.reset();
     pending.length = 0;
     // The dummy's bodies are all new, so the interpolator's entries point at
     // freed handles; rebuild the whole set rather than leaving stale ones.
@@ -330,12 +387,17 @@ async function main(): Promise<void> {
   /** What you carry and how you stand, for the HUD. */
   const kit = (): Kit => ({
     sword: arm.disarmed ? "lost"
+      : arm.wieldsTaken ? "back"
       : arm.stowing ? (arm.drawing ? "drawing" : "sheathing")
         : arm.sheathed ? "back" : "hand",
-    shield: player.hasShield
-      ? (player.fighter.offLimb.elbowOn && player.fighter.offLimb.shoulderOn ? "arm" : "lost")
-      : "none",
+    shield: player.offArm.slinging ? (player.offArm.slingingOn ? "slinging" : "unslinging")
+      : player.shieldOnBack ? "back"
+        : player.hasShield
+          ? (player.fighter.offLimb.elbowOn && player.fighter.offLimb.shoulderOn ? "arm" : "lost")
+          : "none",
     potions: player.potions,
+    bagged: player.inventory.pieces.length,
+    holding: player.held ? `${player.held.name}${arm.wieldsTaken ? " (wielded)" : ""}` : null,
     healing: player.healing,
     stance: player.dead || fighter.down ? "down"
       : fighter.vaulting ? "vaulting"
@@ -366,6 +428,7 @@ async function main(): Promise<void> {
       interp.capture();
       phys.step();
       interp.commit();
+      items.update();
 
       for (const c of everyone) c.arm.updateDerived();
       impacts.update(performance.now());
@@ -380,7 +443,9 @@ async function main(): Promise<void> {
       for (const c of everyone) c.syncMeshes(alpha, c === player && tuning.showGhost);
       if (tuning.showSkeleton) updateSkeleton(skeleton, arm, fighter);
       updateCamera(dt);
-      hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded, kit());
+      const carried = kit();
+      hud.update(arm.state, loop.frameMs, input.rollMode, fighter.grounded, carried);
+      bag.update(player, carried);
       renderer.draw();
     },
   });
