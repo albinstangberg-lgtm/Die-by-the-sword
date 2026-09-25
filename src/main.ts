@@ -421,6 +421,8 @@ async function main(): Promise<void> {
       // Mouse deltas are consumed here, not in render: reading them per frame
       // double-counts input whenever one frame spans two physics steps.
       player.act(input, keys, tuning, dt);
+      // A double tap asks for one quick step, once.
+      input.dashSeen();
 
       for (const f of foes) {
         f.ai.think(f.combatant, player, tuning, dt);

@@ -136,6 +136,19 @@ export interface Tuning {
    */
   pivotSpeed: number;
   /**
+   * How fast a quick step goes, as a multiple of walking pace: a double tap
+   * of a movement key, a short burst that way. It lasts under a fifth of a
+   * second whatever this is, so this is also how far it goes -- a metre or
+   * so at 2. Everyone's: the opponents quick-step with the same feet.
+   */
+  quickStep: number;
+  /**
+   * Seconds from one quick step starting to the next being able to: long
+   * enough that stepping in and out of reach is a choice, not a way of
+   * moving about. Everyone's.
+   */
+  quickStepRest: number;
+  /**
    * How high a standing jump clears, metres. The take-off speed is derived
    * from this and gravity, so lowering gravity floats the jump rather than
    * making it higher -- which is what you want from a knob called "gravity".
@@ -192,6 +205,8 @@ export const DEFAULTS: Tuning = {
   stepEase: 0.1,
   turnSpeed: 2.5,
   pivotSpeed: 9,
+  quickStep: 2,
+  quickStepRest: 0.7,
   jumpHeight: 0.62,
   airControl: 0.055,
 
@@ -263,6 +278,10 @@ export const CONTROLS: Control[] = [
   { group: "Movement", key: "turnSpeed", label: "turn speed  (rad/s)", min: 0, max: 6, step: 0.1 },
   { group: "Movement", key: "pivotSpeed", label: "pivot speed  (rad/s)", min: 0, max: 16, step: 0.5,
     hint: "How fast Shift and a turn take you round on your heel. A full turn in about seven tenths of a second at 9: fast enough to carry a swing round with you. Everyone's." },
+  { group: "Movement", key: "quickStep", label: "quick step  (× pace)", min: 1, max: 4, step: 0.1,
+    hint: "How fast a double tap of W, S, Q or E throws you that way, as a multiple of walking pace. It lasts under a fifth of a second, so this is how far it goes too: about a metre at 2. Everyone's." },
+  { group: "Movement", key: "quickStepRest", label: "quick step rest  (s)", min: 0.2, max: 3, step: 0.05,
+    hint: "How long from one quick step to the next. Everyone's: the opponents wait it out too." },
   { group: "Movement", key: "jumpHeight", label: "jump height  (m)", min: 0, max: 2, step: 0.02 },
   { group: "Movement", key: "airControl", label: "air control", min: 0, max: 1, step: 0.005,
     hint: "How much of your ground steering you keep in the air. Near 0 a jump commits you to the line you left on." },

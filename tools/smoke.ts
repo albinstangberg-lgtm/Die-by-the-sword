@@ -34,18 +34,27 @@ import { Ai, type Swing } from "../src/game/ai";
 import { judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
-import type { Fighter } from "../src/game/fighter";
+import { QUICK_TIME, type Fighter } from "../src/game/fighter";
 import { Impacts, type Impact } from "../src/game/impacts";
 import { Blood } from "../src/game/blood";
 import { DEFAULTS, type Tuning } from "../src/tuning";
 import { intrusion } from "../src/game/clearance";
-import { ACTION_MAP, KEY_MAP, type Keys } from "../src/input/input";
+import { ACTION_MAP, GAP, KEY_MAP, TAP, Taps, type Keys } from "../src/input/input";
 
 const STEP = 1 / 60;
+
+/**
+ * A quick step, from the harness's side: how long after one the arm is still
+ * catching the body up, seconds, and the furthest from the shoulder one drags
+ * the hand, metres -- whoever's arm it is. See `aDoubleTapIsAQuickStep`.
+ */
+const QUICK_SETTLE = 0.25;
+const QUICK_STRETCH = 0.75;
 
 const NO_KEYS: Keys = {
   forward: false, back: false, left: false, right: false,
   turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
+  dash: false,
 };
 
 /**
@@ -897,12 +906,17 @@ async function theOpponentPlaysByTheSameRules(): Promise<void> {
   const rig = await buildRig();
 
   let maxReach = 0;
+  let maxQuick = 0;
   let maxTip = 0;
+  let since = Infinity;
   const shoulder = new THREE.Vector3();
   for (let i = 0; i < 900; i++) {
     rig.fight(1);
     rig.foe.fighter.shoulderWorld(shoulder);
-    maxReach = Math.max(maxReach, shoulder.distanceTo(rig.foe.arm.handPosition));
+    const reach = shoulder.distanceTo(rig.foe.arm.handPosition);
+    since = rig.foe.fighter.quickStepping ? 0 : since + STEP;
+    if (since < QUICK_SETTLE) maxQuick = Math.max(maxQuick, reach);
+    else maxReach = Math.max(maxReach, reach);
     maxTip = Math.max(maxTip, rig.foe.arm.state.tipSpeed);
   }
 
@@ -913,6 +927,13 @@ async function theOpponentPlaysByTheSameRules(): Promise<void> {
   // raising the solver from 12 iterations to 16 did not pull it back.
   check("its arm never exceeds anatomical reach", maxReach < 0.68,
     `max shoulder->hand ${maxReach.toFixed(3)} m (segments total 0.58)`);
+  // A quick step throws the body at twice walking pace, and the drive damps
+  // the hand against its speed through the world, not past the shoulder (see
+  // `Ai.raised`): the hand is dragged behind, and the shoulder gives further
+  // for as long as it lasts. That is the body's doing, and yours does it the
+  // same -- see `aDoubleTapIsAQuickStep`.
+  check("nor in a quick step, further than the body's own speed drags it", maxQuick < QUICK_STRETCH,
+    `max shoulder->hand ${maxQuick.toFixed(3)} m in a quick step or just after`);
   check("its blade speed stays human", maxTip < 45,
     `peak tip ${maxTip.toFixed(1)} m/s`);
   check("it cannot swing while disarmed", true, "covered below");
@@ -1292,6 +1313,92 @@ async function airControlIsWeakerThanGround(): Promise<void> {
     `${sideways.toFixed(2)} m airborne vs ${onGround.toFixed(2)} m on the ground`);
 }
 
+async function aDoubleTapIsAQuickStep(): Promise<void> {
+  console.log("\na double tap of a movement key is a quick step");
+  // Twice walking pace for under a fifth of a second, the way the keys say:
+  // a metre or so, then a rest before the next. From the floor, on your own
+  // feet, and a cut leg takes its share off it -- as it does off a walk.
+  const rig = await buildRig();
+  rig.step(30);
+  const pace = rig.fighter.walkSpeed(rig.tuning);
+  const shoulder = new THREE.Vector3();
+  let stretch = 0;
+  // The keys for one step -- the second press of the tap -- and then none:
+  // how far it went by the time it stopped, and how fast it got.
+  const go = (keys: Keys) => {
+    const a = rig.fighter.position(new THREE.Vector3());
+    let top = 0;
+    rig.step(1, keys);
+    for (let i = 0; i < 60; i++) {
+      rig.step(1);
+      const v = rig.fighter.walkVelocity;
+      top = Math.max(top, Math.hypot(v.x, v.z));
+      rig.fighter.shoulderWorld(shoulder);
+      if (i / 60 < QUICK_TIME + QUICK_SETTLE) {
+        stretch = Math.max(stretch, shoulder.distanceTo(rig.arm.handPosition));
+      }
+    }
+    const b = rig.fighter.position(new THREE.Vector3());
+    return { dx: b.x - a.x, dz: b.z - a.z, far: Math.hypot(b.x - a.x, b.z - a.z), top };
+  };
+  const tap = go({ ...NO_KEYS, forward: true });
+  const ahead = go({ ...NO_KEYS, forward: true, dash: true });
+  check("a quick step goes a metre or so, at twice walking pace -- a tap of the key, nowhere",
+    ahead.far > 0.9 && ahead.far < 1.5 && -ahead.dz > 0.9 && Math.abs(ahead.top - 2 * pace) < 0.05
+      && tap.far < 0.1,
+    `${ahead.far.toFixed(2)} m at up to ${ahead.top.toFixed(2)} m/s, walking ${pace.toFixed(2)}; ` +
+    `a tap on its own ${(tap.far * 100).toFixed(0)}cm`);
+  // Facing the way it spawned: back is +Z, and its right +X.
+  const back = go({ ...NO_KEYS, back: true, dash: true });
+  const right = go({ ...NO_KEYS, right: true, dash: true });
+  const left = go({ ...NO_KEYS, left: true, dash: true });
+  check("back, or either way aside, as far",
+    back.dz > 0.9 && right.dx > 0.9 && -left.dx > 0.9,
+    `back ${back.dz.toFixed(2)} m, right ${right.dx.toFixed(2)}, left ${(-left.dx).toFixed(2)}`);
+  check("and your arm is dragged behind it as far as theirs, no further",
+    stretch > 0.64 && stretch < QUICK_STRETCH,
+    `shoulder to hand up to ${stretch.toFixed(3)} m in a quick step (segments total 0.58)`);
+
+  // One at a time: asked for again early in its rest, nothing; asked for a
+  // moment before the rest is over, it waits for it rather than forget it.
+  const rest = rig.tuning.quickStepRest;
+  const count = rig.fighter.quickSteps;
+  rig.step(1, { ...NO_KEYS, forward: true, dash: true });
+  rig.step(Math.round(rest * 0.4 / STEP));
+  rig.step(1, { ...NO_KEYS, back: true, dash: true });
+  rig.step(60);
+  const early = rig.fighter.quickSteps - count;
+  rig.step(1, { ...NO_KEYS, forward: true, dash: true });
+  rig.step(Math.round((rest - 0.1) / STEP) - 1);
+  rig.step(1, { ...NO_KEYS, back: true, dash: true });
+  rig.step(12, { ...NO_KEYS, back: true });
+  rig.step(60);
+  const late = rig.fighter.quickSteps - count - early;
+  check("then a rest before the next, and one asked for a moment early waits for it",
+    early === 1 && late === 2,
+    `asked again ${(rest * 0.4).toFixed(2)}s in: ${early === 1 ? "not taken" : "taken"}; ` +
+    `${(rest - 0.1).toFixed(2)}s in: ${late === 2 ? "taken as the rest ran out" : "lost"}`);
+
+  // Off the floor: nothing to push off.
+  const before = rig.fighter.quickSteps;
+  rig.step(1, { ...NO_KEYS, jump: true });
+  rig.step(8);
+  const aloft = !rig.fighter.grounded;
+  rig.step(1, { ...NO_KEYS, forward: true, dash: true });
+  rig.step(60);
+  check("never in the air", aloft && rig.fighter.quickSteps === before,
+    `${rig.fighter.quickSteps - before} quick steps asked for in the air`);
+
+  // A cut leg: the pace comes down, and so does the way it goes.
+  const thigh = rig.fighter.parts.find((p) => p.name.endsWith("thigh"))!;
+  for (let i = 0; i < 3; i++) rig.player.receive(fakeImpact(thigh.collider.handle));
+  rig.step(60);
+  const lamed = go({ ...NO_KEYS, forward: true, dash: true });
+  check("and a cut leg shortens it", lamed.far < 0.75 * ahead.far && rig.fighter.lame > 0.5,
+    `${lamed.far.toFixed(2)} m lamed (${(rig.fighter.lame * 100).toFixed(0)}%), ` +
+    `${ahead.far.toFixed(2)} whole`);
+}
+
 async function aLegSweepCanBeJumped(): Promise<void> {
   console.log("\nthe orc's leg sweep travels under a jump");
   // Nothing tells you it is coming but the axe going low, and the answer to it
@@ -1483,7 +1590,12 @@ async function swingsAreReadOffTheArm(): Promise<void> {
   // to mean something -- more weapon, longer -- and nothing else may tell.
   const whole = new Map<string, number[]>();
   const everywhere = new Set<string>();
-  for (const species of [SWORDSMAN, ORC, GOBLIN]) {
+  for (const kind of [SWORDSMAN, ORC, GOBLIN]) {
+    // Never off a quick step: a swing thrown off one is a swing on the move,
+    // left out of what is measured below, and they took the place of enough
+    // swings drawn back standing to leave a bout too few to take a median of.
+    // They are drawn back first as well: see `theyQuickStepToo`.
+    const species = { ...kind, footwork: { ...kind.footwork, dart: 0 } };
     const rig = await buildRig({}, species, foeSpawn(species));
     const swings: Swing[] = [];
     const drawing: number[] = [];
@@ -4335,6 +4447,131 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
     `never nearer you than ${nearest.toFixed(1)} m, where its axe works at ${reach.toFixed(2)}`);
 }
 
+async function theyQuickStepToo(): Promise<void> {
+  console.log("\nthey quick-step too: in with a swing, and out after it");
+  // Your double tap, on their keys: the same pace, the same rest, and never
+  // off the floor. The goblin is never still, the swordsman does it now and
+  // then, and the orc hardly ever -- a heavy thing throwing its weight about.
+  const rest = DEFAULTS.quickStepRest;
+  const steps = new Map<string, number>();
+  let soonest = Infinity;
+  let darts = 0;
+  let thrown = 0;
+  let drawn = 0;
+  let closed = 0;
+  let outs = 0;
+  const me = new THREE.Vector3();
+  const it = new THREE.Vector3();
+  for (const species of [GOBLIN, SWORDSMAN, ORC]) {
+    let taken = 0;
+    for (let bout = 0; bout < 3; bout++) {
+      const rig = await buildRig({}, species, foeSpawn(species));
+      rig.player.position(me);
+      const home = new THREE.Vector3(me.x, SPAWN.y, me.z);
+      const gap = () => {
+        rig.player.position(me);
+        rig.foe.position(it);
+        return Math.hypot(me.x - it.x, me.z - it.z);
+      };
+      let last = -Infinity;
+      let from = rig.foe.arm.aim;
+      let start = 0;
+      for (let i = 0; i < 60 * 40; i++) {
+        const before = rig.ai.intent;
+        const was = rig.foe.fighter.quickSteps;
+        const was2 = rig.ai.tally.darts;
+        rig.fight(1);
+        if (rig.foe.fighter.quickSteps > was) {
+          soonest = Math.min(soonest, i * STEP - last);
+          last = i * STEP;
+        }
+        // A swing off a quick step in: where the weapon was as it set off,
+        // and how far off you were.
+        if (rig.ai.tally.darts > was2) {
+          from = rig.foe.arm.aim;
+          start = gap();
+        }
+        const s = rig.ai.committed;
+        if (before === "windup" && s?.move === "dart" && rig.ai.intent !== "windup") {
+          if (rig.ai.intent === "strike") {
+            thrown++;
+            if (drewBack(from, rig.foe.arm.aim)) drawn++;
+            if (start - gap() > 0.3) closed++;
+          }
+        }
+        if (rig.player.dead) rig.place(home);
+      }
+      taken += rig.foe.fighter.quickSteps;
+      darts += rig.ai.tally.darts;
+      outs += rig.ai.tally.quickOuts;
+    }
+    steps.set(species.key, taken);
+  }
+  const [goblin, man, orc] = ["goblin", "swordsman", "orc"].map((k) => steps.get(k)!);
+  check("the goblin quick-steps all the time, the swordsman now and then, the orc hardly ever",
+    goblin > man && man > orc && soonest >= rest - 1e-6,
+    `${goblin}, ${man} and ${orc} quick steps in two minutes each; never two nearer than ` +
+    `${soonest.toFixed(2)}s apart, where the rest is ${rest}s`);
+  check("its moment come, it quick-steps in with the weapon going back, and swings from where it lands",
+    darts >= 6 && thrown >= 0.75 * darts && drawn === thrown && closed >= 0.75 * thrown,
+    `${darts} quick steps in to swing: ${thrown} swung from where they landed, ${drawn} of those ` +
+    `drew the weapon back first, ${closed} closed the gap by more than 30cm`);
+  check("and out again after a swing", outs >= 4,
+    `${outs} quick steps back out of reach after a swing`);
+
+  // Out of the way of your swing, a quick step gets it further in the moment
+  // it has than a step does: a goblin that only goes round you, getting out
+  // of the way of everything it sees coming -- quick whenever it is rested --
+  // against the same goblin that never quick-steps. Neither of them hops.
+  // Put back where they began every five seconds: a bout that wanders off
+  // to where your swings never come near it has nothing to get out of.
+  const away = async (quick: number) => {
+    const goblin = {
+      ...GOBLIN,
+      footwork: {
+        ...GOBLIN.footwork, patience: [60, 60] as const, counter: 0, bait: 0, feint: 0, lunge: 0,
+        wariness: 1, hop: 0, parry: 0, quick,
+      },
+    };
+    const start = spawnFor(GOBLIN, 2.0, -10.5);
+    const rig = await buildRig({}, goblin, start);
+    const home = new THREE.Vector3(2.0, SPAWN.y, -6.8);
+    const moved: number[] = [];
+    for (let trial = 0; trial < 8; trial++) {
+      rig.foe.reset(rig.tuning, start);
+      rig.ai.reset();
+      rig.place(home);
+      const drive = fencer();
+      let from: THREE.Vector3 | null = null;
+      let t = 0;
+      for (let i = 0; i < 60 * 5; i++) {
+        const before = rig.ai.intent;
+        const was = rig.ai.tally.quickDodges;
+        rig.fight(1, drive(rig));
+        if (rig.ai.intent === "evade" && before !== "evade"
+          && (quick === 0 || rig.ai.tally.quickDodges > was)) {
+          from = rig.foe.position(new THREE.Vector3());
+          t = 0;
+        }
+        if (from && (t += STEP) >= 0.2) {
+          rig.foe.position(it);
+          moved.push(Math.hypot(it.x - from.x, it.z - from.z));
+          from = null;
+        }
+        if (rig.player.dead) rig.place(home);
+      }
+    }
+    return { moved, quick: rig.ai.tally.quickDodges };
+  };
+  const quick = await away(1);
+  const step = await away(0);
+  check("and out of the way of your swing, further in the moment it has than a step goes",
+    quick.quick >= 3 && step.quick === 0 && step.moved.length >= 3
+      && median(quick.moved) > 1.4 * median(step.moved),
+    `${quick.quick} quick steps out of the way, ${median(quick.moved).toFixed(2)} m in the first ` +
+    `0.2s; a step ${median(step.moved).toFixed(2)} m (${step.moved.length} of them)`);
+}
+
 // -----------------------------------------------------------------------------
 // The other arm, the scabbard, the belt, the shield, crouching and vaulting
 // -----------------------------------------------------------------------------
@@ -5664,6 +5901,29 @@ async function theNewKeysAreWhereTheySay(): Promise<void> {
     ACTION_MAP.KeyZ === "sling" && ACTION_MAP.KeyB === "bag"
       && typeof one === "object" && one.use === 0 && typeof nine === "object" && nine.use === 8,
     `Z -> ${ACTION_MAP.KeyZ}, B -> ${ACTION_MAP.KeyB}, 1 -> ${JSON.stringify(one)}, 9 -> ${JSON.stringify(nine)}`);
+
+  // Two short taps of the same key, close together, and only that: the keys
+  // are tapped all the time to edge in and out of reach, and a quick step
+  // nobody asked for costs a fight. Seconds, as the key events have them.
+  const taps = (presses: [string, number, number][]) => {
+    const t = new Taps();
+    let quick = 0;
+    for (const [code, down, up] of presses) {
+      if (t.press(code, down)) quick++;
+      t.release(code, up);
+    }
+    return quick;
+  };
+  const tap = TAP / 2;
+  const gap = GAP / 2;
+  const twice = taps([["KeyW", 0, tap], ["KeyW", tap + gap, tap + gap + 0.05]]);
+  const held = taps([["KeyW", 0, TAP + 0.1], ["KeyW", TAP + 0.1 + gap, TAP + 0.2 + gap]]);
+  const slow = taps([["KeyW", 0, tap], ["KeyW", tap + GAP + 0.1, tap + GAP + 0.15]]);
+  const between = taps([["KeyW", 0, tap], ["KeyQ", tap + 0.02, tap + 0.06], ["KeyW", tap + gap, tap + gap + 0.05]]);
+  const thrice = taps([["KeyS", 0, tap], ["KeyS", tap + gap, 2 * tap + gap], ["KeyS", 2 * (tap + gap), 3 * tap + 2 * gap]]);
+  check("two quick taps of W, S, Q or E are a quick step -- a held key, a slow tap or another key between are not",
+    twice === 1 && held === 0 && slow === 0 && between === 0 && thrice === 1,
+    `two taps ${twice}, held first ${held}, too far apart ${slow}, Q between ${between}, three taps ${thrice}`);
 }
 
 async function run(): Promise<void> {
@@ -5694,6 +5954,7 @@ async function run(): Promise<void> {
   await theControlsAreWhereTheySay();
   await jumpingLeavesTheGround();
   await airControlIsWeakerThanGround();
+  await aDoubleTapIsAQuickStep();
   await aLegSweepCanBeJumped();
   await weaponsAreToldApartByPhysics();
   await theAxeIsHarderToSwing();
@@ -5752,6 +6013,7 @@ async function run(): Promise<void> {
   await aCutLegLamesYou();
   await badlyHurtItFightsLikeIt();
   await itTauntsYouFromOutOfReach();
+  await theyQuickStepToo();
 
   await theOtherArmHoldsStill();
   await theSwordGoesOnYourBack();

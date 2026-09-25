@@ -164,6 +164,24 @@ const TUCK_RATE = 9;
 
 /** How fast a crouched body walks, as a share of standing. */
 const CROUCH_SPEED = 0.45;
+/**
+ * A quick step: the feet thrown the way the keys say at `Tuning.quickStep`
+ * times walking pace, for this long, seconds -- a metre or so at human size
+ * -- and got up to that pace and back down to walking in `QUICK_EASE`: a
+ * push off the floor, not a shift of weight. Whatever the keys do once it
+ * has started, it goes where it set off. From the floor only, on feet that
+ * are its own; a cut leg takes its share off the pace, and so off the way
+ * it goes. See `Keys.dash`.
+ */
+export const QUICK_TIME = 0.18;
+const QUICK_EASE = 0.05;
+/**
+ * How long a quick step asked for too soon -- still resting from the last,
+ * coming down, catching itself -- waits to be taken, seconds. Long enough
+ * that a double tap a moment early is not lost, short enough that it never
+ * comes as a surprise.
+ */
+const QUICK_KEEP = 0.15;
 /** How far ahead of the middle of the body something may start, to be vaulted: a running stride. */
 const VAULT_REACH = 1.3;
 /** How high it may stand, from the soles: over a knee and under a chest. */
@@ -496,6 +514,21 @@ export class Fighter {
   private readonly walking = new THREE.Vector3();
   /** `Tuning.stepEase` as of the last step, for `coast`. */
   private ease = 0;
+  /** Walking pace as of the last step, m/s, for `coast`. */
+  private pace = 0;
+  /**
+   * A quick step: seconds left of the one under way, which way it goes,
+   * flat, world, and how fast, m/s -- kept until the feet are back down to
+   * walking pace after it. Seconds until the next may start, and left to
+   * take one asked for too soon. See `QUICK_TIME`.
+   */
+  private quickLeft = 0;
+  private readonly quickDir = new THREE.Vector3();
+  private quickPace = 0;
+  private quickRest = 0;
+  private quickAsk = 0;
+  /** How many quick steps it has taken since it was last put on its feet. */
+  quickSteps = 0;
   /** The legs' going, as the posture wants it. */
   private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0, side: 0 };
   private headMesh!: THREE.Object3D;
@@ -1043,14 +1076,20 @@ export class Fighter {
    * there is no arm to carry, and the trunk relaxes back to square.
    */
   update(keys: Keys, t: Tuning, dt: number, drive: PostureDrive | null = null): void {
+    this.quickRest = Math.max(0, this.quickRest - dt);
+    this.quickAsk = Math.max(0, this.quickAsk - dt);
+    if (keys.dash) this.quickAsk = QUICK_KEEP;
+
     // On the floor, or on the way up off it: nothing anyone asks reaches it.
     if (this.stance !== "up") {
       this.walking.set(0, 0, 0);
+      this.quickLeft = this.quickPace = 0;
       this.updateDown(t, dt);
       return;
     }
 
     this.ease = t.stepEase;
+    this.pace = this.walkSpeed(t);
     let turn = 0;
     if (keys.turnLeft) turn += 1;
     if (keys.turnRight) turn -= 1;
@@ -1073,6 +1112,7 @@ export class Fighter {
     // anyone asks of them reaches them until the far side, or the top.
     if (this.traverse) {
       this.walking.set(0, 0, 0);
+      this.quickLeft = this.quickPace = 0;
       this.stepTraverse(dt);
       this.finishStep(drive, t, dt, 0);
       return;
@@ -1129,21 +1169,41 @@ export class Fighter {
       push = true;
     }
 
+    // A quick step, asked for: off the way the keys say as it starts, and
+    // there to its end whatever they say after. A jump takes off at the
+    // keys' own pace, as ever -- a quick step is no run-up -- and a body
+    // that leaves the floor or loses its footing has lost the step.
+    if (this.quickLeft > 0 && (push || !this.grounded || !footed)) this.quickLeft = 0;
+    const asked = Math.hypot(v.x, v.z);
+    if (this.quickAsk > 0 && this.quickLeft <= 0 && this.quickRest <= 0
+      && this.grounded && footed && !push && asked > 1e-6) {
+      this.quickDir.set(v.x / asked, 0, v.z / asked);
+      this.quickPace = asked * t.quickStep;
+      this.quickLeft = QUICK_TIME;
+      this.quickRest = t.quickStepRest;
+      this.quickAsk = 0;
+      this.quickSteps++;
+    }
+    if (this.quickLeft > 0) v.copy(this.quickDir).multiplyScalar(this.quickPace);
+
     const knock = this.knock;
     const walk = this.walking;
     if (this.grounded) {
       // The feet get a body up to pace and down from it at the rate a body
       // shifts its weight, not in one step. At a flat rate either way, so
       // turning a step round -- in and straight back out -- takes twice as
-      // long as starting one.
+      // long as starting one. A quick step is a push, not a shift of
+      // weight: up to its pace in a moment, and back down to walking pace.
       const ease = t.stepEase;
-      const most = ease > 0 ? (this.walkSpeed(t) / ease) * dt : Infinity;
+      let most = ease > 0 ? (this.pace / ease) * dt : Infinity;
+      if (this.quickPace > 0) most = Math.max(most, (this.quickPace / QUICK_EASE) * dt);
       const dx = v.x - walk.x;
       const dz = v.z - walk.z;
       const change = Math.hypot(dx, dz);
       const k = change > most ? most / change : 1;
       walk.x += dx * k;
       walk.z += dz * k;
+      if (this.quickLeft <= 0 && Math.hypot(walk.x, walk.z) <= this.pace + 1e-6) this.quickPace = 0;
       // On the ground the fighter simply IS that velocity, which is what
       // lets it shove lighter things aside rather than be stopped by them --
       // plus whatever it has been knocked, which the feet have yet to catch.
@@ -1202,6 +1262,7 @@ export class Fighter {
     const k = knock.length();
     if (k > 0) knock.multiplyScalar(Math.max(0, k - STUMBLE * Math.abs(t.gravity) * dt) / k);
     this.reel = Math.max(0, this.reel - dt);
+    this.quickLeft = Math.max(0, this.quickLeft - dt);
 
     this.finishStep(drive, t, dt, crouch);
   }
@@ -1227,8 +1288,39 @@ export class Fighter {
    * body to a spot has to let go early by, to stop on it.
    */
   coast(dirX: number, dirZ: number): number {
-    const going = this.walking.x * dirX + this.walking.z * dirZ;
-    return Math.max(0, going) * this.ease / 2;
+    let going = Math.max(0, this.walking.x * dirX + this.walking.z * dirZ);
+    // A quick step goes on to its end whatever the keys do, and what it has
+    // over walking pace is gone in a moment after.
+    let burst = 0;
+    if (this.quickPace > 0) {
+      going = Math.min(going, this.pace);
+      burst = this.quickLeft * this.quickPace
+        * Math.max(0, this.quickDir.x * dirX + this.quickDir.z * dirZ);
+    }
+    return burst + going * this.ease / 2;
+  }
+
+  /**
+   * A quick step would start this step if asked for: on its feet, on the
+   * floor, and rested from the last. See `Keys.dash`.
+   */
+  get quickReady(): boolean {
+    return this.stance === "up" && this.grounded && this.reel <= 0 && !this.traverse
+      && this.quickLeft <= 0 && this.quickRest <= 0;
+  }
+
+  /** A quick step under way. */
+  get quickStepping(): boolean {
+    return this.quickLeft > 0;
+  }
+
+  /**
+   * How far a quick step throws the body at its pace now, metres, before the
+   * feet come back down to walking: what anything that means to close a gap
+   * with one, or open one, has to go by.
+   */
+  quickReach(t: Tuning): number {
+    return this.walkSpeed(t) * t.quickStep * QUICK_TIME;
   }
 
   private leaveGround(): void {
@@ -2728,6 +2820,8 @@ export class Fighter {
     this.grounded = true;
     this.gait = 0;
     this.pivoting = false;
+    this.quickLeft = this.quickPace = this.quickRest = this.quickAsk = 0;
+    this.quickSteps = 0;
     this.wayAhead = 1;
     this.waySide = 0;
     this.spin = 0;
