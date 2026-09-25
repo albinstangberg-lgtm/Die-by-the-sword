@@ -29,6 +29,12 @@ export interface Keys {
    * fast -- what carries a swing on round with you, all the way.
    */
   pivot: boolean;
+  /**
+   * A quick step the way the movement keys say: a short burst, then a rest
+   * before the next. Asked for, not held -- a double tap of W, S, Q or E for
+   * you, see `Taps`, and the same flag for anything else on two feet.
+   */
+  dash: boolean;
 }
 
 /**
@@ -84,11 +90,62 @@ export const KEY_MAP: Record<string, keyof Keys> = {
   ArrowRight: "turnRight",
 };
 
+/** Longest a key can be held down and still count as a tap, seconds. */
+export const TAP = 0.2;
+/** Longest from a tap coming up to the same key going down again, seconds. */
+export const GAP = 0.25;
+
+/**
+ * Double taps of the movement keys: a quick step. A tap is a key let go of
+ * within `TAP`; the same key down again within `GAP` of coming up is the
+ * quick step, at once -- it does not wait to be let go. Tight on purpose:
+ * the keys are tapped all the time to edge in and out of reach, and a step
+ * nobody asked for costs a fight. Anything else pressed between, or a key
+ * held, and the two presses are two presses.
+ */
+export class Taps {
+  private last: { code: string; down: number; up: number } | null = null;
+
+  /** A movement key went down (not a repeat): whether that is a double tap. */
+  press(code: string, now: number): boolean {
+    const l = this.last;
+    if (l && l.code === code && l.up >= 0 && l.up - l.down <= TAP && now - l.up <= GAP) {
+      // Spent: a third tap starts the count again.
+      this.last = null;
+      return true;
+    }
+    this.last = { code, down: now, up: -1 };
+    return false;
+  }
+
+  /** A movement key came up. */
+  release(code: string, now: number): void {
+    if (this.last && this.last.code === code && this.last.up < 0) this.last.up = now;
+  }
+
+  clear(): void {
+    this.last = null;
+  }
+}
+
+/** The keys a double tap of which is a quick step: the ones that walk. */
+const STEPS = new Set<keyof Keys>(["forward", "back", "left", "right"]);
+
 export class Input {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
     turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
+    dash: false,
   };
+  private readonly taps = new Taps();
+  /**
+   * The key a double tap was of, and whether it has been let go of, until the
+   * step that takes the quick step has seen it: see `dashSeen`. A tap is
+   * quick and a frame can be slow, and let go of before any step saw it, the
+   * quick step would have had no way to go.
+   */
+  private dashKey: keyof Keys | null = null;
+  private dashLet = false;
 
   /** Mouse travel since the last `consumeMouse()`, in pixels. */
   private dx = 0;
@@ -175,11 +232,22 @@ export class Input {
       }
       const k = KEY_MAP[e.code];
       if (k) { this.keys[k] = true; e.preventDefault(); }
+      // Down again before the step has seen it let go: it is held.
+      if (k === this.dashKey) this.dashLet = false;
+      if (k && STEPS.has(k) && !e.repeat && this.taps.press(e.code, e.timeStamp / 1000)) {
+        this.keys.dash = true;
+        this.dashKey = k;
+        this.dashLet = false;
+      }
     });
 
     addEventListener("keyup", (e) => {
       const k = KEY_MAP[e.code];
-      if (k) { this.keys[k] = false; e.preventDefault(); }
+      if (!k) return;
+      e.preventDefault();
+      if (STEPS.has(k)) this.taps.release(e.code, e.timeStamp / 1000);
+      if (k === this.dashKey && this.keys.dash) this.dashLet = true;
+      else this.keys[k] = false;
     });
 
     // Losing focus mid-swing otherwise leaves keys stuck down.
@@ -213,6 +281,18 @@ export class Input {
     return out;
   }
 
+  /**
+   * The step that takes a double tap's quick step has seen it: it is asked
+   * for once, and the key it was of, if it has been let go of meanwhile,
+   * comes up now. Call once per fixed step, after the keys are read.
+   */
+  dashSeen(): void {
+    this.keys.dash = false;
+    if (this.dashKey && this.dashLet) this.keys[this.dashKey] = false;
+    this.dashKey = null;
+    this.dashLet = false;
+  }
+
   /** True while the right button is held — the HUD dims the sweep hint. */
   get rollMode(): boolean {
     return this.rolling && !this.guarding;
@@ -225,5 +305,8 @@ export class Input {
 
   private clearKeys(): void {
     for (const k of Object.keys(this.keys) as (keyof Keys)[]) this.keys[k] = false;
+    this.taps.clear();
+    this.dashKey = null;
+    this.dashLet = false;
   }
 }

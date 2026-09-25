@@ -73,6 +73,7 @@ export class Pickup {
   private readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
     turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
+    dash: false,
   };
   private readonly _e = new THREE.Vector3();
 

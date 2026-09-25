@@ -273,6 +273,20 @@ export interface Footwork {
    * saluted every time it gave ground did little else.
    */
   readonly taunt: number;
+  /**
+   * Chance a step it takes to get out of the way, or out of reach once it has
+   * swung, is a quick step -- and, now and then, a step round you: the double
+   * tap you have, off the same feet, and rested from the same way. The goblin
+   * is never still; the orc throws its weight about once in a while.
+   */
+  readonly quick: number;
+  /**
+   * Chance that, its moment come and you not quite in reach, it closes the
+   * last of the gap with a quick step as its weapon goes back, straight in or
+   * in on a slant round your side, and swings from where it lands -- rather
+   * than walk up to you.
+   */
+  readonly dart: number;
 }
 
 export interface Species {
@@ -364,7 +378,7 @@ export const SWORDSMAN: Species = {
   footwork: {
     patience: [0.5, 1.5], settle: 0.26, wariness: 0.35, retreat: 0.35, feint: 0.12,
     rock: 0.4, give: 0.5, bait: 0.15, counter: 0.7,
-    hop: 0.3, parry: 0.3, lunge: 0.25, flinch: 0.5, taunt: 0.1,
+    hop: 0.3, parry: 0.3, lunge: 0.25, flinch: 0.5, taunt: 0.1, quick: 0.4, dart: 0.45,
   },
   // Forehand into backhand into forehand: a sword is light enough to keep
   // going, and a miss is where a run of them starts.
@@ -458,7 +472,7 @@ export const ORC: Species = {
   footwork: {
     patience: [0.25, 0.9], settle: 0.42, wariness: 0.1, retreat: 0.1, feint: 0,
     rock: 0.12, give: 0.1, bait: 0, counter: 0.5,
-    hop: 0, parry: 0.25, lunge: 0, flinch: 0, taunt: 0.2,
+    hop: 0, parry: 0.25, lunge: 0, flinch: 0, taunt: 0.2, quick: 0.1, dart: 0.15,
   },
   // Round high and back along the floor, or along the floor and back round
   // high: two, and then it has to get the axe up again. The overhead ends
@@ -559,7 +573,7 @@ export const GOBLIN: Species = {
   footwork: {
     patience: [0.6, 1.8], settle: 0.14, wariness: 0.6, retreat: 0.55, feint: 0.22,
     rock: 0.35, give: 0.8, bait: 0.12, counter: 0.45,
-    hop: 0.65, parry: 0.08, lunge: 0.35, flinch: 0.8, taunt: 0.12,
+    hop: 0.65, parry: 0.08, lunge: 0.35, flinch: 0.8, taunt: 0.12, quick: 0.7, dart: 0.6,
   },
   // Jab, jab, jab: a spear drawn back off a thrust is ready to thrust again.
   flow: { combo: 0.5, chain: 3 },
@@ -570,6 +584,7 @@ export const GOBLIN: Species = {
     aggression: 0.4,
     footwork: {
       patience: [1.2, 2.6], wariness: 0.85, retreat: 0.85, give: 0.95, bait: 0, hop: 0.9, taunt: 0,
+      quick: 0.9,
     },
   },
   // It shakes the spear at you over its head.
