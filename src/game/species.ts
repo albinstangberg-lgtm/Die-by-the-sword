@@ -1,6 +1,6 @@
 import { makeBuild, type Build } from "./anatomy";
 import type { Palette } from "./fighter";
-import { AXE, SPEAR, SWORD, type Weapon } from "./weapons";
+import { AXE, CLUB, HATCHET, SPEAR, SWORD, type Weapon } from "./weapons";
 
 /**
  * The bestiary.
@@ -304,6 +304,15 @@ export interface Species {
    * body's thickness -- muscle cross-section, which is what force comes from.
    */
   readonly power: number;
+  /**
+   * How much of its own body it puts behind a blow, as a share of its
+   * walking mass, on top of the arm swinging the weapon: 0, if omitted,
+   * which is everything that swings from the shoulder. Something that swings
+   * from its hips, turning the whole of itself into the blow, lands with some
+   * of that as well -- and when the thing weighs three hundred kilos, that is
+   * what sends you across the room. See balance.ts.
+   */
+  readonly heave?: number;
   /**
    * How readily it presses after a swing -- straight into the next one --
    * rather than going round you or giving ground first.
@@ -640,10 +649,203 @@ export const GOBLIN: Species = {
   ],
 };
 
+// --- the kobold --------------------------------------------------------------
+
+const KOBOLD_BUILD = makeBuild(0.6, 0.95);
+
+/**
+ * A kobold with a hatchet: a metre of scaly spite that comes up to your
+ * belt.
+ *
+ * Everything about it is small, and the cube law is merciless to small
+ * things: it weighs a fifth of you, and one clean cut takes its head or its
+ * arm off. What it has is a little axe that comes round in a flick, and
+ * your shins at the height of its shoulder. It darts in, hacks at your legs
+ * and is out again before your sword has come round -- and it jumps at you
+ * with the hatchet over its head once you have backed off. Hurt, it runs.
+ */
+export const KOBOLD: Species = {
+  key: "kobold",
+  name: "the kobold",
+  possessive: "the kobold's",
+  note: "small, quick, and always at your shins",
+  build: KOBOLD_BUILD,
+  weapon: HATCHET,
+  palette: { cloth: 0x6b5a3e, skin: 0xa0552c, mark: 0xe0c060 },
+  // Wiry, like the goblin: at the strength its shoulders imply, a hatchet on
+  // the end of an arm that short hangs off it.
+  power: sizedPower(KOBOLD_BUILD, 2),
+  aggression: 1.1,
+  // Never still, and never where you swung: it skitters about, darts in and
+  // back out, hops from most of what comes at it, and flinches from any cut.
+  // It does not put its hatchet in the way of anything.
+  footwork: {
+    patience: [0.3, 1.1], settle: 0.12, wariness: 0.55, retreat: 0.6, feint: 0.3,
+    rock: 0.45, give: 0.7, bait: 0.1, counter: 0.6,
+    hop: 0.55, parry: 0.03, lunge: 0.3, flinch: 0.85, taunt: 0.25, quick: 0.8, dart: 0.75,
+  },
+  // Hack, hack, hack: a hatchet is light enough to keep going.
+  flow: { combo: 0.6, chain: 4 },
+  // Hurt, it runs: long waits, everything given up, nothing offered.
+  temper: {
+    below: 0.5,
+    aggression: 0.35,
+    footwork: {
+      patience: [1.4, 3.0], wariness: 0.9, retreat: 0.9, give: 0.95, bait: 0, hop: 0.9,
+      taunt: 0, dart: 0.3,
+    },
+  },
+  // It waves the hatchet over its head at you.
+  display: {
+    a: { yaw: -0.4, pitch: 1.0, reach: 0.7, roll: 0 },
+    b: { yaw: 0.4, pitch: 0.9, reach: 0.8, roll: 0 },
+    beats: 5, beat: 0.22,
+  },
+  // Close in, since a hatchet has no reach to speak of -- but not too close:
+  // its whole arc is inside a stride, and from under your nose it met you
+  // on the way back as the hatchet went up, and came through slow. It swings
+  // from the edge of its reach, where the head has come round to speed by
+  // the time it gets to you.
+  range: { close: 1.0, strike: 1.2, far: 1.45 },
+  // Your legs, mostly, which are where its shoulders are; your middle when it
+  // can get at it; never your head, which is out of its reach.
+  aim: { head: 0, body: 0.4, arm: 0.1, legs: 0.5 },
+  cuts: [
+    {
+      // Across, from its right: the orc's swing round, in miniature. Its
+      // band was measured on its own arm, not borrowed from the axe's: a
+      // hatchet on a kobold's arm leads with its edge a little further over.
+      name: "hack", aims: ["legs", "body", "arm"],
+      from: { yaw: [-1.4, -1.15], pitch: [0.25, 0.4], reach: [0.5, 0.6] },
+      to: { yaw: [1.0, 1.2], pitch: [-0.2, -0.05], reach: [1, 1] },
+      roll: [-1.15, -0.9], step: 0,
+      spin: { chance: 0.25, roll: [0.4, 0.9] },
+    },
+    {
+      // Over the top and down, stepping in: its jump comes down with this.
+      name: "chop", aims: ["legs", "body"],
+      from: { yaw: [-0.5, -0.3], pitch: [0.9, 1.1], reach: [0.3, 0.45] },
+      to: { yaw: [0, 0.1], pitch: [-0.8, -0.6], reach: [1, 1] },
+      roll: [0.15, 0.45], step: 1,
+      at: { min: 0.7 },
+    },
+    {
+      // Back across, low: at your shins from its left.
+      name: "backhand", aims: ["legs"],
+      from: { yaw: [1.1, 1.3], pitch: [0.05, 0.15], reach: [0.55, 0.65] },
+      to: { yaw: [-1.35, -1.2], pitch: [-0.4, -0.25], reach: [1, 1] },
+      roll: [-1.1, -0.85], step: 0,
+    },
+  ],
+  // Back off and it comes after you through the air, hatchet high.
+  leap: { cut: "chop", at: { min: 2.0, max: 3.4 }, memory: 3, rest: 3 },
+};
+
+// --- the ogre ----------------------------------------------------------------
+
+const OGRE_BUILD = makeBuild(1.36, 1.24);
+
+/**
+ * Two and a half metres of ogre with a club.
+ *
+ * It is slower than anything else here and it does not need to be quick:
+ * it weighs three and a half of you and swings from the hips, putting a
+ * good share of all that behind the club (see `heave`), and the club does
+ * not stop in you -- it comes back off you and you go where it was going
+ * (see `Weapon.rebound`). Caught square, you leave the floor and come down
+ * across the room. It cannot take your arm off. It does not have to.
+ *
+ * It swings up from the floor through you more than anything: the swing that
+ * sends you flying. It sweeps round at you and back, and brings the club
+ * down on you, all of which put you on the floor rather than across the
+ * room. What it never does is hurry, or get out of the way.
+ */
+export const OGRE: Species = {
+  key: "ogre",
+  name: "the ogre",
+  possessive: "the ogre's",
+  note: "huge and slow, and its club sends you flying",
+  build: OGRE_BUILD,
+  weapon: CLUB,
+  palette: { cloth: 0x5a4632, skin: 0x8d8a6a, mark: 0x9c3a26 },
+  power: sizedPower(OGRE_BUILD),
+  heave: 0.1,
+  aggression: 1.2,
+  // It lumbers: a long plant between steps, little waiting once it is close,
+  // nothing it gets out of the way of, no quick steps and no hops. It will
+  // put the club in the way of a swing it sees coming now and then, and
+  // what meets it is sent back where it came from.
+  footwork: {
+    patience: [0.35, 1.0], settle: 0.55, wariness: 0.05, retreat: 0.05, feint: 0,
+    rock: 0.08, give: 0.05, bait: 0, counter: 0.45,
+    hop: 0, parry: 0.15, lunge: 0, flinch: 0, taunt: 0.3, quick: 0, dart: 0.05,
+  },
+  // A sweep and back: two, and then the club has to come up again.
+  flow: { combo: 0.4, chain: 2 },
+  // Hurt, it comes on: no waiting, and it keeps swinging.
+  temper: {
+    below: 0.35,
+    aggression: 1.6,
+    footwork: { patience: [0.1, 0.4], parry: 0.05, taunt: 0 },
+    flow: { combo: 0.6, chain: 3 },
+  },
+  // It hefts the club up over its head and shakes it at you.
+  display: {
+    a: { yaw: 0.2, pitch: 1.05, reach: 0.55, roll: 0 },
+    b: { yaw: -0.15, pitch: 1.2, reach: 0.45, roll: 0 },
+    beats: 2, beat: 0.85,
+  },
+  range: { close: 0.75, strike: 1.0, far: 1.25 },
+  // Your middle, mostly -- the biggest thing to send across the room -- your
+  // head sometimes, your legs now and then, and never your arm.
+  aim: { head: 0.25, body: 0.6, arm: 0, legs: 0.15 },
+  cuts: [
+    {
+      // Round from its right, level, rising a little through you: it puts
+      // you on the floor, and whatever it catches it carries round with it.
+      name: "sweep", aims: ["body", "head"],
+      from: { yaw: [-1.5, -1.3], pitch: [-0.12, 0], reach: [0.55, 0.65] },
+      to: { yaw: [1.1, 1.3], pitch: [0.15, 0.25], reach: [1, 1] },
+      roll: [-0.2, 0.2], step: 0,
+      at: { min: 0.65 },
+      spin: { chance: 0.4, roll: [-0.2, 0.2] },
+    },
+    {
+      // Over the top and down: you go down, not away.
+      name: "smash", aims: ["head", "body"],
+      from: { yaw: [-0.5, -0.3], pitch: [0.95, 1.15], reach: [0.3, 0.4] },
+      to: { yaw: [0, 0.1], pitch: [-0.85, -0.65], reach: [1, 1] },
+      roll: [-0.2, 0.2], step: 1,
+      at: { min: 0.7 },
+    },
+    {
+      // Up off the floor from low down on its right, through whatever is in
+      // front of it: the one that sends you flying, up and back and down on
+      // your back metres away. Its favourite, twice over.
+      name: "upswing", aims: ["body", "legs"],
+      from: { yaw: [-0.75, -0.55], pitch: [-1.0, -0.85], reach: [0.55, 0.7] },
+      to: { yaw: [0.25, 0.45], pitch: [0.55, 0.75], reach: [1, 1] },
+      roll: [-0.2, 0.2], step: 1,
+      at: { min: 0.6 },
+      favour: 2.5,
+    },
+    {
+      // And back the other way, from its left.
+      name: "backhand", aims: ["body"],
+      from: { yaw: [1.15, 1.3], pitch: [0, 0.15], reach: [0.55, 0.65] },
+      to: { yaw: [-1.35, -1.2], pitch: [0.2, 0.35], reach: [1, 1] },
+      roll: [-0.2, 0.2], step: 0,
+      at: { min: 0.65 },
+    },
+  ],
+};
+
 export const SPECIES = {
   swordsman: SWORDSMAN,
   orc: ORC,
   goblin: GOBLIN,
+  kobold: KOBOLD,
+  ogre: OGRE,
 } as const;
 
 /** Health scales with the body's mass -- a bigger animal takes more killing. */

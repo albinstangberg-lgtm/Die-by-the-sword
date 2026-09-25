@@ -1226,13 +1226,13 @@ export class Arm {
    * grip does not flick between them. Only when that one would run past what
    * a forearm can turn is it given up for the nearest to square -- a regrip,
    * swung through at the twist's own speed. A point has no edge to present,
-   * and is held square.
+   * and is held square, and so is a club, which has none either.
    */
   private twistFor(
     bladeDir: THREE.Vector3, neutral: THREE.Vector3, steady: boolean, advance: boolean,
   ): number {
     const last = steady ? 0 : this.twistTarget;
-    if (this.weapon.bite === "point") return 0;
+    if (this.weapon.bite !== "edge") return 0;
 
     const asked = this._tb.copy(this._askedEdge)
       .addScaledVector(bladeDir, -this._askedEdge.dot(bladeDir));
@@ -2992,13 +2992,20 @@ export class Arm {
 
   /**
    * What the arm itself puts behind its weapon, kg: both segments while it is
-   * driving the weapon, nothing once it hangs limp or has been cut off. A
-   * loose weapon arrives on its own.
+   * driving the weapon, and whatever of its body the creature swinging it
+   * throws in after them (see `heave`) -- nothing once it hangs limp or has
+   * been cut off. A loose weapon arrives on its own.
    */
   get armBehind(): number {
     if (this.limp || this.severedAt !== null) return 0;
-    return this.upper.mass() + this.fore.mass();
+    return this.upper.mass() + this.fore.mass() + this.heave;
   }
+
+  /**
+   * How much of its body, kg, the creature this arm belongs to puts behind a
+   * blow as well as the arm: see `Species.heave`. Nothing, for most things.
+   */
+  heave = 0;
 
   /**
    * Rewrite a drive's push about one bone's own length.

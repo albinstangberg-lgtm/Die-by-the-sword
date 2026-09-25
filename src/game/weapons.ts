@@ -23,7 +23,8 @@ import * as THREE from "three";
  *
  *   `bite`        which of its own axes does the damage. A blade cuts with its
  *                 edge (local +Z); a spear stabs with its point, which is its
- *                 length (local +Y).
+ *                 length (local +Y); a club has neither, and lands the same
+ *                 whichever way round it is turned.
  *   `sweetSpot`   where along the weapon the leverage is: a sword's percussion
  *                 point, an axe's head, a spear's last fifteen centimetres.
  *   `minCutSpeed` how fast it has to be moving to do anything.
@@ -62,8 +63,24 @@ export interface Weapon {
   readonly span: number;
   /** Declared total, kg. The live figure can differ -- the panel scales the player's. */
   readonly mass: number;
-  /** Which axis does the damage: the edge (local +Z) or the point (local +Y). */
-  readonly bite: "edge" | "point";
+  /**
+   * Which axis does the damage: the edge (local +Z), the point (local +Y),
+   * or none -- a club lands as hard whichever way round it meets you, and
+   * crushes where a blade cuts: it breaks what it lands on and takes nothing
+   * off (see `Combatant.receive`).
+   */
+  readonly bite: "edge" | "point" | "blunt";
+  /**
+   * How much a blow from it bounces off what it lands on, 0..1: the
+   * restitution between the two. A blade goes in and stops, which is 0 and
+   * the default, and a body it lands on moves no faster than the two of them
+   * stuck together would (see balance.ts). A club's head does not go in -- it
+   * is a knot of ironbound oak -- and it comes back off a body, which hands
+   * over up to twice the momentum; and it does not stop in it either, so the
+   * body goes the way the club was going, up as well as along, if it was
+   * coming up. That is the whole of being sent flying.
+   */
+  readonly rebound?: number;
   /** Below this a hit shoves instead of wounding, m/s. */
   readonly minCutSpeed: number;
   /** Force per unit of contact, against a sword edge's 1.0. */
@@ -208,6 +225,10 @@ const BRASS = () => new THREE.MeshStandardMaterial({
 const ASH = () => new THREE.MeshStandardMaterial({ color: 0x6d5636, roughness: 0.85 });
 const IRON = () => new THREE.MeshStandardMaterial({
   color: 0x8e9299, roughness: 0.45, metalness: 0.7,
+});
+const OAK = () => new THREE.MeshStandardMaterial({ color: 0x5b4127, roughness: 0.92 });
+const BLACK_IRON = () => new THREE.MeshStandardMaterial({
+  color: 0x3d3b39, roughness: 0.55, metalness: 0.75,
 });
 
 /** Straight up the weapon's own axis. */
@@ -479,6 +500,223 @@ export const SPEAR: Weapon = {
   },
 };
 
+// --- the hatchet -------------------------------------------------------------
+
+const HATCHET_GRIP = 0.04;
+const HATCHET_HAFT_END = 0.4;
+const HATCHET_HEAD_LEN = 0.11;
+const HATCHET_TIP = HATCHET_HAFT_END + HATCHET_HEAD_LEN * 0.4;
+const HATCHET_SPAN = HATCHET_TIP - HATCHET_GRIP;
+const HATCHET_EDGE_OUT = 0.06;
+const HATCHET_HEAD_FROM = (HATCHET_HAFT_END - HATCHET_HEAD_LEN * 0.6 - HATCHET_GRIP) / HATCHET_SPAN;
+
+/**
+ * A kobold's hatchet: an axe small enough for a hand a third the size of
+ * yours, forty centimetres of haft and a wedge of iron on the end.
+ *
+ * The orc's axe made small, and so not the orc's axe at all: its head is a
+ * sixth of the weight at under half the distance, so it comes round in a
+ * flick -- quick to start and quick to stop -- and what arrives is a sharp
+ * little edge with no weight behind it. It cuts as well as a sword does and
+ * hurts about half as much, and it is always coming for your shins.
+ */
+export const HATCHET: Weapon = {
+  name: "hatchet",
+  note: "a little axe, quick in the hand, and sharp",
+  grip: HATCHET_GRIP,
+  span: HATCHET_SPAN,
+  mass: 0.7,
+  bite: "edge",
+  // Small and keen: it opens a cut a little slower than a sword does, and a
+  // short, thin edge driven into a shin puts all of a small blow into a
+  // small cut.
+  minCutSpeed: 1.8,
+  sharpness: 1.3,
+  parts: [
+    {
+      shape: "capsule", halfThick: 0.014, halfLen: HATCHET_HAFT_END / 2, halfWidth: 0.014,
+      at: HATCHET_HAFT_END / 2, mass: 0.25,
+    },
+    {
+      shape: "box", halfThick: 0.011, halfLen: HATCHET_HEAD_LEN / 2, halfWidth: HATCHET_EDGE_OUT / 2,
+      at: HATCHET_HAFT_END - HATCHET_HEAD_LEN * 0.1, atZ: HATCHET_EDGE_OUT / 2, mass: 0.45,
+    },
+  ],
+  sweetSpot(along) {
+    // The head, as on any axe.
+    return Math.max(0, 1 - ((along - 0.92) / 0.22) ** 2);
+  },
+  samplePoint(t, out) {
+    const y = HATCHET_GRIP + HATCHET_SPAN * t;
+    const lead = t <= HATCHET_HEAD_FROM
+      ? 0
+      : ((t - HATCHET_HEAD_FROM) / (1 - HATCHET_HEAD_FROM)) * HATCHET_EDGE_OUT;
+    return out.set(0, y, lead);
+  },
+  build() {
+    const g = new THREE.Group();
+    const haft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.012, 0.015, HATCHET_HAFT_END + 0.03, 8), ASH());
+    haft.position.y = HATCHET_HAFT_END / 2;
+    haft.castShadow = true;
+    g.add(haft);
+
+    // The head: a wedge that flares toward its edge, bearded a little below.
+    const head = new THREE.Mesh(axeHead(HATCHET_HEAD_LEN, HATCHET_EDGE_OUT, 0.022, 0.25), IRON());
+    head.position.y = HATCHET_HAFT_END - HATCHET_HEAD_LEN * 0.1;
+    head.castShadow = true;
+    g.add(head);
+    const bit = new THREE.Mesh(edgeStrip(HATCHET_HEAD_LEN * 1.3, 0.012), EDGE());
+    bit.position.set(0, HATCHET_HAFT_END - HATCHET_HEAD_LEN * 0.15, HATCHET_EDGE_OUT + 0.002);
+    g.add(bit);
+
+    // A rag of leather wound round the grip.
+    const wrap = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.1, 8), LEATHER());
+    wrap.position.y = 0.03;
+    g.add(wrap);
+    return g;
+  },
+};
+
+// --- the club ------------------------------------------------------------------
+
+const CLUB_GRIP = 0.1;
+const CLUB_HANDLE_END = 0.72;
+const CLUB_HEAD_LEN = 0.5;
+const CLUB_TIP = CLUB_HANDLE_END + CLUB_HEAD_LEN;
+const CLUB_SPAN = CLUB_TIP - CLUB_GRIP;
+const CLUB_HEAD_R = 0.1;
+
+/**
+ * An ogre's club: a length of oak as thick as your thigh at the head, bound
+ * with iron and studded, and six kilos of it.
+ *
+ * It does not cut. Nothing about it is sharp and nothing about it has to be:
+ * it is swung by something that weighs three and a half of you and puts its
+ * body into it (see `Species.heave`), and when it lands it does not go in
+ * and stop, as a blade does -- it comes back off you, and you go the way it
+ * was going (see `rebound`). Caught square by it, you leave the floor.
+ *
+ * A man can lift it, and swing it, slowly: its weight is out at the head, a
+ * metre from the hand, and it is half again as hard to get going as the
+ * orc's axe.
+ */
+export const CLUB: Weapon = {
+  name: "club",
+  note: "no edge at all, and it sends you flying",
+  grip: CLUB_GRIP,
+  span: CLUB_SPAN,
+  mass: 6,
+  bite: "blunt",
+  rebound: 0.4,
+  // A slow club only pushes; one coming at walking pace already bruises.
+  minCutSpeed: 2.2,
+  // Its blow is spread over a hand's breadth of you rather than a line, but
+  // there is so much of it that it breaks what it lands on anyway.
+  sharpness: 0.9,
+  parts: [
+    {
+      shape: "capsule", halfThick: 0.032, halfLen: CLUB_HANDLE_END / 2 + 0.06, halfWidth: 0.032,
+      at: CLUB_HANDLE_END / 2 - 0.06, mass: 1.4,
+    },
+    {
+      shape: "capsule", halfThick: CLUB_HEAD_R, halfLen: CLUB_HEAD_LEN / 2, halfWidth: CLUB_HEAD_R,
+      at: CLUB_HANDLE_END + CLUB_HEAD_LEN / 2, mass: 4.6,
+    },
+  ],
+  sweetSpot(along) {
+    // The head, and most of all its far half.
+    const x = (along - 0.78) / 0.32;
+    return Math.max(0, 1 - x * x);
+  },
+  samplePoint: straightLine(CLUB_GRIP, CLUB_SPAN),
+  build() {
+    const g = new THREE.Group();
+    const oak = OAK();
+    const iron = BLACK_IRON();
+
+    // The handle, swelling into the head: one turned profile.
+    const profile: THREE.Vector2[] = [];
+    const R = CLUB_HEAD_R;
+    const points: [number, number][] = [
+      [0.0, -0.13], [0.03, -0.13], [0.036, -0.1], [0.032, 0.1], [0.034, 0.45],
+      [0.045, CLUB_HANDLE_END - 0.05], [R * 0.78, CLUB_HANDLE_END + 0.06],
+      [R * 1.0, CLUB_HANDLE_END + 0.2], [R * 1.06, CLUB_TIP - 0.14], [R * 0.95, CLUB_TIP - 0.04],
+      [R * 0.55, CLUB_TIP + 0.02], [0.0, CLUB_TIP + 0.035],
+    ];
+    for (const [r, y] of points) profile.push(new THREE.Vector2(r, y));
+    const body = new THREE.Mesh(new THREE.LatheGeometry(profile, 14), oak);
+    body.castShadow = true;
+    g.add(body);
+
+    // Iron bands round the head, and studs driven through them.
+    for (const [y, r] of [[CLUB_HANDLE_END + 0.12, R * 0.93], [CLUB_TIP - 0.1, R * 1.07]] as const) {
+      const band = new THREE.Mesh(new THREE.TorusGeometry(r, 0.012, 6, 18), iron);
+      band.rotation.x = Math.PI / 2;
+      band.position.y = y;
+      g.add(band);
+    }
+    const stud = new THREE.ConeGeometry(0.018, 0.045, 5);
+    for (let i = 0; i < 14; i++) {
+      const a = i * 2.39996;
+      const y = CLUB_HANDLE_END + 0.16 + (i / 13) * (CLUB_HEAD_LEN - 0.24);
+      const r = R * (0.96 + 0.1 * Math.sin((i / 13) * Math.PI));
+      const m = new THREE.Mesh(stud, iron);
+      m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+      m.lookAt(m.position.x * 3, y, m.position.z * 3);
+      m.rotateX(Math.PI / 2);
+      m.castShadow = true;
+      g.add(m);
+    }
+    // A thong through the butt, for the wrist.
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.2, 10), LEATHER());
+    grip.position.y = 0.0;
+    g.add(grip);
+    return g;
+  },
+};
+
+/**
+ * An axe head seen from its side, as a solid: a wedge that flares from the
+ * eye round the haft to the edge, `len` tall at the edge and `out` from the
+ * haft to it, `thick` through at the eye and a few millimetres at the edge,
+ * and bearded -- hanging lower at the edge than at the eye -- by `beard` of
+ * its height. Local +Y up the haft, +Z out to the edge.
+ */
+function axeHead(len: number, out: number, thick: number, beard: number): THREE.BufferGeometry {
+  const eye = len * 0.45;
+  const shape = new THREE.Shape();
+  shape.moveTo(-thick * 0.8, -eye / 2);
+  shape.lineTo(out * 0.35, -eye / 2);
+  shape.quadraticCurveTo(out * 0.65, -eye / 2, out, -len / 2 - len * beard);
+  shape.quadraticCurveTo(out * 1.08, 0, out, len / 2);
+  shape.quadraticCurveTo(out * 0.55, eye / 2 + len * 0.05, out * 0.3, eye / 2);
+  shape.lineTo(-thick * 0.8, eye / 2);
+  shape.quadraticCurveTo(-thick * 1.4, 0, -thick * 0.8, -eye / 2);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thick, bevelEnabled: true, bevelThickness: thick * 0.25, bevelSize: thick * 0.2,
+    bevelSegments: 1, curveSegments: 6,
+  });
+  // Extruded along +Z from the shape in X-Y; turn it so the shape's X is the
+  // weapon's +Z, and centre it on the haft.
+  geo.translate(0, 0, -thick / 2);
+  geo.rotateY(-Math.PI / 2);
+  // Thin toward the edge: squeeze each vertex's thickness by how far out it is.
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const z = pos.getZ(i);
+    const k = 1 - 0.75 * Math.min(1, Math.max(0, z / out));
+    pos.setX(i, pos.getX(i) * k);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** A bright sliver along an edge, so which way it faces reads from across a room. */
+function edgeStrip(len: number, width: number): THREE.BufferGeometry {
+  return new THREE.BoxGeometry(0.004, len, width);
+}
+
 /**
  * Every weapon there is. Whatever carries one can have it taken off it, dead
  * or with its hand cut off, and it can be taken up and fought with (see
@@ -487,4 +725,4 @@ export const SPEAR: Weapon = {
  * anything in the bestiary carries -- off whatever carries it and swings it
  * at the dummy, so a new one is held to that the day it is added.
  */
-export const WEAPONS = { sword: SWORD, axe: AXE, spear: SPEAR } as const;
+export const WEAPONS = { sword: SWORD, axe: AXE, spear: SPEAR, hatchet: HATCHET, club: CLUB } as const;

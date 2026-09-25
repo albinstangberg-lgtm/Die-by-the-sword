@@ -723,6 +723,14 @@ export class Ai implements ArmInput {
    * cuts in, so the distance it keeps does not depend on its last swing.
    */
   private readonly refRoll: number;
+  /**
+   * The part of you its reach is measured at: whichever of your head, your
+   * middle and your legs it goes for most. Your middle, for nearly everything.
+   * Measured at your chest, a kobold's arm reaches up for it and has half a
+   * metre in front of it, and it stood on your toes to swing -- and hacked
+   * at you on the way back as much as on the way through.
+   */
+  private readonly reachAim: Aim;
 
   /**
    * Pin the shape a swing is thrown with, the part of you it goes for, or
@@ -769,6 +777,9 @@ export class Ai implements ArmInput {
   /** Where it is looking: the eyes of whatever it has seen. */
   private readonly _gaze = new THREE.Vector3();
   private readonly _probe = new THREE.Vector3();
+  private readonly _reachAt = new THREE.Vector3();
+  /** The pitch its reach was last measured at, when that is not your middle's. */
+  private reachPitch = 0;
   private readonly _mark = new THREE.Vector3();
   /** The part of you a swing is aimed at, and its own shoulder, for bearings. */
   private readonly _part = new THREE.Vector3();
@@ -955,6 +966,9 @@ export class Ai implements ArmInput {
   constructor(readonly species: Species) {
     const [lo, hi] = species.cuts[0].roll;
     this.refRoll = (lo + hi) / 2;
+    const most = (["body", "head", "legs"] as const)
+      .reduce((a, b) => (species.aim[b] > species.aim[a] ? b : a));
+    this.reachAim = most;
     this.calm = { footwork: species.footwork, flow: species.flow, aggression: species.aggression };
     const temper = species.temper;
     this.hurt = temper === undefined ? this.calm : {
@@ -2882,7 +2896,16 @@ export class Ai implements ArmInput {
       }
     }
 
-    arm.probeStrike(this.level.yaw, this.level.pitch, 1, this.refRoll, t, this._probe);
+    // How far its weapon works, at what it goes for most.
+    let reachPitch = this.level.pitch;
+    if (this.reachAim !== "body" && this.state !== "strike") {
+      const at = this.target(foe, this.reachAim, this._reachAt);
+      reachPitch = point ? this.level.pitch : arm.solvePitchForHeight(at.y, 0, 1, this.refRoll, t);
+      this.reachPitch = reachPitch;
+    } else if (this.reachAim !== "body") {
+      reachPitch = this.reachPitch;
+    }
+    arm.probeStrike(this.level.yaw, reachPitch, 1, this.refRoll, t, this._probe);
     this.strikeReach = Math.max(
       0.2, Math.hypot(this._probe.x - this._self.x, this._probe.z - this._self.z));
   }

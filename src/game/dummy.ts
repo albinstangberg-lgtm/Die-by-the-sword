@@ -367,8 +367,9 @@ export class Dummy {
 
     const amount = cutDamage(impact);
     // The torso hangs from a rope rather than a joint, so there is nothing to
-    // cut it off at. Damage still registers -- it just cannot sever.
-    if (amount > 0 && (limb.joint === null || limb.severed)) {
+    // cut it off at, and a club has no edge to cut with. Damage still
+    // registers -- it just cannot sever.
+    if (amount > 0 && (limb.joint === null || limb.severed || impact.weapon.bite === "blunt")) {
       this.onDamage?.(limb, amount);
     } else if (amount > 0) {
       limb.integrity -= amount;
