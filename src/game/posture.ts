@@ -190,14 +190,37 @@ const BREATH_PERIOD = 3.4;
 const BREATH_LEAN = 0.014;
 const BREATH_LIFT = 0.005;
 
+/**
+ * A sidestep is a shuffle, not a walk turned on its side: the leading leg
+ * steps out and the trailing one comes in after it, so the feet go wide and
+ * narrow and never cross. This is how far each leg swings out and back,
+ * radians: from straight under its hip to twice this out to its own side.
+ * The legs' (`Fighter.poseLegs`), and the trunk's too, because a body whose
+ * feet are that far apart has to come down between them.
+ */
+export const SIDE_SWING = 0.18;
+/**
+ * Where a stride lifts the foot, as a phase offset: a walk forward bends the
+ * knee early, pushing off behind; stepping back or to the side lifts it
+ * through the middle of the swing. See `Fighter.poseLegs`.
+ */
+export const LIFT_AHEAD = 0.6;
+export const LIFT_MIDDLE = Math.PI / 2;
+
 /** How the legs are going, for the trunk to go with them. */
 export interface Gait {
   /** The stride phase: the left leg's, radians. See `Fighter.poseLegs`. */
   phase: number;
   /** How much of a stride the legs are showing, 0 standing to 1 walking. */
   amount: number;
-  /** Which way the body is going: 1 forward, -1 back, 0 sideways. */
+  /**
+   * Which way the body is going, as the legs are carrying it: `forward` 1
+   * ahead and -1 back, `side` 1 to the right and -1 to the left, relative to
+   * the hips. Together no longer than 1, and shorter while the legs are
+   * coming round from one way to another.
+   */
   forward: number;
+  side: number;
 }
 
 // --- gaze ---------------------------------------------------------------------
@@ -511,19 +534,34 @@ export class Posture {
     const w = gait ? gait.amount * Math.min(1, k) : 0;
     const phase = gait?.phase ?? 0;
     const sin = Math.sin(phase);
+    const f = gait?.forward ?? 0;
+    const s = gait?.side ?? 0;
     // The left leg forward carries the left hip forward, which turns the hips
     // right; the chest turns the other way, as arms swing against legs.
-    pose.hipSwing = -HIP_SWING * sin * w;
-    pose.chestSwing = CHEST_SWING * sin * w;
-    // A leg is in the air over the half of its cycle its knee is bending
-    // (`Fighter.poseLegs`), and its hip drops while it is.
-    pose.roll = -HIP_ROLL * Math.sin(phase - 0.6) * w;
+    // Backing up, the left leg is forward on the other half of the stride,
+    // and stepping sideways neither leg is.
+    pose.hipSwing = -HIP_SWING * sin * w * f;
+    pose.chestSwing = CHEST_SWING * sin * w * f;
+    // A leg is in the air over the half of its cycle its foot is lifting
+    // (`Fighter.poseLegs`), and its hip drops while it is. Walking forward
+    // that is early in the swing; any other way, the middle of it.
+    const ahead = f > 0 ? f * f : 0;
+    const other = f < 0 ? f * f + s * s : s * s;
+    pose.roll = -HIP_ROLL * w
+      * (ahead * Math.sin(phase - LIFT_AHEAD) + other * Math.sin(phase - LIFT_MIDDLE));
     // Lowest with the feet furthest apart, standing tall as they pass. Only
     // well into a walk: near a straight leg the knee bends as the square root
     // of the drop, so the last millimetre of a dip fading out after the feet
     // stop is a tenth of a radian of knee on someone standing still.
-    pose.dip = STRIDE_DIP * this.build.scale * sin * sin * w * smoothstep(0.2, 0.6, w);
-    const f = gait?.forward ?? 0;
+    //
+    // Sidestepping, the feet are furthest apart once a stride, each leg out
+    // twice as far as it swings. The body comes down as far as that asks of
+    // a straight leg and stays there -- on bent knees that straighten as the
+    // feet go wide -- rather than bobbing once a stride.
+    const legs = this.build.segment.thigh.length + this.build.segment.shin.length;
+    const wide = legs * (1 - Math.cos(2 * SIDE_SWING));
+    pose.dip = (STRIDE_DIP * this.build.scale * sin * sin * (f * f) + wide * s * s)
+      * w * smoothstep(0.2, 0.6, w);
     pose.lean += (f >= 0 ? WALK_LEAN * f : -BACK_LEAN * f) * w;
 
     // And breathing: all the time, less of it seen under a walk.

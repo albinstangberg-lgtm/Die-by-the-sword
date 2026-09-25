@@ -2200,6 +2200,169 @@ async function stoppingPutsTheFeetDown(): Promise<void> {
     `${(lift * 100).toFixed(1)}cm between the feet and knees within ${bend.toFixed(2)} rad`);
 }
 
+/**
+ * Each foot's sole -- the far end of its shin -- in the world and in the
+ * hull's own frame (+X right, -Z ahead), left then right, as drawn this step.
+ */
+function soles(f: Fighter): { world: THREE.Vector3; local: THREE.Vector3 }[] {
+  f.applyPose(1);
+  return f.pelvis.children
+    .filter((c) => c.type === "Object3D" && c !== f.chest)
+    .map((hipPivot) => {
+      const knee = hipPivot.children.find((c) => c.type === "Object3D")!;
+      const shin = knee.children[0];
+      const world = knee.localToWorld(new THREE.Vector3(0, shin.position.y * 2, 0));
+      return { world, local: f.mesh.worldToLocal(world.clone()) };
+    });
+}
+
+async function turningOnTheSpotSteps(): Promise<void> {
+  console.log("\nturning on the spot, the feet step round after the hips");
+  // A and D used to turn the body over feet that turned with it, flat on the
+  // floor: a figure on a turntable. The feet stay where they are put now --
+  // pointing where they pointed, standing where they stood -- and step round
+  // after the hips, one and then the other, for as long as the turn goes on.
+  const rig = await buildRig();
+  rig.step(60);
+  const f = rig.fighter;
+  const floor = Math.min(...soles(f).map((s) => s.world.y));
+
+  const steps = [0, 0];
+  let wasUp = [false, false];
+  let bothUp = false;
+  let skate = 0;
+  let swivel = 0;
+  let twist = 0;
+  let first = 0;
+  let high = 0;
+  const put: (THREE.Vector3 | null)[] = [null, null];
+  const aim: (number | null)[] = [null, null];
+  // Two seconds of A, from standing.
+  for (let i = 0; i < 120; i++) {
+    rig.step(1, { ...NO_KEYS, turnLeft: true });
+    const feet = f.feet;
+    const at = soles(f);
+    const facing = f.yaw + f.posture.pose.pelvis;
+    feet.forEach((foot, k) => {
+      if (foot.stepping && !wasUp[k]) steps[k]++;
+      first = Math.max(first, Math.abs(foot.yaw - facing));
+      if (foot.stepping) {
+        high = Math.max(high, at[k].world.y - floor);
+        put[k] = null;
+        aim[k] = null;
+        return;
+      }
+      // Planted: from one step to the next it goes nowhere. The first round
+      // is left out, while the turn gets going.
+      if (put[k] === null || i < 40) {
+        put[k] = at[k].world.clone();
+        aim[k] = foot.yaw;
+        return;
+      }
+      skate = Math.max(skate, Math.hypot(at[k].world.x - put[k]!.x, at[k].world.z - put[k]!.z));
+      swivel = Math.max(swivel, Math.abs(foot.yaw - aim[k]!));
+      twist = Math.max(twist, Math.abs(foot.yaw - facing));
+    });
+    if (feet[0].stepping && feet[1].stepping) bothUp = true;
+    wasUp = feet.map((foot) => foot.stepping);
+  }
+  // Let go: the feet come round square under the hips.
+  rig.step(60);
+  const facing = f.yaw + f.posture.pose.pelvis;
+  const off = Math.max(...f.feet.map((foot) => Math.abs(foot.yaw - facing)));
+
+  check("held on the spot, the feet step round after the body, one and then the other",
+    steps[0] >= 3 && steps[1] >= 3 && Math.abs(steps[0] - steps[1]) <= 1 && !bothUp,
+    `${steps[0]} steps left, ${steps[1]} right in two seconds, ${bothUp ? "both up at once" : "one at a time"}`);
+  check("a stepping foot comes up off the floor where you can see it", high > 0.04,
+    `up to ${(high * 100).toFixed(1)} cm`);
+  check("a planted foot stays where it was put while the hips go round over it",
+    skate < 0.01 && swivel < 1e-6,
+    `moved ${(skate * 100).toFixed(2)} cm and turned ${swivel.toFixed(4)} rad on the floor`);
+  // From standing, both feet start behind the turn, and the second waits out
+  // the whole of the first step: that is the most a leg is ever twisted, and
+  // it must still be short of where the hip stops it and the foot is dragged.
+  check("the feet keep up: no leg twisted round in its hip, not even at the start",
+    twist < 0.3 && first < 0.699,
+    `at most ${twist.toFixed(2)} rad off the hips once going, ${first.toFixed(2)} waiting on the first step`);
+  check("let go, the feet come square under the hips", off < 0.2,
+    `within ${off.toFixed(2)} rad`);
+}
+
+async function theLegsGoTheWayTheBodyDoes(): Promise<void> {
+  console.log("\nthe legs step the way the body goes: sideways, and back");
+  // The stride used to be the same forward walk whichever way the keys sent
+  // the body: a sidestep slid along on legs walking ahead, and backing off
+  // was a moonwalk. A foot in the air should be going the way the body is.
+  // Measured in the hull's frame, where a foot on the floor goes backward
+  // against the way of going and a foot in the air goes with it -- the
+  // higher of the two, since a straight leg swung out lifts its foot a
+  // little at either end of a stride, which says nothing.
+  const going = async (keys: Partial<Keys>) => {
+    const rig = await buildRig();
+    rig.step(60);
+    const f = rig.fighter;
+    const floor = Math.min(...soles(f).map((s) => s.world.y));
+    let was = soles(f);
+    let withIt = 0;
+    let againstIt = 0;
+    let narrow = Infinity;
+    let wide = -Infinity;
+    let apart = 0;
+    let lowest = 0;
+    let hips = 0;
+    for (let i = 0; i < 90; i++) {
+      rig.step(1, { ...NO_KEYS, ...keys });
+      const now = soles(f);
+      if (i >= 20) {
+        const way = new THREE.Vector3(
+          (keys.right ? 1 : 0) - (keys.left ? 1 : 0), 0,
+          (keys.back ? 1 : 0) - (keys.forward ? 1 : 0)).normalize();
+        const up = now[0].world.y > now[1].world.y ? 0 : 1;
+        if (now[up].world.y - Math.max(floor, now[1 - up].world.y) > 0.02) {
+          const along = now[up].local.clone().sub(was[up].local).dot(way);
+          if (along > 0) withIt += along; else againstIt -= along;
+        }
+        const gap = now[1].local.x - now[0].local.x;
+        narrow = Math.min(narrow, gap);
+        wide = Math.max(wide, gap);
+        apart = Math.max(apart, Math.abs(now[1].local.z - now[0].local.z));
+        lowest = Math.max(lowest, Math.min(now[0].world.y, now[1].world.y) - floor);
+        hips = Math.max(hips, Math.abs(f.posture.pose.hipSwing));
+      }
+      was = now;
+    }
+    return { withIt, againstIt, narrow, wide, apart, lowest, hips };
+  };
+
+  const right = await going({ right: true });
+  const left = await going({ left: true });
+  check("sidestepping, a lifted foot goes the way the body is going",
+    right.withIt > 5 * right.againstIt && left.withIt > 5 * left.againstIt,
+    `right ${(right.withIt * 100).toFixed(0)} cm with it, ${(right.againstIt * 100).toFixed(0)} against; ` +
+    `left ${(left.withIt * 100).toFixed(0)} with, ${(left.againstIt * 100).toFixed(0)} against`);
+  check("the feet go wide and come back together, and never cross",
+    Math.min(right.narrow, left.narrow) > 0.1 && Math.min(right.wide, left.wide) > 0.4,
+    `between ${(Math.min(right.narrow, left.narrow) * 100).toFixed(0)} and ` +
+    `${(Math.min(right.wide, left.wide) * 100).toFixed(0)} cm apart`);
+  check("side by side, not one ahead of the other, and the hips square",
+    Math.max(right.apart, left.apart) < 0.12 && Math.max(right.hips, left.hips) < 0.02,
+    `at most ${(Math.max(right.apart, left.apart) * 100).toFixed(1)} cm ahead of each other; ` +
+    `the hips swing ${Math.max(right.hips, left.hips).toFixed(3)} rad`);
+  check("and one foot is always on the floor", Math.max(right.lowest, left.lowest) < 0.02,
+    `the lower foot at most ${(Math.max(right.lowest, left.lowest) * 100).toFixed(1)} cm up`);
+
+  // Walking ahead the knee bends early, pushing off behind, so the foot is
+  // already coming up while it is still going back: most of the way, not
+  // all of it. Backing up it comes up on the way back, and only then.
+  const ahead = await going({ forward: true });
+  const back = await going({ back: true });
+  check("backing up, the foot in the air goes back, as walking ahead it goes forward",
+    ahead.withIt > ahead.againstIt && back.withIt > 5 * back.againstIt,
+    `ahead ${(ahead.withIt * 100).toFixed(0)} cm with it, ${(ahead.againstIt * 100).toFixed(0)} against; ` +
+    `back ${(back.withIt * 100).toFixed(0)} with, ${(back.againstIt * 100).toFixed(0)} against`);
+}
+
 async function theBodyAgreesWithItsProbes(): Promise<void> {
   console.log("\nthe body the probes assume is the body you get");
   // An opponent aims by asking the arm's kinematic probes where its weapon
@@ -4527,8 +4690,8 @@ async function aShieldStopsABlade(): Promise<void> {
 async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
   console.log("\na shield on your back stops a cut from behind, and the blow still lands its weight");
   const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
-  const run = async (shield: boolean, back = true) => {
-    const at = spawnFor(SWORDSMAN, 0, SPAWN.z - 1.1);
+  const run = async (shield: boolean, back = true, aside = 0) => {
+    const at = spawnFor(SWORDSMAN, aside, SPAWN.z - 1.1);
     const rig = await buildRig({}, SWORDSMAN, at);
     rig.foe.fighter.yaw = back ? 0 : Math.PI;  // its back to you, or its front
     rig.holdFoe();
@@ -4553,7 +4716,7 @@ async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
     });
     // Level, across the shoulder blades, where the shield hangs.
     const high = SWORDSMAN.build.standing.waist + SLUNG.y * SWORDSMAN.build.scale;
-    const target = new THREE.Vector3(0, high, at.z);
+    const target = new THREE.Vector3(at.x, high, at.z);
     for (let swings = 0; swings < 12; swings++) throwForehand(rig, target, { level: true });
     return { blocks, damage, weight, slung: rig.foe.shieldOnBack };
   };
@@ -4568,13 +4731,27 @@ async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
   check("the weight of a blow stopped on the back still arrives", held.weight > 0,
     `the hardest moved the body ${held.weight.toFixed(2)} m/s`);
   // The point of a cut to the front can reach round the hips and touch it
-  // from inside: that is no block, and it spares the front nothing.
-  const front = await run(true, false);
-  const bareFront = await run(false, false);
+  // from inside: that is no block, and it spares the front nothing. What
+  // twelve cuts come to on a body each of them knocks about is chaotic,
+  // though: stood a centimetre or even a millimetre to one side, the same
+  // twelve land anything from five to sixty, with or without the shield.
+  // So the front is cut from nine places a centimetre apart, and it is what
+  // they come to together that is compared -- still at most one cut in
+  // twelve caught on the rim.
+  const front = { blocks: 0, damage: 0, slung: true };
+  let bareFront = 0;
+  const places = [-0.04, -0.03, -0.02, -0.01, 0, 0.01, 0.02, 0.03, 0.04];
+  for (const aside of places) {
+    const held = await run(true, false, aside);
+    front.blocks += held.blocks;
+    front.damage += held.damage;
+    front.slung &&= held.slung;
+    bareFront += (await run(false, false, aside)).damage;
+  }
   check("and it guards the back only: cuts to the front land as hard with it there as without",
-    front.slung && front.blocks <= 1 && front.damage > bareFront.damage * 0.7,
-    `${front.blocks} blocked; ${front.damage.toFixed(1)} damage to the front with a shield on the back, `
-      + `${bareFront.damage.toFixed(1)} without`);
+    front.slung && front.blocks <= places.length && front.damage > bareFront * 0.7,
+    `${front.blocks} blocked in ${places.length * 12}; ${front.damage.toFixed(1)} damage to the front `
+      + `with a shield on the back, ${bareFront.toFixed(1)} without`);
 }
 
 async function theShieldArmIsSteered(): Promise<void> {
@@ -5538,6 +5715,8 @@ async function run(): Promise<void> {
   await theFeetStayPlantedThenStep();
   await theKneesBendLikeAPersons();
   await stoppingPutsTheFeetDown();
+  await turningOnTheSpotSteps();
+  await theLegsGoTheWayTheBodyDoes();
   await theBodyAgreesWithItsProbes();
   await thePostureIsInterpolated();
 

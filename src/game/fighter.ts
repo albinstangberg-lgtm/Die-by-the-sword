@@ -9,7 +9,9 @@ import {
   stumpCap,
 } from "./skin";
 import type { WoundEnd } from "./blood";
-import { CROUCH_DROP, Pose, Posture, type Gait, type PostureDrive } from "./posture";
+import {
+  CROUCH_DROP, LIFT_AHEAD, LIFT_MIDDLE, Pose, Posture, SIDE_SWING, type Gait, type PostureDrive,
+} from "./posture";
 import { wrap, type Capsule } from "./clearance";
 import { clamp, smoothstep } from "./motion";
 import { emptyBlow, judgeBlow, type Blow } from "./balance";
@@ -85,6 +87,27 @@ const UP = new THREE.Vector3(0, 1, 0);
 /** Stride timing: radians of hip swing per metre travelled. */
 const STRIDE = 2.6;
 const STRIDE_SWING = 0.55;
+/**
+ * The stride swings the legs the way the body is going, not always ahead:
+ * backing up, the foot that lifts goes back, and sideways a stride is a
+ * shuffle (`SIDE_SWING`) -- a shorter step, so more of them to the metre.
+ * They used to walk forward whichever way the body went, so a sidestep slid
+ * along on legs walking ahead and backing off was a moonwalk.
+ */
+const SIDE_STRIDE = 6;
+/**
+ * How high a step back or to the side lifts the foot: the hip's flexion at
+ * the top of it, radians. The knee takes twice as much, which lifts the foot
+ * straight up under the hip rather than out in front of it.
+ */
+const SIDE_LIFT = 0.36;
+/**
+ * How fast the stride comes round to a new way of going, per second. Turned
+ * from ahead to back, the pace goes through a standstill and the way it is
+ * going flips there all at once; the legs take a tenth of a second over it,
+ * through standing, rather than jumping from one swing to its mirror.
+ */
+const WAY_RATE = 14;
 /**
  * How fast a stride comes in once the feet are moving, and goes once they
  * stop, per second.
@@ -186,10 +209,12 @@ const STOOP_SINK = 1.4;
 //
 // Standing still, the feet stay where they are while the hips turn over them
 // -- the thighs rotating in their sockets, as they do -- and only when the
-// hips have wound too far round does a foot pick up and step. Walking,
-// turning on the spot or in the air, every stride replants them anyway and
-// they simply follow the hips. None of this is physical and none of it is on
-// the arm's side of anything: the feet can never hold the body back.
+// hips have wound too far round does a foot pick up and step. Turning on the
+// spot is the same thing kept up: the hips go round over planted feet and
+// the feet step after them, one and then the other, as quick as the turn
+// asks. Walking, or in the air, every stride replants them anyway and they
+// simply follow the hips. None of this is physical and none of it is on the
+// arm's side of anything: the feet can never hold the body back.
 
 /**
  * What a cut leg takes off a body at its worst: this much of its walking pace,
@@ -207,11 +232,53 @@ const PLANT_MAX = 0.7;
 const STEP_TIME = 0.22;
 /** A stepping foot lands a little past square: the feet lead a turn. */
 const STEP_LEAD = 0.25;
-/** A step's knee lift and hip flex at its height, radians. */
-const STEP_KNEE = 0.5;
+/**
+ * A step's hip flex and knee lift at its height, radians: the knee twice
+ * the hip, so the foot comes straight up under it.
+ */
 const STEP_HIP = 0.28;
+const STEP_KNEE = 0.56;
+/**
+ * Turning on the spot, a foot has further to go round each step, and goes
+ * up higher to get there: this much higher at `TURN_LIFT_AT` rad/s.
+ */
+const TURN_LIFT = 1.45;
+const TURN_LIFT_AT = 2;
 /** How fast feet that are being replanted anyway catch up with the hips. */
 const FOLLOW_RATE = 12;
+/**
+ * Turning on the spot, how far the hips come round over one step, radians:
+ * what sets how quick the steps are. A foot lands as far ahead of the hips
+ * as they will have gone past it by the time the other has stepped too, so
+ * each leg twists in its hip no more one way than the other.
+ */
+const TURN_STEP = 0.45;
+/**
+ * No step is quicker than this, seconds. On its heel a body comes round too
+ * fast for even these, and the planted foot turns on the floor under it.
+ */
+const STEP_QUICK = 0.13;
+/** How fast the feet's sense of the turn catches up with the hips, per second. */
+const SPIN_RATE = 40;
+/**
+ * A body that faces this much further round in one step than it did, radians,
+ * was put there -- by a reset, or by whatever set its facing outright -- not
+ * turned there: the quickest heel turn, a goblin's, goes round a third of
+ * this in a step. Its feet are put down square under it, rather than read as
+ * a turn at a hundred radians a second and stepped after.
+ */
+const PUT_ROUND = 0.5;
+/** Slower than this, rad/s, the hips are not turning: they are settling. */
+const SPIN_MIN = 0.4;
+/**
+ * A planted foot stays where it was put, not just the way it was pointed:
+ * the hip goes round over it, and the leg leans out to it. This is how far,
+ * metres at human scale, it may be left from under its hip before it steps
+ * back under it -- a body shoved about by its own arm -- and past this it is
+ * dragged along the floor instead.
+ */
+const PLANT_REACH = 0.12;
+const PLANT_DRAG = 0.24;
 
 // --- being hit ----------------------------------------------------------------
 //
@@ -370,25 +437,57 @@ export class Fighter {
     sign: number;
     hip: number; knee: number;
     prevHip: number; prevKnee: number;
+    /** How far the leg is swung out to the side, radians, positive to the right, and last step's. */
+    roll: number; prevRoll: number;
     /** Which way the foot points, WORLD yaw: planted means this holds still. */
     foot: number;
     /** The leg's turn in the hip socket, relative to the pelvis, and last step's. */
     turn: number; prevTurn: number;
+    /**
+     * Where the foot is on the floor, as world metres from straight under
+     * its hip, horizontal: planted, the hip moves and the foot does not.
+     */
+    slip: THREE.Vector3;
+    /** Where the hip was last step, world. */
+    hipWas: THREE.Vector3;
     /** Progress through a step, 0..1, or -1 when the foot is planted. */
     step: number;
-    stepFrom: number; stepTo: number;
+    /** Where the step set off from: which way the foot pointed, and where it stood, world. */
+    stepFrom: number;
+    stepAt: THREE.Vector3;
+    /**
+     * Which way round it is going, -1, 0 or 1 -- 0 for a foot that only
+     * steps back under its hip -- how far past square it lands, radians,
+     * and how high it goes, as a share of `STEP_HIP` and `STEP_KNEE`.
+     */
+    stepWay: number;
+    stepLead: number;
+    stepHeight: number;
   }[] = [];
-  /** Commanded ground speed and turn rate, for whether the feet are planted. */
+  /** Commanded ground speed, for whether the feet are planted. */
   private gait = 0;
-  private turning = 0;
+  /**
+   * How fast the hips are coming round, rad/s, positive to the left: the
+   * turn keys and the arm's turn of the hips together, as the feet feel it.
+   * And which way they faced last step, to measure it by.
+   */
+  private spin = 0;
+  private facingWas = 0;
+  /** The feet were moved with the body, not walked there: take them as they are. */
+  private replant = false;
   /** Turning on its heel this step: see `Keys.pivot`. */
   pivoting = false;
 
   private stridePhase = 0;
   /** How much of the stride the legs are showing: 0 standing, 1 walking. */
   private striding = 0;
-  /** Which way the feet are asked to go: 1 forward, -1 back, 0 sideways. */
-  private heading = 0;
+  /**
+   * Which way the stride is carrying the body, relative to the hips: ahead
+   * (1 forward, -1 back) and to the side (1 right, -1 left). Eased from one
+   * way to another -- see `WAY_RATE` -- so shorter than 1 while it comes round.
+   */
+  private wayAhead = 1;
+  private waySide = 0;
   /**
    * Where the feet are carrying the body, horizontal, world, m/s: the pace
    * the keys ask for, got to and come down from at a body's rate rather
@@ -398,7 +497,7 @@ export class Fighter {
   /** `Tuning.stepEase` as of the last step, for `coast`. */
   private ease = 0;
   /** The legs' going, as the posture wants it. */
-  private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0 };
+  private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0, side: 0 };
   private headMesh!: THREE.Object3D;
 
   /** One set of materials for the whole figure, from its palette. */
@@ -925,9 +1024,10 @@ export class Fighter {
         thigh: kinematic(SEGMENT.thigh, `${side} thigh`, thighMesh),
         shin: kinematic(SEGMENT.shin, `${side} shin`, shinMesh),
         hipPivot, kneePivot, thighMesh, shinMesh, sign,
-        hip: 0, knee: 0, prevHip: 0, prevKnee: 0,
+        hip: 0, knee: 0, prevHip: 0, prevKnee: 0, roll: 0, prevRoll: 0,
         foot: this.yaw, turn: 0, prevTurn: 0,
-        step: -1, stepFrom: 0, stepTo: 0,
+        slip: new THREE.Vector3(), hipWas: new THREE.Vector3(),
+        step: -1, stepFrom: 0, stepAt: new THREE.Vector3(), stepWay: 0, stepLead: 0, stepHeight: 1,
       });
     }
   }
@@ -960,7 +1060,6 @@ export class Fighter {
     this.pivoting = keys.pivot && turn !== 0 && this.grounded && this.reel <= 0 && !this.traverse;
     const rate = this.pivoting ? t.pivotSpeed / Math.sqrt(this.build.scale) : t.turnSpeed;
     this.yaw += turn * rate * dt;
-    this.turning = Math.abs(turn) * rate;
     this.body.setRotation(
       { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, false);
@@ -992,7 +1091,6 @@ export class Fighter {
     }
 
     const len = Math.hypot(ix, iz);
-    this.heading = len > 0 ? -iz / len : 0;
     const v = this.tmpVec.set(0, 0, 0);
     if (len > 0) {
       const sin = Math.sin(this.yaw);
@@ -1074,10 +1172,28 @@ export class Fighter {
     // legs fold up.
     const target = this.grounded ? 0 : 1;
     this.tuck += (target - this.tuck) * Math.min(1, TUCK_RATE * dt);
-    const covered = Math.hypot(walk.x + knock.x, walk.z + knock.z);
-    if (this.grounded) this.stridePhase += covered * dt * STRIDE;
-    this.gait = covered;
+    const goX = walk.x + knock.x;
+    const goZ = walk.z + knock.z;
+    const covered = Math.hypot(goX, goZ);
     const walking = this.grounded && covered > 0.05;
+    // And which way that is, as the hips see it: the legs swing along it. A
+    // body setting off from standing sets off that way at once; one already
+    // going comes round to it.
+    if (covered > 0.05) {
+      const facing = this.yaw + this.posture.pose.pelvis;
+      const sin = Math.sin(facing);
+      const cos = Math.cos(facing);
+      const toward = this.striding < 0.05 ? 1 : Math.min(1, WAY_RATE * dt);
+      this.wayAhead += (-(goX * sin + goZ * cos) / covered - this.wayAhead) * toward;
+      this.waySide += ((goX * cos - goZ * sin) / covered - this.waySide) * toward;
+    }
+    // A step sideways covers less ground than one ahead.
+    const ahead2 = this.wayAhead * this.wayAhead;
+    const side2 = this.waySide * this.waySide;
+    const perMetre = ahead2 + side2 > 1e-6
+      ? (STRIDE * ahead2 + SIDE_STRIDE * side2) / (ahead2 + side2) : STRIDE;
+    if (this.grounded) this.stridePhase += covered * dt * perMetre;
+    this.gait = covered;
     this.striding += ((walking ? 1 : 0) - this.striding)
       * Math.min(1, (walking ? STRIDE_IN : STRIDE_OUT) * dt);
 
@@ -1127,7 +1243,8 @@ export class Fighter {
     gait.phase = this.stridePhase;
     // Going over or up something is not walking, whatever the legs show.
     gait.amount = this.traverse ? 0 : this.striding * (1 - this.tuck);
-    gait.forward = this.heading;
+    gait.forward = this.wayAhead;
+    gait.side = this.waySide;
     this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch,
       this.traverse ? 0 : clamp(this.stoop, 0, 1), clamp(this.hurt, 0, 1), gait);
     this.applyPosture();
@@ -1642,7 +1759,6 @@ export class Fighter {
     this.grounded = this.probeGround();
     this.coyote = 0;
     this.gait = 0;
-    this.turning = 0;
     this.pivoting = false;
     this.tuck += (0 - this.tuck) * Math.min(1, TUCK_RATE * dt);
     this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
@@ -1818,8 +1934,10 @@ export class Fighter {
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setEnabledRotations(false, true, false, true);
     this.body.setAngularDamping(6);
+    this.replant = true;
     for (const leg of this.legs) {
       leg.foot = this.yaw;
+      leg.slip.set(0, 0, 0);
       leg.step = -1;
     }
   }
@@ -2019,58 +2137,120 @@ export class Fighter {
    * Keep the feet where they are while the hips turn over them, and step
    * when they have turned too far.
    *
-   * Each foot holds a WORLD heading. Standing, it holds still, and the leg
-   * turns in its hip socket by however far the hips have come round. Past
+   * Each foot holds a WORLD heading and a place on the floor. Standing, both
+   * hold still: the leg turns in its hip socket by however far the hips have
+   * come round, and leans out to wherever the hip has left the foot. Past
    * `PLANT_SLACK` the more wound-up foot -- the one on the side of the turn,
    * if they are level -- picks up and steps to a little past square, then
-   * the other; only one is ever off the floor. Walking, turning, or in the
-   * air, the feet are being replanted every stride regardless and just
-   * follow the hips.
+   * the other; only one is ever off the floor.
+   *
+   * Turning on the spot is that kept up. The feet step one after the other
+   * for as long as the hips go round, each as soon as the other is down, and
+   * quicker the faster the hips go. Each lands as far ahead of the hips as
+   * they will have gone past it by the time it lifts again, and under where
+   * the hip will be half way through: so the leg twists and leans as far one
+   * way as the other, and a foot is never left behind for the next one to
+   * make up. They used to simply turn with the hips, flat on the floor,
+   * which is a body on a turntable.
+   *
+   * A foot the hip has moved off rather than turned from -- a body shoved
+   * about by its own arm -- steps back under it, pointing where it pointed.
+   * Walking, or in the air, the feet are being replanted every stride
+   * regardless and just follow the hips.
    */
   private plantFeet(teleport: boolean, dt: number): void {
     const facing = this.yaw + this.posture.pose.pelvis;
+    const turned = wrap(facing - this.facingWas);
+    const fresh = teleport || this.replant || dt <= 0 || Math.abs(turned) > PUT_ROUND;
+    this.replant = false;
+    this.spin = fresh ? 0 : this.spin + (turned / dt - this.spin) * Math.min(1, SPIN_RATE * dt);
+    this.facingWas = facing;
+    const spin = this.spin;
+    const turning = Math.abs(spin) > SPIN_MIN;
     // A body on the floor has nothing to plant: its feet go where its hips do.
-    const moving = this.gait > 0.05 || this.turning > 0.1 || this.tuck > 0.3
-      || this.stance !== "up";
+    const moving = this.gait > 0.05 || this.tuck > 0.3 || this.stance !== "up";
+    // Turning, a step takes as long as the hips take to come round `TURN_STEP`.
+    const time = turning ? clamp(TURN_STEP / Math.abs(spin), STEP_QUICK, STEP_TIME) : STEP_TIME;
+    const follow = Math.min(1, FOLLOW_RATE * dt);
+    const hipX = this.build.standing.hipX;
+    const drag = PLANT_DRAG * this.build.scale;
+    const p = this.body.translation();
     let busy = false;
 
     for (const leg of this.legs) {
       leg.prevTurn = leg.turn;
-      if (teleport) {
+      const hip = leg.hipPivot.getWorldPosition(_hip);
+      if (fresh) {
         leg.foot = facing;
         leg.step = -1;
-      } else if (moving) {
-        leg.step = -1;
-        leg.foot += wrap(facing - leg.foot) * Math.min(1, FOLLOW_RATE * dt);
-      } else if (leg.step >= 0) {
-        leg.step = Math.min(1, leg.step + dt / STEP_TIME);
-        leg.foot = leg.stepFrom
-          + (leg.stepTo - leg.stepFrom) * smoothstep(0, 1, leg.step);
-        if (leg.step >= 1) leg.step = -1; else busy = true;
+        leg.slip.set(0, 0, 0);
+        leg.hipWas.copy(hip);
+        continue;
       }
-      // However it got here, a leg does not wind up past what a hip allows:
-      // the foot slides instead.
+      // The hip has gone on; a foot on the floor has not.
+      if (!moving && leg.step < 0) {
+        leg.slip.x -= hip.x - leg.hipWas.x;
+        leg.slip.z -= hip.z - leg.hipWas.z;
+      }
+      leg.hipWas.copy(hip);
+
+      if (leg.step >= 0) leg.step = Math.min(1, leg.step + dt / time);
+      if (moving) {
+        // A step under way still comes down, but the foot goes with the hips.
+        leg.foot += wrap(facing - leg.foot) * follow;
+        leg.slip.multiplyScalar(1 - follow);
+      } else if (leg.step >= 0) {
+        // Where it lands: past square by as far as the hips will have turned
+        // before the other foot is down too, and under where the hip will be
+        // with the hips facing that way. A foot only stepping back under its
+        // hip goes to where the hip will be when it lands, as it points.
+        const land = facing + spin * (1 - leg.step) * time;
+        const to = leg.stepWay === 0 ? land
+          : land + leg.stepWay * Math.min(PLANT_MAX, Math.max(leg.stepLead, Math.abs(spin) * time / 2));
+        const s = smoothstep(0, 1, leg.step);
+        if (leg.stepWay !== 0) leg.foot = leg.stepFrom + wrap(to - leg.stepFrom) * s;
+        const hx = hipX * leg.sign;
+        const x = leg.stepAt.x + (p.x + hx * Math.cos(to) - leg.stepAt.x) * s;
+        const z = leg.stepAt.z + (p.z - hx * Math.sin(to) - leg.stepAt.z) * s;
+        leg.slip.set(x - hip.x, 0, z - hip.z);
+      }
+      if (leg.step >= 1) leg.step = -1;
+      else if (leg.step >= 0) busy = true;
+      // However it got here, a leg does not wind up past what a hip allows,
+      // nor lean further out than a leg will: the foot slides instead.
       const off = wrap(facing - leg.foot);
       if (Math.abs(off) > PLANT_MAX) leg.foot = facing - Math.sign(off) * PLANT_MAX;
+      const far = Math.hypot(leg.slip.x, leg.slip.z);
+      if (far > drag) leg.slip.multiplyScalar(drag / far);
     }
 
-    if (!teleport && !moving && !busy) {
+    if (!fresh && !moving && !busy) {
+      const reach = PLANT_REACH * this.build.scale;
       let pick: (typeof this.legs)[number] | null = null;
-      let most = PLANT_SLACK;
+      let most = 1;
       for (const leg of this.legs) {
         const off = wrap(facing - leg.foot);
+        // Turning, only a foot the hips have gone past; the one they are
+        // turning toward is already ahead of them.
+        const behind = turning ? off * Math.sign(spin) : Math.abs(off);
         // A turn to the left is led by the left foot, which is sign -1.
         const leads = Math.sign(off) === -leg.sign ? 1e-3 : 0;
-        if (Math.abs(off) + leads > most) {
-          most = Math.abs(off) + leads;
+        const need = Math.max(behind / PLANT_SLACK, Math.hypot(leg.slip.x, leg.slip.z) / reach)
+          + leads;
+        if (need > most) {
+          most = need;
           pick = leg;
         }
       }
       if (pick) {
         const off = wrap(facing - pick.foot);
+        const behind = turning ? off * Math.sign(spin) : Math.abs(off);
         pick.step = 0;
         pick.stepFrom = pick.foot;
-        pick.stepTo = pick.foot + off * (1 + STEP_LEAD);
+        pick.stepAt.set(pick.hipWas.x + pick.slip.x, 0, pick.hipWas.z + pick.slip.z);
+        pick.stepWay = behind < PLANT_SLACK ? 0 : turning ? Math.sign(spin) : Math.sign(off);
+        pick.stepLead = STEP_LEAD * Math.abs(off);
+        pick.stepHeight = 1 + (TURN_LIFT - 1) * smoothstep(SPIN_MIN, TURN_LIFT_AT, Math.abs(spin));
       }
     }
 
@@ -2095,22 +2275,55 @@ export class Fighter {
 
     this.plantFeet(teleport, dt);
 
-    // A crouch bends both legs so the feet stay on the floor under the sunk
-    // hips: the two-bone solve for a foot straight below the hip, the hip
-    // flexing forward and the knee folding back.
     const { segment: SEGMENT } = this.build;
     const l1 = SEGMENT.thigh.length;
     const l2 = SEGMENT.shin.length;
-    const reach = Math.max(0.35 * (l1 + l2), l1 + l2 - this.posture.pose.drop);
-    const crouchHip = Math.acos(Math.min(1, (l1 * l1 + reach * reach - l2 * l2) / (2 * l1 * reach)));
-    const crouchKnee = Math.PI
-      - Math.acos(Math.max(-1, Math.min(1, (l1 * l1 + l2 * l2 - reach * reach) / (2 * l1 * l2))));
+    // How high the hips are over the floor: a crouch and a stride's dip
+    // lower them.
+    const down = l1 + l2 - this.posture.pose.drop;
+    const bent = 1 - this.tuck;
 
     for (const leg of this.legs) {
       const phase = this.stridePhase + (leg.sign > 0 ? Math.PI : 0);
-      const swing = Math.sin(phase) * STRIDE_SWING * this.striding;
-      // A knee only bends one way, so the back half of the cycle is flattened.
-      const bend = Math.max(0, -Math.sin(phase - 0.6)) * 0.9 * this.striding;
+      const sin = Math.sin(phase);
+      // Which way the body is going, as this leg has it: its foot may be
+      // turned off the hips.
+      const tc = Math.cos(leg.turn);
+      const ts = Math.sin(leg.turn);
+      const ahead = this.wayAhead * tc - this.waySide * ts;
+      const aside = this.waySide * tc + this.wayAhead * ts;
+      // Going ahead or back, the leg swings through under the hip, along the
+      // way the body is going...
+      const swing = sin * STRIDE_SWING * ahead * this.striding;
+      // ...and sideways out and back in on its own side of the body: the
+      // leading leg steps out and the trailing one closes up to it, on the
+      // same beat, so the feet go wide and narrow and never cross.
+      const out = (sin * aside + leg.sign * Math.abs(aside)) * SIDE_SWING * this.striding;
+      // The foot lifts while its leg swings the way the body is going.
+      // Walking ahead the knee goes early, pushing off behind -- a knee only
+      // bends one way, so the back half of the cycle is flattened -- and any
+      // other way the foot comes straight up through the middle of it.
+      const forth = ahead > 0 ? ahead * ahead : 0;
+      const other = (ahead < 0 ? ahead * ahead : 0) + aside * aside;
+      const bend = Math.max(0, -Math.sin(phase - LIFT_AHEAD)) * 0.9 * this.striding * forth;
+      const raise = Math.max(0, -Math.sin(phase - LIFT_MIDDLE)) * SIDE_LIFT * this.striding * other;
+
+      // A planted foot the hip has moved off: the leg leans out to it.
+      const fc = Math.cos(leg.foot);
+      const fs = Math.sin(leg.foot);
+      const leanOut = Math.atan2(leg.slip.x * fc - leg.slip.z * fs, down);
+      const leanBack = Math.atan2(leg.slip.x * fs + leg.slip.z * fc, down);
+      const roll = out + leanOut;
+
+      // A crouch bends the legs so the feet stay on the floor under the sunk
+      // hips: the two-bone solve for a foot the hips' height below, the hip
+      // flexing forward and the knee folding back. A leg leaning out has
+      // further to go to the floor, and bends less: a sidestep's wide stance
+      // is what its dip is for.
+      const reach = clamp(down / (Math.cos(roll) * Math.cos(leanBack)), 0.35 * (l1 + l2), l1 + l2);
+      const crouchHip = Math.acos(Math.min(1, (l1 * l1 + reach * reach - l2 * l2) / (2 * l1 * reach)));
+      const crouchKnee = Math.PI
+        - Math.acos(clamp((l1 * l1 + l2 * l2 - reach * reach) / (2 * l1 * l2), -1, 1));
 
       // Airborne: one knee up, the other trailing. Purely cosmetic -- the legs
       // are kinematic and never carry the jump -- but a figure that keeps
@@ -2119,24 +2332,30 @@ export class Fighter {
       const tuckKnee = leg.sign > 0 ? 1.25 : 0.55;
 
       // A foot in the middle of a step comes up off the floor and goes down
-      // again: the same bend the stride uses, on a half-sine.
-      const lift = leg.step >= 0 ? Math.sin(Math.PI * leg.step) : 0;
+      // again, on a half-sine.
+      const lift = leg.step >= 0 ? Math.sin(Math.PI * leg.step) * leg.stepHeight : 0;
 
       leg.prevHip = leg.hip;
       leg.prevKnee = leg.knee;
-      const bent = 1 - this.tuck;
-      leg.hip = swing + (tuckHip - swing) * this.tuck + STEP_HIP * lift + crouchHip * bent;
-      leg.knee = bend + (tuckKnee - bend) * this.tuck + STEP_KNEE * lift + crouchKnee * bent;
+      leg.prevRoll = leg.roll;
+      const strideHip = swing - leanBack + raise;
+      const strideKnee = bend + 2 * raise;
+      leg.hip = strideHip + (tuckHip - strideHip) * this.tuck + STEP_HIP * lift + crouchHip * bent;
+      leg.knee = strideKnee + (tuckKnee - strideKnee) * this.tuck + STEP_KNEE * lift
+        + crouchKnee * bent;
+      leg.roll = roll * bent;
       // Knocked down, the legs go slack -- and straighten again on the way up.
       if (this.sprawl > 1e-3) {
         const [hip, knee] = leg.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
         leg.hip += (hip - leg.hip) * this.sprawl;
         leg.knee += (knee - leg.knee) * this.sprawl;
+        leg.roll *= 1 - this.sprawl;
       }
       // A teleport has no previous pose worth easing out of.
       if (teleport) {
         leg.prevHip = leg.hip;
         leg.prevKnee = leg.knee;
+        leg.prevRoll = leg.roll;
         leg.prevTurn = leg.turn;
       }
 
@@ -2146,7 +2365,7 @@ export class Fighter {
       // `placeTrunk`.
       leg.hipPivot.rotation.x = leg.hip;
       leg.hipPivot.rotation.y = leg.turn - this.posture.pose.hipSwing;
-      leg.hipPivot.rotation.z = -this.posture.pose.roll;
+      leg.hipPivot.rotation.z = leg.roll - this.posture.pose.roll;
       // `knee` is flexion, positive when bent. The hip's +x swings the thigh
       // forward, and the knee folds the other way -- the foot goes back -- so
       // the same number turns the shin through minus it. Forward here would
@@ -2455,7 +2674,7 @@ export class Fighter {
     for (const leg of this.legs) {
       leg.hipPivot.rotation.x = leg.prevHip + (leg.hip - leg.prevHip) * a;
       leg.hipPivot.rotation.y = leg.prevTurn + wrap(leg.turn - leg.prevTurn) * a - pose.hipSwing;
-      leg.hipPivot.rotation.z = -pose.roll;
+      leg.hipPivot.rotation.z = leg.prevRoll + (leg.roll - leg.prevRoll) * a - pose.roll;
       leg.kneePivot.rotation.set(-(leg.prevKnee + (leg.knee - leg.prevKnee) * a), 0, 0);
     }
     this.easeFromLimp();
@@ -2508,11 +2727,18 @@ export class Fighter {
     this.jumpLock = 0;
     this.grounded = true;
     this.gait = 0;
-    this.turning = 0;
     this.pivoting = false;
+    this.wayAhead = 1;
+    this.waySide = 0;
+    this.spin = 0;
+    this.facingWas = 0;
+    // Wherever the body has been put, the feet are under it.
+    this.replant = true;
     for (const leg of this.legs) {
       leg.foot = 0;
       leg.turn = leg.prevTurn = 0;
+      leg.roll = leg.prevRoll = 0;
+      leg.slip.set(0, 0, 0);
       leg.step = -1;
     }
     // On its feet, whatever it was doing on the floor.
@@ -2640,6 +2866,7 @@ const _qHull = new THREE.Quaternion();
 const _pVault = new THREE.Vector3();
 const _qChest = new THREE.Quaternion();
 const _pHull = new THREE.Vector3();
+const _hip = new THREE.Vector3();
 
 /** Drive a kinematic body from wherever its mesh has been posed to. */
 function pushKinematic(body: RAPIER.RigidBody, mesh: THREE.Object3D, teleport = false): void {
