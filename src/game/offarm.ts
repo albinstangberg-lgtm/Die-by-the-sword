@@ -4,6 +4,7 @@ import type { PhysicsWorld, Side } from "../core/physics";
 import type { Tuning } from "../tuning";
 import type { Build } from "./anatomy";
 import type { Fighter } from "./fighter";
+import { tipPole } from "./arm";
 import { clamp, smoothstep, Tracker } from "./motion";
 import { pushOut, repulsion } from "./clearance";
 import { buildShieldMesh, SHIELD, SLUNG, SLUNG_TURN } from "./shield";
@@ -366,6 +367,14 @@ export class OffArm {
       .addScaledVector(right, -hang.out)
       .addScaledVector(back, hang.back)
       .normalize();
+    // An empty hand raised through the spot its pole points away from turned
+    // the arm over, as the sword arm's did -- the elbow swung round thirty
+    // degrees in one step -- so its pole tips under the arm as the sword arm's.
+    // A shield's hangs the elbow out to the side and points away from a spot
+    // further across the body than the arm is let go, so nothing turns over
+    // on the way up, and left alone the shield raised overhead lies face up
+    // over the head. Tipped, it stood on edge in front of the face.
+    if (!shielded) tipPole(pole, pitch);
     if (over) {
       const own = this._c.set(0, -OVER_POLE.down, 0)
         .addScaledVector(right, -OVER_POLE.out)
