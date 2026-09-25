@@ -70,6 +70,22 @@ export class Interpolator {
     this.entries.length = 0;
   }
 
+  /**
+   * One body put somewhere new between steps: drawn there from now, rather
+   * than streaking in from where it was.
+   */
+  jump(body: RAPIER.RigidBody): void {
+    const p = body.translation();
+    const r = body.rotation();
+    for (const e of this.entries) {
+      if (e.body !== body) continue;
+      e.currP.set(p.x, p.y, p.z);
+      e.currQ.set(r.x, r.y, r.z, r.w);
+      e.prevP.copy(e.currP);
+      e.prevQ.copy(e.currQ);
+    }
+  }
+
   /** After teleporting bodies, drop the stale history so nothing streaks. */
   snap(): void {
     this.commit();

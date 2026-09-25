@@ -4254,6 +4254,33 @@ function stepWith(rig: Rig, items: Items, n: number, keys: Keys = NO_KEYS): void
   }
 }
 
+/**
+ * Where the copy of what the hand holds is, world, with the forearm drawn
+ * where the world has it: nothing interpolates the meshes here.
+ */
+function copyInHand(rig: Rig, bit = 0): THREE.Vector3 {
+  const t = rig.arm.fore.translation();
+  const r = rig.arm.fore.rotation();
+  rig.arm.foreMesh.position.set(t.x, t.y, t.z);
+  rig.arm.foreMesh.quaternion.set(r.x, r.y, r.z, r.w);
+  rig.arm.foreMesh.updateMatrixWorld(true);
+  return rig.arm.palm.children[0].children[bit].getWorldPosition(new THREE.Vector3());
+}
+
+/** Where the palm is, how fast it is going, and the forearm's spin, as the world has them. */
+function palmMotion(rig: Rig): { p: THREE.Vector3; v: THREE.Vector3; w: THREE.Vector3 } {
+  const fore = rig.arm.fore;
+  const t = fore.translation();
+  const r = fore.rotation();
+  const p = rig.arm.palm.position.clone()
+    .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w)).add(new THREE.Vector3(t.x, t.y, t.z));
+  const c = fore.worldCom();
+  const w = new THREE.Vector3().copy(fore.angvel());
+  const v = new THREE.Vector3().copy(fore.linvel())
+    .add(w.clone().cross(p.clone().sub(new THREE.Vector3(c.x, c.y, c.z))));
+  return { p, v, w };
+}
+
 async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   console.log("\nwhat you cut off someone, and their weapon: into your hand, into your bag, and let go of");
   // Out in the open floor of the training room, where nothing else is lying.
@@ -4336,22 +4363,24 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
     out.ok && rig.player.held === head && !rig.player.inventory.pieces.includes(head!)
       && rig.arm.palm.children.length === 1, out.text);
 
-  // Let go of, it comes back into the world in front of you and falls.
-  stepWith(rig, items, 20);
-  const hand = rig.arm.handPosition.y;
+  // Let go of from a still hand, it comes back into the world where the copy
+  // in the hand was, and drops.
+  stepWith(rig, items, 60);
+  const inHand = copyInHand(rig);
   const drop = items.letGo(rig.player);
-  const f = rig.fighter;
-  const p = f.body.translation();
-  const h = headBody.translation();
-  const ahead = (h.x - p.x) * -Math.sin(f.yaw) + (h.z - p.z) * -Math.cos(f.yaw);
-  const startY = h.y;
+  const h = new THREE.Vector3().copy(headBody.translation());
+  const v = headBody.linvel();
   stepWith(rig, items, 90);
-  const landed = headBody.translation().y;
-  check("G lets go of it: it comes back in front of you, from your hand, and falls to the floor",
-    drop.ok && headBody.isEnabled() && part("head").mesh.visible && !head!.taken
+  const landed = new THREE.Vector3().copy(headBody.translation());
+  check("G lets go of it: it comes back where it was in your hand, and drops to the floor",
+    drop.ok && drop.text === "let go of the swordsman's head" && headBody.isEnabled()
+      && part("head").mesh.visible && !head!.taken
       && rig.player.held === null && rig.arm.palm.children.length === 0
-      && ahead > 0.25 && Math.abs(startY - hand) < 0.05 && landed < 0.3,
-    `${drop.text}: ${ahead.toFixed(2)} m ahead, from ${startY.toFixed(2)} m (hand at ${hand.toFixed(2)}) to ${landed.toFixed(2)} m`);
+      && h.distanceTo(inHand) < 1e-3 && Math.hypot(v.x, v.y, v.z) < 0.5
+      && Math.hypot(landed.x - h.x, landed.z - h.z) < 0.3 && landed.y < 0.3,
+    `${drop.text}: ${(h.distanceTo(inHand) * 1000).toFixed(2)} mm from the copy in the hand, `
+      + `at ${Math.hypot(v.x, v.y, v.z).toFixed(2)} m/s, from ${h.y.toFixed(2)} m to ${landed.y.toFixed(2)} m, `
+      + `${Math.hypot(landed.x - h.x, landed.z - h.z).toFixed(2)} m along the floor`);
 
   // The sword: the dead fist lets go of it as it is taken, and the forearm
   // stays where it lies.
@@ -4383,8 +4412,9 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
     `holding ${rig.player.held?.name ?? "nothing"}; the sword at ${blade.translation().y.toFixed(2)} m; `
       + `health ${health.toFixed(1)} -> ${rig.player.health.toFixed(1)}`);
 
-  // Let go of facing a wall half a metre off, it lies across your front
-  // rather than into the stone, and settles rather than being thrown out.
+  // Let go of facing a wall half a metre off, it stays out of the stone --
+  // where the copy in the hand has gone into it, it lies across your front
+  // instead -- and settles rather than being thrown out.
   const wall = ROOMS.training.maxZ;
   rig.place(new THREE.Vector3(1.5, SPAWN.y, wall - 0.55));
   rig.fighter.yaw = Math.PI;                  // facing +Z, the south wall
@@ -4403,7 +4433,7 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   }
   const deepest = blade.translation().z;
   const tip = foe.arm.pointAlongBlade(1, new THREE.Vector3());
-  check("let go of against a wall, it lies across your front and settles on the floor",
+  check("let go of against a wall, it stays out of the stone and settles on the floor",
     taken.ok && walled.ok && Math.max(deepest, tip.z) < wall - 0.02 && blade.translation().y < 0.3
       && fastest < fall + 1,
     `nearest the wall ${(wall - Math.max(deepest, tip.z)).toFixed(2)} m off it, `
@@ -4426,6 +4456,178 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
       && headGap < 1.2 && rig.player.inventory.empty && rig.player.held === null
       && rig.arm.palm.children.length === 0 && !items.items.some((i) => i.piece),
     `head ${headGap.toFixed(2)} m from the torso; the sword in the fist ${fist() === foe.arm.bladeMesh}`);
+}
+
+async function whatYouHoldYouCanThrow(): Promise<void> {
+  console.log("\nwhat you hold you can throw: let go of in a swing, it keeps the hand's speed");
+  const at = spawnFor(SWORDSMAN, -1.2, 7.4);
+  const rig = await buildRig({}, SWORDSMAN, at);
+  rig.holdFoe();
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  items.watch([rig.foe]);
+  const foe = rig.foe;
+  const part = (name: string) => foe.fighter.parts.find((p) => p.name === name)!;
+  stepWith(rig, items, 30);
+  for (const name of ["offShoulder", "head"]) {
+    for (let i = 0; i < 4; i++) foe.receive(fakeImpact(part(name).collider.handle));
+  }
+  stepWith(rig, items, 150);
+  const find = (name: string) => items.items.find((i) => i.name === `the swordsman's ${name}`)!;
+  const head = find("head");
+  const limb = find("off arm");
+  const sword = find("sword");
+  const headBody = head.piece!.bits[0].body;
+  const groups = headBody.collider(0).collisionGroups();
+  const leaving = () => (items as unknown as { leaving: unknown[] }).leaving.length;
+  const [pitchLo, pitchHi] = Arm.LIMITS.pitch;
+  const open = new THREE.Vector3(1.0, SPAWN.y, 4.0);
+
+  // Out on the open floor facing north, the sword on the back, it in the hand.
+  const ready = (item: Item, where = open, yaw = 0) => {
+    rig.place(where);
+    rig.fighter.yaw = yaw;
+    stepWith(rig, items, 20);
+    if (rig.arm.wielding) stow(rig, false);
+    return items.hold(rig.player, item);
+  };
+  // The arm swung through pitch from `from` to `to`, as fast as a hand
+  // moving the mouse hard would, and `each` told after every step.
+  const swing = (from: number, to: number, each: (n: number) => void) => {
+    aimAngles(rig, 0, from, 90);
+    for (let n = 1; n <= 30; n++) {
+      const gap = to - rig.arm.aim.pitch;
+      rig.input.dy = -Math.max(-12 * STEP, Math.min(12 * STEP, gap)) / rig.tuning.sensitivity;
+      stepWith(rig, items, 1);
+      each(n);
+    }
+  };
+  // Swung once to find where the hand is fastest, and again to let go there:
+  // how the hand was moving, what G said, and each body of the piece as it
+  // left -- where, its middle, and how it was moving -- and for how many
+  // steps after it went on passing through the hand that threw it.
+  const throwIt = (item: Item, from: number, to: number) => {
+    let peak = 0;
+    let peakAt = 0;
+    swing(from, to, (n) => {
+      const s = palmMotion(rig).v.length();
+      if (s > peak) { peak = s; peakAt = n; }
+    });
+    let hand = palmMotion(rig);
+    let out = { ok: false, text: "" };
+    let bodies: { p: THREE.Vector3; c: THREE.Vector3; v: THREE.Vector3; w: THREE.Vector3 }[] = [];
+    let through = 0;
+    swing(from, to, (n) => {
+      if (n === peakAt - 1) {
+        hand = palmMotion(rig);
+        out = items.letGo(rig.player);
+        bodies = item.piece!.bits.map(({ body }) => {
+          const p = new THREE.Vector3().copy(body.translation());
+          const r = body.rotation();
+          const c = new THREE.Vector3().copy(body.localCom())
+            .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w)).add(p);
+          return { p, c, v: new THREE.Vector3().copy(body.linvel()), w: new THREE.Vector3().copy(body.angvel()) };
+        });
+      } else if (out.ok && leaving() > 0) through++;
+    });
+    return { hand, out, bodies, through };
+  };
+  const ahead = (from: THREE.Vector3, to: { x: number; z: number }) =>
+    (to.x - from.x) * -Math.sin(rig.fighter.yaw) + (to.z - from.z) * -Math.cos(rig.fighter.yaw);
+
+  // The head, overhand.
+  ready(head);
+  const a = throwIt(head, pitchHi, 0);
+  const [h] = a.bodies;
+  check("let go of mid-swing, the head leaves at the palm's speed, spinning as the forearm was",
+    a.out.text === "threw the swordsman's head" && a.hand.v.length() > 4
+      && h.v.distanceTo(a.hand.v) < 1e-3 && h.w.distanceTo(a.hand.w) < 1e-3,
+    `${a.out.text}: the palm at ${a.hand.v.length().toFixed(2)} m/s, the head at ${h.v.length().toFixed(2)}, `
+      + `${(h.v.distanceTo(a.hand.v) * 1000).toFixed(3)} mm/s apart`);
+  stepWith(rig, items, 150);
+  const landed = new THREE.Vector3().copy(headBody.translation());
+  const went = new THREE.Vector3(landed.x - h.p.x, 0, landed.z - h.p.z);
+  const way = new THREE.Vector3(a.hand.v.x, 0, a.hand.v.z).normalize();
+  const along = went.clone().normalize().dot(way);
+  check("and it flies the way the hand was going, metres off, to the floor",
+    went.length() > 2.5 && along > 0.9 && landed.y < 0.3,
+    `${went.length().toFixed(2)} m, ${THREE.MathUtils.radToDeg(Math.acos(Math.min(1, along))).toFixed(0)}° `
+      + `off the hand's heading, at ${landed.y.toFixed(2)} m`);
+  check("it passes through the hand that threw it until it is clear, then meets you like anything else",
+    a.through > 0 && leaving() === 0 && headBody.collider(0).collisionGroups() === groups,
+    `through you for ${a.through} steps; groups as they were ${headBody.collider(0).collisionGroups() === groups}`);
+
+  // A whole arm, underhand: two bodies and the elbow between them.
+  const upper = foe.fighter.build.segment.upperArm.length;
+  const lower = foe.fighter.build.segment.foreArm.length;
+  ready(limb);
+  const b = throwIt(limb, pitchLo, 0.3);
+  const [u, f] = b.bodies;
+  const apart = u.v.clone().sub(f.v).distanceTo(b.hand.w.clone().cross(u.c.clone().sub(f.c)));
+  let widest = 0;
+  for (let i = 0; i < 150; i++) {
+    stepWith(rig, items, 1);
+    widest = Math.max(widest, new THREE.Vector3().copy(limb.piece!.bits[0].body.translation())
+      .distanceTo(new THREE.Vector3().copy(limb.piece!.bits[1].body.translation())));
+  }
+  const limbAt = limb.piece!.bits[0].body.translation();
+  check("an arm goes as one: its halves leave together, the elbow holds, and it lands ahead",
+    b.out.text === "threw the swordsman's off arm" && apart < 1e-3
+      && widest < (upper + lower) / 2 + 0.03 && ahead(open, limbAt) > 1.5 && limbAt.y < 0.3,
+    `${b.out.text}: halves ${(apart * 1000).toFixed(3)} mm/s off moving as one, `
+      + `${widest.toFixed(3)} m apart at most against ${((upper + lower) / 2).toFixed(3)} straight, `
+      + `landed ${ahead(open, limbAt).toFixed(2)} m ahead`);
+
+  // The sword, underhand.
+  const health = rig.player.health;
+  ready(sword);
+  const c = throwIt(sword, pitchLo, 0.3);
+  stepWith(rig, items, 150);
+  const swordAt = sword.piece!.bits[0].body.translation();
+  check("so does a weapon, and it hurts nobody on the way",
+    c.out.text === "threw the swordsman's sword" && ahead(open, swordAt) > 1.5 && swordAt.y < 0.3
+      && rig.player.health === health,
+    `${c.out.text}: landed ${ahead(open, swordAt).toFixed(2)} m ahead; health ${rig.player.health.toFixed(1)}`);
+
+  // At a wall a pace off, it hits the wall and falls back into the room.
+  const wall = ROOMS.training.maxZ;
+  const facing = new THREE.Vector3(1.0, SPAWN.y, wall - 1.2);
+  ready(head, facing, Math.PI);
+  const d = throwIt(head, pitchHi, 0);
+  stepWith(rig, items, 150);
+  const bounced = headBody.translation();
+  check("thrown at a wall, it stops at the stone and falls back into the room",
+    d.out.text === "threw the swordsman's head" && bounced.z < wall - 0.05 && bounced.y < 0.3,
+    `${d.out.text}; it lies ${(wall - bounced.z).toFixed(2)} m off the wall, at ${bounced.y.toFixed(2)} m`);
+
+  // With the copy in the hand gone into the floor, as a copy can, it is put
+  // down in front of you instead, not left in the stone.
+  ready(head);
+  stepWith(rig, items, 20);
+  const r = rig.arm.fore.rotation();
+  const down = new THREE.Vector3(0, 0.02 - copyInHand(rig).y, 0)
+    .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w).invert());
+  rig.arm.palm.children[0].position.add(down);
+  const sunk = copyInHand(rig).y;
+  const hand = rig.arm.handPosition.y;
+  const put = items.letGo(rig.player);
+  const placed = new THREE.Vector3().copy(headBody.translation());
+  const still = headBody.linvel();
+  stepWith(rig, items, 90);
+  check("where the copy in the hand is in the stone, it is put down in front of you instead",
+    put.text === "let go of the swordsman's head" && ahead(open, placed) > 0.25
+      && placed.y > 0.4 && placed.y < hand + 1e-3 && Math.hypot(still.x, still.y, still.z) < 1e-6
+      && headBody.translation().y < 0.3,
+    `the copy at ${sunk.toFixed(2)} m; ${put.text}, ${ahead(open, placed).toFixed(2)} m ahead `
+      + `at ${placed.y.toFixed(2)} m, no higher than the hand at ${hand.toFixed(2)}`);
+
+  // And a reset with one on its way out of a hand puts everything right.
+  ready(head);
+  items.letGo(rig.player);
+  const midway = leaving();
+  items.reset();
+  check("a reset while it is still leaving the hand gives it back what it meets",
+    midway === 1 && leaving() === 0 && headBody.collider(0).collisionGroups() === groups,
+    `${midway} leaving, then ${leaving()}`);
 }
 
 async function theOrcsAxeCanBeWielded(): Promise<void> {
@@ -4763,6 +4965,7 @@ async function run(): Promise<void> {
   await theShieldGoesOnYourBackToo();
   await aShieldOnYourBackStopsACutFromBehind();
   await whatYouCutOffYouCanCarryOff();
+  await whatYouHoldYouCanThrow();
   await theOrcsAxeCanBeWielded();
   await everyWeaponCanBeWielded();
   await aCrouchGetsLow();
