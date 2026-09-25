@@ -3,11 +3,12 @@ import type RAPIER from "@dimforge/rapier3d-compat";
 import type { Combatant } from "./combatant";
 
 /**
- * What comes off a body: a head, an arm, a forearm with the axe still in its
- * fist. Lying on the floor it is only more rigid bodies, jointed to each
- * other where the cut did not part them; picked up, it goes in the pack (see
- * inventory.ts), and put down again it comes back into the world in front of
- * whoever had it and falls to the floor like anything else.
+ * What comes off a body: a head, an arm, a forearm -- and the weapon a hand
+ * that is cut off, or dead, still has hold of. Lying on the floor it is only
+ * more rigid bodies, jointed to each other where the cut did not part them;
+ * picked up, it is held in the hand, and from there it goes in the bag (see
+ * inventory.ts) or is let go of, in front of whoever had it, to fall to the
+ * floor like anything else.
  *
  * Nothing about a piece is copied or rebuilt to do this. It is the bodies the
  * fighter was made of, taken out of the world -- disabled, and hidden -- and
@@ -24,13 +25,22 @@ export interface Bit {
 /** How far above a piece's middle a hand takes hold of it, metres at human scale. */
 const HOLD_ABOVE = 0.05;
 
+/** A piece of a body, or a weapon off one. */
+export type PieceKind = "remains" | "weapon";
+
 export class Piece {
   constructor(
+    readonly kind: PieceKind,
     /** What it is called, whole: "the orc's head". */
     readonly name: string,
     readonly owner: Combatant,
     /** Its bodies, the one a hand takes it by first. */
     readonly bits: readonly Bit[],
+    /**
+     * Part it from whatever it is still held to, as it is taken: a weapon
+     * from the fist round it, or the fist from the weapon.
+     */
+    readonly release: () => void = () => {},
   ) {}
 
   /** Where it lies, and where on it a hand takes hold. */
@@ -55,9 +65,10 @@ export class Piece {
 
   /**
    * A copy of it to be carried in a hand, placed where it lies and centred
-   * on `grip`, world: the same meshes, sharing their geometry and materials,
-   * posed as its bodies are. What is in a hand is not in the world, so it is
-   * not the piece itself.
+   * on `grip`, world: the same meshes, sharing their geometry, posed as its
+   * bodies are. What is in a hand is not in the world, so it is not the piece
+   * itself. Its materials are its own: whatever fades the hand holding it --
+   * a camera pulled in by a wall -- must not fade the body it came off.
    */
   standIn(grip: THREE.Vector3): THREE.Group {
     const g = new THREE.Group();
@@ -65,6 +76,11 @@ export class Piece {
     for (const b of this.bits) {
       const copy = b.mesh.clone();
       copy.visible = true;
+      copy.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.material) return;
+        m.material = Array.isArray(m.material) ? m.material.map((x) => x.clone()) : m.material.clone();
+      });
       const p = b.body.translation();
       const r = b.body.rotation();
       copy.position.set(p.x - grip.x, p.y - grip.y, p.z - grip.z);
@@ -132,10 +148,30 @@ export class Piece {
   }
 }
 
+/** A stand-in done with: its materials, which were its own, go with it. */
+export function discardStandIn(g: THREE.Object3D): void {
+  g.removeFromParent();
+  g.traverse((o) => {
+    const m = (o as THREE.Mesh).material;
+    if (!m) return;
+    for (const x of Array.isArray(m) ? m : [m]) x.dispose();
+  });
+}
+
+/** One piece of a body, as `piecesOf` finds it. */
+export interface PieceSpec {
+  key: string;
+  kind: PieceKind;
+  name: string;
+  bits: Bit[];
+  release?: () => void;
+}
+
 /**
  * Every piece of this body lying off it right now, as what it is and which
- * bodies it is made of -- whether it is still on the floor or in somebody's
- * pack. The same cut always gives the same key: which cut it came off at.
+ * bodies it is made of -- whether it is still on the floor, in somebody's
+ * hand or in their bag. The same cut always gives the same key: which cut it
+ * came off at.
  *
  *   head         the head
  *   offShoulder  the other arm, whole if its elbow still holds, or what is
@@ -143,12 +179,14 @@ export class Piece {
  *   offElbow     the other forearm, cut at the elbow
  *   shoulder     the sword arm, whole
  *   elbow        the sword forearm
+ *   weapon       what the sword hand was holding, once that hand is cut off
+ *                or the body is dead -- unless it was on the back
  *
- * A sword arm keeps hold of its weapon: it comes too, unless it was on the
- * back when the arm came off.
+ * A hand that is cut off or dead keeps hold of its weapon until one of the
+ * two is taken: then it lets go (see `Arm.letGo`), and they are two things.
  */
-export function piecesOf(who: Combatant): { key: string; name: string; bits: Bit[] }[] {
-  const out: { key: string; name: string; bits: Bit[] }[] = [];
+export function piecesOf(who: Combatant): PieceSpec[] {
+  const out: PieceSpec[] = [];
   const whose = `${who.name}'s`;
   const f = who.fighter;
   const part = (name: string) => f.parts.find((p) => p.name === name);
@@ -159,7 +197,9 @@ export function piecesOf(who: Combatant): { key: string; name: string; bits: Bit
 
   const head = part("head");
   const headBit = bit("head");
-  if (head?.severed && headBit) out.push({ key: "head", name: `${whose} head`, bits: [headBit] });
+  if (head?.severed && headBit) {
+    out.push({ key: "head", kind: "remains", name: `${whose} head`, bits: [headBit] });
+  }
 
   // Cutting the shoulder marks the forearm severed too, with its elbow still
   // jointed: an arm comes off whole unless its elbow was cut first.
@@ -168,26 +208,31 @@ export function piecesOf(who: Combatant): { key: string; name: string; bits: Bit
   const upperBit = bit("offShoulder");
   const foreBit = bit("offElbow");
   if (fore && foreBit && fore.joint === null) {
-    out.push({ key: "offElbow", name: `${whose} off forearm`, bits: [foreBit] });
+    out.push({ key: "offElbow", kind: "remains", name: `${whose} off forearm`, bits: [foreBit] });
   }
   if (upper?.severed && upperBit) {
     const whole = fore !== undefined && foreBit !== null && fore.joint !== null;
     out.push({
-      key: "offShoulder", name: whole ? `${whose} off arm` : `${whose} off upper arm`,
+      key: "offShoulder", kind: "remains", name: whole ? `${whose} off arm` : `${whose} off upper arm`,
       bits: whole ? [upperBit, foreBit!] : [upperBit],
     });
   }
 
   const arm = who.arm;
+  const letGo = () => { arm.letGo(who.dead); };
   if (arm.severedAt !== null) {
     const bits: Bit[] = arm.severedAt === "shoulder"
       ? [{ body: arm.upper, mesh: arm.upperMesh }, { body: arm.fore, mesh: arm.foreMesh }]
       : [{ body: arm.fore, mesh: arm.foreMesh }];
-    const armed = !arm.stowed;
-    if (armed) bits.push({ body: arm.blade, mesh: arm.bladeMesh });
-    const what = arm.severedAt === "shoulder" ? "arm" : "forearm";
     out.push({
-      key: arm.severedAt, name: `${whose} ${what}${armed ? ` and ${arm.weapon.name}` : ""}`, bits,
+      key: arm.severedAt, kind: "remains",
+      name: `${whose} ${arm.severedAt === "shoulder" ? "arm" : "forearm"}`, bits, release: letGo,
+    });
+  }
+  if ((arm.severedAt !== null || who.dead) && !arm.stowed) {
+    out.push({
+      key: "weapon", kind: "weapon", name: `${whose} ${arm.weapon.name}`,
+      bits: [{ body: arm.blade, mesh: arm.bladeMesh }], release: letGo,
     });
   }
   return out;

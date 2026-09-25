@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { Combatant } from "./combatant";
 import { buildShieldMesh, SHIELD } from "./shield";
-import { Piece, piecesOf } from "./remains";
+import { discardStandIn, Piece, piecesOf } from "./remains";
 
 /**
  * Things lying about that a hand can take.
@@ -22,14 +22,24 @@ import { Piece, piecesOf } from "./remains";
  *                practise with, hang it back to fight without: a toggle, and
  *                the one place a shield comes free
  *   remains      whatever you have cut off an opponent: a head, an arm, a
- *                forearm with the axe still in it (see remains.ts). Unlike
- *                the rest these are physical -- they fell there, and they lie
- *                where they came to rest -- so where one is is asked of its
- *                bodies each step. Into the pack, and out again in front of
- *                you, with `drop`
+ *                forearm (see remains.ts)
+ *   a weapon     whatever an opponent's hand still had hold of when it was
+ *                cut off or died: the orc's axe. The hand lets go of it as
+ *                you take it
+ *
+ * The last two are physical, unlike the rest -- they fell there, and they
+ * lie where they came to rest -- so where one is is asked of its bodies each
+ * step. And they are not put away as they are taken: they stay in the hand
+ * that took them, until F puts them in the bag, or G lets go of them. From
+ * the bag they come back out into the hand.
  */
 
-export type ItemKind = "potion" | "shield" | "rack" | "remains";
+export type ItemKind = "potion" | "shield" | "rack" | "remains" | "weapon";
+
+/** Kept in the hand once taken, rather than put away: a piece of somebody, or their weapon. */
+export function holds(item: Item): boolean {
+  return item.kind === "remains" || item.kind === "weapon";
+}
 
 export interface Item {
   readonly kind: ItemKind;
@@ -47,10 +57,10 @@ export interface Item {
   readonly face: number | null;
   /**
    * Gone from where it lay -- until a reset puts it back. For the rack: its
-   * shield is off it. For remains: in someone's pack.
+   * shield is off it. For remains and weapons: in a hand, or in a bag.
    */
   taken: boolean;
-  /** For remains: the bodies it is made of, and whose they were. */
+  /** For remains and weapons: the bodies it is made of, and whose they were. */
   readonly piece?: Piece;
 }
 
@@ -85,9 +95,14 @@ export class Items {
   }>();
   /**
    * In a hand right now: the mesh, and how far it is still to go to the palm
-   * -- and, for remains, which, since what is in the hand is only a copy.
+   * -- and, for a piece of somebody, which, since what is in the hand is only
+   * a copy, and whether the hand is keeping it (see `hold`).
    */
-  private carried: { mesh: THREE.Object3D; from: THREE.Vector3; piece: Piece | null } | null = null;
+  private carried: {
+    mesh: THREE.Object3D; from: THREE.Vector3; piece: Piece | null; held: boolean;
+  } | null = null;
+  /** Whoever is holding something, if anyone is. */
+  private holder: Combatant | null = null;
   /** Whose severed parts become things to pick up. */
   private owners: readonly Combatant[] = [];
   /** And the remains found so far, by owner and cut. */
@@ -153,8 +168,10 @@ export class Items {
     const piece = item.piece ?? null;
     let mesh: THREE.Object3D;
     if (piece) {
-      // Out of the world while it is in the hand, or the body bowed over it
-      // kicks it about: a copy goes up in its place.
+      // Parted from whatever still has hold of it, and out of the world while
+      // it is in the hand, or the body bowed over it kicks it about: a copy
+      // goes up in its place.
+      piece.release();
       mesh = piece.standIn(item.grip);
       piece.setPresent(false);
     } else {
@@ -162,7 +179,7 @@ export class Items {
       mesh.visible = true;
     }
     palm.attach(mesh);
-    this.carried = { mesh, from: mesh.position.clone(), piece };
+    this.carried = { mesh, from: mesh.position.clone(), piece, held: false };
   }
 
   /** A step of whatever is in a hand settling into it, `k` of the way from where it was picked up. */
@@ -176,9 +193,13 @@ export class Items {
     const c = this.carried;
     if (!c) return;
     this.carried = null;
+    if (c.held && this.holder) {
+      this.holder.held = null;
+      this.holder = null;
+    }
     if (c.piece) {
-      // Only a copy: the piece itself never left the floor.
-      c.mesh.removeFromParent();
+      // Only a copy: the piece itself is wherever it was left.
+      discardStandIn(c.mesh);
     } else {
       const home = this.homes.get(c.mesh)!;
       home.parent.add(c.mesh);
@@ -206,12 +227,12 @@ export class Items {
       for (const p of piecesOf(who)) {
         const key = `${i}:${p.key}`;
         if (this.known.has(key)) continue;
-        const piece = new Piece(p.name, who, p.bits);
+        const piece = new Piece(p.kind, p.name, who, p.bits, p.release);
         const at = new THREE.Vector3();
         const grip = new THREE.Vector3();
         piece.locate(at, grip);
         const item: Item = {
-          kind: "remains", name: p.name, at, mesh: p.bits[0].mesh, grip, face: null,
+          kind: p.kind, name: p.name, at, mesh: p.bits[0].mesh, grip, face: null,
           taken: false, piece,
         };
         this.known.set(key, item);
@@ -223,19 +244,73 @@ export class Items {
         item.piece.locate(item.at, item.grip);
       }
     }
+    // A hand taken away from what it holds -- a blow on the floor, a cut, the
+    // sword coming out -- lets go of it.
+    const h = this.holder;
+    if (h && (h.dead || h.fighter.down || h.arm.disarmed || !h.arm.sheathed || h.arm.stowing)) {
+      this.letGo(h);
+    }
   }
 
   /**
-   * Put a piece from `who`'s pack back into the world: in front of them, at
-   * knee height and short of any wall, lying away from them, to fall to the
-   * floor. What goes back in is the bodies themselves, so anything that was
-   * following one -- a weapon's sweep, most of all -- has to be told it moved:
-   * see `Impacts.resetSweeps`.
+   * Keep a piece of somebody in `who`'s sword hand: the copy that went up in
+   * it on the way from the floor, or -- from the bag, or taken at once -- one
+   * put there now. It is theirs from here, out of the world, until they put
+   * it in the bag or let go of it.
    */
-  drop(who: Combatant, item: Item): Outcome {
-    const piece = item.piece;
-    if (!piece || !item.taken || !who.inventory.remains.includes(item)) return { ok: false, text: "" };
-    if (who.dead) return { ok: false, text: "" };
+  hold(who: Combatant, item: Item): Outcome {
+    if (!item.piece) return { ok: false, text: "" };
+    if (this.carried?.piece !== item.piece) this.lift(item, who.arm.palm);
+    this.settle(1);
+    this.carried!.held = true;
+    this.holder = who;
+    who.held = item;
+    this.setTaken(item, true);
+    return { ok: true, text: `holding ${item.name}` };
+  }
+
+  /** F with something in the hand: into the bag with it. */
+  bag(who: Combatant): Outcome {
+    const item = who.held;
+    if (!item || this.holder !== who) return { ok: false, text: "nothing in your hand" };
+    this.putBack();
+    who.inventory.stow(item);
+    return { ok: true, text: `put ${item.name} in your bag` };
+  }
+
+  /** And out of the bag into the hand again, if the hand is free to take it. */
+  unbag(who: Combatant, item: Item): Outcome {
+    if (!item.piece || !who.inventory.pieces.includes(item)) return { ok: false, text: "" };
+    const busy = handBusy(who);
+    if (busy !== null) return { ok: false, text: busy };
+    who.inventory.unstow(item);
+    return this.hold(who, item);
+  }
+
+  /**
+   * G, or anything that takes the hand away: let go of what is in it. It
+   * comes back into the world from the hand's height, in front of whoever had
+   * it and short of any wall, and falls to the floor.
+   */
+  letGo(who: Combatant): Outcome {
+    const item = who.held;
+    if (!item?.piece || this.holder !== who) return { ok: false, text: "nothing in your hand" };
+    const from = who.arm.handPosition.y;
+    this.putBack();
+    this.putDown(who, item.piece, from);
+    this.setTaken(item, false);
+    item.piece.locate(item.at, item.grip);
+    return { ok: true, text: `let go of ${item.name}` };
+  }
+
+  /**
+   * A piece back into the world in front of `who`: from `height`, or knee
+   * height if that is higher, short of any wall and lying away from them, to
+   * fall to the floor. It goes in as it lay when it was taken, turned to
+   * their facing, rather than as the copy in the hand was hanging: the copy
+   * went through walls and floors on the way, and the bodies cannot.
+   */
+  private putDown(who: Combatant, piece: Piece, height: number): void {
     const f = who.fighter;
     const s = f.build.scale;
     const sin = Math.sin(f.yaw);
@@ -258,22 +333,23 @@ export class Items {
     }
     ahead = Math.max(DROP_NEAR * s, Math.min(want, ahead));
     const p = f.body.translation();
-    const at = _drop.set(p.x - sin * ahead, p.y - f.build.hullCentreY + DROP_UP * s, p.z - cos * ahead);
-    piece.place(at, lie);
-    who.inventory.unstow(item);
-    this.setTaken(item, false);
-    piece.locate(item.at, item.grip);
-    return { ok: true, text: `dropped ${item.name}` };
+    const soles = p.y - f.build.hullCentreY;
+    const y = Math.max(soles + DROP_UP * s, Math.min(height, soles + DROP_TOP * s));
+    piece.place(_drop.set(p.x - sin * ahead, y, p.z - cos * ahead), lie);
   }
 
-  /** The nearest thing a body standing at `p` could reach, or null. */
+  /**
+   * The nearest thing a body standing at `p` could reach, or null. A weapon
+   * counts as a little nearer than it is: one still in a fist lies where the
+   * fist does, and of the two it is the one worth having first.
+   */
   nearest(p: THREE.Vector3, reach: number, seen: (item: Item) => boolean = () => true): Item | null {
     let best: Item | null = null;
     let bestD = reach;
     for (const item of this.items) {
       if (item.taken && item.kind !== "rack") continue;
       if (!seen(item)) continue;
-      const d = Math.hypot(item.at.x - p.x, item.at.z - p.z);
+      const d = Math.hypot(item.at.x - p.x, item.at.z - p.z) - (item.kind === "weapon" ? WEAPON_FIRST : 0);
       if (d < bestD) {
         bestD = d;
         best = item;
@@ -302,6 +378,7 @@ export class Items {
   reset(): void {
     for (const item of this.items) item.taken = false;
     this.putBack();
+    this.holder = null;
     for (const item of this.items) this.setTaken(item, false);
     for (let i = this.items.length - 1; i >= 0; i--) {
       if (this.items[i].piece) this.items.splice(i, 1);
@@ -310,15 +387,20 @@ export class Items {
   }
 }
 
+/** How much nearer a weapon counts than it is, metres: see `Items.nearest`. */
+const WEAPON_FIRST = 0.3;
+
 /**
- * Where a piece put down goes, metres at human scale: this far ahead of the
+ * Where a piece let go of goes, metres at human scale: this far ahead of the
  * middle of the body putting it down, no nearer than this whatever is in the
- * way, this far short of a wall, and from this high.
+ * way, this far short of a wall, and from no lower than this and no higher
+ * than that.
  */
 const DROP_AHEAD = 0.6;
 const DROP_NEAR = 0.3;
 const DROP_CLEAR = 0.12;
 const DROP_UP = 0.45;
+const DROP_TOP = 1.3;
 const _drop = new THREE.Vector3();
 
 /** What trying to take something did, in words the HUD can show. */
@@ -328,18 +410,31 @@ export interface Outcome {
 }
 
 /**
+ * Why the sword hand cannot take anything right now, or null if it can: it
+ * is the hand that takes things, so the sword has to be away, and it has to
+ * be empty.
+ */
+export function handBusy(who: Combatant): string | null {
+  if (who.dead || who.fighter.down) return "";
+  if (who.arm.disarmed) return "no hand to take it with";
+  if (who.held) return `your hand is full — F puts ${who.held.name} in your bag`;
+  if (!who.arm.sheathed || who.arm.stowing) return "sheathe your sword first — X";
+  return null;
+}
+
+/**
  * Why this body cannot take that, in words the HUD can show -- or null if it
  * can. The sword has to be away: the hand that takes things is the sword hand.
  */
 export function refusal(who: Combatant, item: Item): string | null {
-  if (who.dead || who.fighter.down) return "";
-  if (who.arm.disarmed) return "no hand to take it with";
-  if (!who.arm.sheathed || who.arm.stowing) return "sheathe your sword first — X";
+  const busy = handBusy(who);
+  if (busy !== null) return busy;
   const l = who.fighter.offLimb;
   const arm = l.shoulderOn && l.elbowOn;
   switch (item.kind) {
     case "potion":
     case "remains":
+    case "weapon":
       return null;
     case "shield":
       if (who.carriesShield) return "you already carry a shield";
@@ -354,9 +449,9 @@ export function refusal(who: Combatant, item: Item): string | null {
 }
 
 /**
- * What taking it does, once a hand has it: a potion or a piece of somebody in
- * the pack, a shield on the arm, a shield off the arm -- or the back -- and
- * back on the rack.
+ * What taking it does, once a hand has it: a potion in the bag, a piece of
+ * somebody or their weapon kept in the hand, a shield on the arm, a shield
+ * off the arm -- or the back -- and back on the rack.
  */
 export function take(who: Combatant, items: Items, item: Item): Outcome {
   const no = refusal(who, item);
@@ -367,9 +462,8 @@ export function take(who: Combatant, items: Items, item: Item): Outcome {
       who.potions++;
       return { ok: true, text: `took ${item.name}` };
     case "remains":
-      items.setTaken(item, true);
-      who.inventory.stow(item);
-      return { ok: true, text: `took ${item.name}` };
+    case "weapon":
+      return items.hold(who, item);
     case "shield":
       if (!who.equipShield()) return { ok: false, text: "no arm to strap it to" };
       items.setTaken(item, true);
@@ -410,6 +504,7 @@ export function inRange(who: Combatant, items: Items): Item | null {
 
 /** What F would do here, for the prompt, or null if there is nothing to go and get. */
 export function promptFor(who: Combatant, items: Items): string | null {
+  if (who.held) return `F — put ${who.held.name} in your bag · G — let go`;
   const item = inRange(who, items);
   if (!item) return null;
   const verb = item.kind === "rack" && item.taken ? "hang your shield on the rack"
@@ -424,7 +519,7 @@ export function promptFor(who: Combatant, items: Items): string | null {
 function canHold(who: Combatant, item: Item): boolean {
   const l = who.fighter.offLimb;
   const arm = l.shoulderOn && l.elbowOn;
-  if (item.kind === "potion" || item.kind === "remains") return true;
+  if (item.kind === "potion" || holds(item)) return true;
   if (item.kind === "rack" && item.taken) return who.carriesShield;
   return arm && !who.carriesShield;
 }
