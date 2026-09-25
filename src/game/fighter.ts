@@ -1890,6 +1890,17 @@ export class Fighter {
   }
 
   /**
+   * Whether a shape posed here would be in anything `groups` meets, asked as
+   * a collider with those groups would be: `sightFilter` for the stone alone.
+   */
+  overlaps(
+    shape: RAPIER.Shape, at: RAPIER.Vector, rot: RAPIER.Rotation, groups: number,
+    except?: RAPIER.Collider,
+  ): boolean {
+    return this.phys.world.intersectionWithShape(at, rot, shape, undefined, groups, except) !== null;
+  }
+
+  /**
    * How much clear floor lies along a flat direction, metres, up to `reach`.
    *
    * Knee high, against the same stone that stops sight and nothing that walks.

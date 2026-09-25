@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type RAPIER from "@dimforge/rapier3d-compat";
 import type { Combatant } from "./combatant";
 import { buildShieldMesh, SHIELD } from "./shield";
 import { discardStandIn, Piece, piecesOf } from "./remains";
@@ -30,9 +31,10 @@ import { discardStandIn, Piece, piecesOf } from "./remains";
  * The last two are physical, unlike the rest -- they fell there, and they
  * lie where they came to rest -- so where one is is asked of its bodies each
  * step. And they are not put away as they are taken: they stay in the hand
- * that took them, until F puts them in the bag, or G lets go of them. From
- * the bag they come back out into the hand. A weapon held can be taken up,
- * with X, and fought with: see `wield`.
+ * that took them, until F puts them in the bag, or G lets go of them -- which
+ * is a throw, if the hand was swinging: see `letGo`. From the bag they come
+ * back out into the hand. A weapon held can be taken up, with X, and fought
+ * with: see `wield`.
  */
 
 export type ItemKind = "potion" | "shield" | "rack" | "remains" | "weapon";
@@ -108,6 +110,16 @@ export class Items {
   private owners: readonly Combatant[] = [];
   /** And the remains found so far, by owner and cut. */
   private readonly known = new Map<string, Item>();
+  /**
+   * Pieces just out of a hand, still passing through whoever let go of them:
+   * see `clearOf`.
+   */
+  private readonly leaving: Leaving[] = [];
+  /**
+   * Told of each body put somewhere new between two steps, so whatever draws
+   * it can draw it there at once rather than sliding it in from where it was.
+   */
+  placed: (body: RAPIER.RigidBody) => void = () => {};
 
   constructor(scene: THREE.Scene, layout: ItemLayout) {
     for (const at of layout.potions) {
@@ -172,6 +184,7 @@ export class Items {
       // Parted from whatever still has hold of it, and out of the world while
       // it is in the hand, or the body bowed over it kicks it about: a copy
       // goes up in its place.
+      this.arrive(piece);
       piece.release();
       mesh = piece.standIn(item.grip);
       piece.setPresent(false);
@@ -244,6 +257,10 @@ export class Items {
       if (item.piece && !item.taken && this.carried?.piece !== item.piece) {
         item.piece.locate(item.at, item.grip);
       }
+    }
+    for (let i = this.leaving.length - 1; i >= 0; i--) {
+      const l = this.leaving[i];
+      if (this.clearOf(l)) this.arrive(l.piece);
     }
     // A hand taken away from what it holds -- a blow on the floor, a cut, the
     // sword coming out -- lets go of it. A weapon taken up is held as the
@@ -329,39 +346,154 @@ export class Items {
 
   /**
    * G, or anything that takes the hand away: let go of what is in it. It
-   * comes back into the world from the hand's height, in front of whoever had
-   * it and short of any wall, and falls to the floor.
+   * leaves the hand as it is in the hand -- where it is, turned as it is, and
+   * moving as the hand is -- so let go of in the middle of a swing, it is
+   * thrown, and let go of from a still hand, it drops. Only where that would
+   * put it in the stone -- a wall or the floor that the copy in the hand went
+   * into -- is it put down instead, in front of whoever had it, to fall.
    */
   letGo(who: Combatant): Outcome {
     const item = who.held;
     if (!item?.piece || this.holder !== who) return { ok: false, text: "nothing in your hand" };
+    const piece = item.piece;
+    let flight: Flight[] | null;
     if (who.arm.wieldsTaken) {
-      // A weapon taken up leaves the hand as it is: where the arm's weapon
+      // A weapon taken up leaves the hand as the arm's weapon is: where it
       // is, turned as it is and moving as it is. It was that weapon all along.
       const b = who.arm.blade;
-      const p = b.translation();
-      const q = b.rotation();
-      const v = b.linvel();
-      const w = b.angvel();
+      flight = [{
+        body: piece.bits[0].body, p: vec(b.translation()), q: quat(b.rotation()),
+        v: vec(b.linvel()), w: vec(b.angvel()),
+      }];
       if (!who.arm.putUp()) return { ok: false, text: "" };
-      const body = item.piece.bits[0].body;
-      body.setTranslation(p, true);
-      body.setRotation(q, true);
-      body.setLinvel(v, true);
-      body.setAngvel(w, true);
-      body.resetForces(true);
-      body.resetTorques(true);
       this.forget(who);
-      this.setTaken(item, false);
-      item.piece.locate(item.at, item.grip);
-      return { ok: true, text: `let go of ${item.name}` };
+    } else {
+      const c = this.carried;
+      flight = c?.piece === piece ? this.fromHand(who, piece, c.mesh) : null;
+      const from = who.arm.handPosition.y;
+      this.putBack();
+      if (!flight) this.putDown(who, piece, from);
     }
-    const from = who.arm.handPosition.y;
-    this.putBack();
-    this.putDown(who, item.piece, from);
     this.setTaken(item, false);
-    item.piece.locate(item.at, item.grip);
-    return { ok: true, text: `let go of ${item.name}` };
+    if (flight) this.launch(who, piece, flight);
+    for (const b of piece.bits) this.placed(b.body);
+    piece.locate(item.at, item.grip);
+    const speed = flight ? Math.max(...flight.map((f) => f.v.length())) : 0;
+    return { ok: true, text: speed >= THROWN ? `threw ${item.name}` : `let go of ${item.name}` };
+  }
+
+  /**
+   * Where each body of a piece would go, and how it would be moving, if it
+   * left `who`'s hand now as the copy in it is: the copy's pose, carried on
+   * the forearm where the world has it rather than where it was last drawn.
+   * It goes the way the hand was going, as fast, and turning as the hand
+   * was: its middle takes the palm's speed, and it spins about that with the
+   * forearm's spin. Not the speed the forearm has at its middle, which a
+   * rigid thing would -- the copy is held however it lay, and a sword lying
+   * back along the arm would go backwards off a swing forwards. Null if any
+   * of it would be in the stone.
+   */
+  private fromHand(who: Combatant, piece: Piece, copy: THREE.Object3D): Flight[] | null {
+    const arm = who.arm;
+    const fore = arm.fore;
+    const t = fore.translation();
+    const r = fore.rotation();
+    _qa.set(r.x, r.y, r.z, r.w);
+    _hand.compose(_a.set(t.x, t.y, t.z), _qa, ONE);
+    const palm = arm.palm.position.clone().applyQuaternion(_qa).add(_a);
+    arm.palm.updateMatrix();
+    copy.updateMatrix();
+    _hand.multiply(arm.palm.matrix).multiply(copy.matrix);
+    const spin = vec(fore.angvel());
+    const com = fore.worldCom();
+    _a.set(palm.x - com.x, palm.y - com.y, palm.z - com.z);
+    const speed = vec(fore.linvel()).add(_b.crossVectors(spin, _a));
+    const stone = who.fighter.side.sightFilter;
+    const out: Flight[] = [];
+    const middle = new THREE.Vector3();
+    let mass = 0;
+    for (let i = 0; i < piece.bits.length; i++) {
+      const body = piece.bits[i].body;
+      const m = copy.children[i];
+      m.updateMatrix();
+      const p = new THREE.Vector3();
+      const q = new THREE.Quaternion();
+      _m.multiplyMatrices(_hand, m.matrix).decompose(p, q, _s);
+      // Each of its colliders, carried from where they sit on the body now
+      // to where that pose puts them.
+      const bp = body.translation();
+      const bq = body.rotation();
+      _qb.set(bq.x, bq.y, bq.z, bq.w).invert();
+      for (let k = 0; k < body.numColliders(); k++) {
+        const col = body.collider(k);
+        const ct = col.translation();
+        const cr = col.rotation();
+        _a.set(ct.x - bp.x, ct.y - bp.y, ct.z - bp.z).applyQuaternion(_qb).applyQuaternion(q).add(p);
+        _qa.set(cr.x, cr.y, cr.z, cr.w).premultiply(_qb).premultiply(q);
+        if (who.fighter.overlaps(col.shape, _a, _qa, stone)) return null;
+      }
+      // For now its own middle, in the velocity's place.
+      const lc = body.localCom();
+      const v = new THREE.Vector3(lc.x, lc.y, lc.z).applyQuaternion(q).add(p);
+      middle.addScaledVector(v, body.mass());
+      mass += body.mass();
+      out.push({ body, p, q, v, w: spin.clone() });
+    }
+    middle.multiplyScalar(1 / mass);
+    for (const f of out) f.v.sub(middle).crossVectors(spin, f.v).add(speed);
+    return out;
+  }
+
+  /**
+   * A piece, back in the world, sent on its way: every body where it goes
+   * and moving as it goes. It passes through whoever let go of it until it
+   * is clear of them -- it starts inside their hand -- and meets them after
+   * that like anybody else.
+   */
+  private launch(who: Combatant, piece: Piece, flight: readonly Flight[]): void {
+    for (const f of flight) {
+      f.body.setTranslation(f.p, true);
+      f.body.setRotation(f.q, true);
+      f.body.setLinvel(f.v, true);
+      f.body.setAngvel(f.w, true);
+      f.body.resetForces(true);
+      f.body.resetTorques(true);
+    }
+    this.arrive(piece);
+    const side = who.fighter.side;
+    const theirs = side.body | side.blade;
+    const colliders: Leaving["colliders"] = [];
+    for (const b of piece.bits) {
+      for (let k = 0; k < b.body.numColliders(); k++) {
+        const c = b.body.collider(k);
+        const groups = c.collisionGroups();
+        colliders.push({ c, unmet: groups & theirs });
+        c.setCollisionGroups(groups & ~theirs);
+      }
+    }
+    this.leaving.push({ piece, from: who, colliders });
+  }
+
+  /**
+   * Whether a piece on its way out of a hand is clear of whoever let go of
+   * it: none of it anywhere in them that it would otherwise meet.
+   */
+  private clearOf(l: Leaving): boolean {
+    return l.colliders.every(({ c, unmet }) => unmet === 0
+      || !l.from.fighter.overlaps(c.shape, c.translation(), c.rotation(), (c.collisionGroups() & ~0xffff) | unmet, c));
+  }
+
+  /**
+   * A piece done leaving a hand, however it got there: it meets whoever it
+   * would again. Only what was taken off is put back, so anything else that
+   * changed what it meets meanwhile -- the arm it fell from going limp --
+   * stands.
+   */
+  private arrive(piece: Piece): void {
+    const i = this.leaving.findIndex((l) => l.piece === piece);
+    if (i < 0) return;
+    for (const { c, unmet } of this.leaving[i].colliders) c.setCollisionGroups(c.collisionGroups() | unmet);
+    this.leaving.splice(i, 1);
   }
 
   /**
@@ -437,6 +569,7 @@ export class Items {
    * so this goes first -- and are not lying about any more.
    */
   reset(): void {
+    while (this.leaving.length) this.arrive(this.leaving[0].piece);
     for (const item of this.items) item.taken = false;
     this.putBack();
     this.holder = null;
@@ -450,6 +583,45 @@ export class Items {
 
 /** How much nearer a weapon counts than it is, metres: see `Items.nearest`. */
 const WEAPON_FIRST = 0.3;
+
+/** How fast something has to leave a hand, m/s, to have been thrown rather than let go of. */
+const THROWN = 2.5;
+
+/** A body of a piece leaving a hand: where it goes, and how it is moving, world. */
+interface Flight {
+  body: RAPIER.RigidBody;
+  p: THREE.Vector3;
+  q: THREE.Quaternion;
+  v: THREE.Vector3;
+  w: THREE.Vector3;
+}
+
+/**
+ * A piece just out of a hand, and whose: its colliders, and which of that
+ * body's groups each would meet but is passing through for now.
+ */
+interface Leaving {
+  piece: Piece;
+  from: Combatant;
+  colliders: { c: RAPIER.Collider; unmet: number }[];
+}
+
+function vec(v: { x: number; y: number; z: number }): THREE.Vector3 {
+  return new THREE.Vector3(v.x, v.y, v.z);
+}
+
+function quat(q: { x: number; y: number; z: number; w: number }): THREE.Quaternion {
+  return new THREE.Quaternion(q.x, q.y, q.z, q.w);
+}
+
+const ONE = new THREE.Vector3(1, 1, 1);
+const _hand = new THREE.Matrix4();
+const _m = new THREE.Matrix4();
+const _s = new THREE.Vector3();
+const _a = new THREE.Vector3();
+const _b = new THREE.Vector3();
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
 
 /**
  * Where a piece let go of goes, metres at human scale: this far ahead of the
@@ -570,8 +742,8 @@ export function promptFor(who: Combatant, items: Items): string | null {
     if (who.arm.wieldsTaken) return null;
     const name = who.held.name;
     return who.held.kind === "weapon"
-      ? `X — wield ${name} · F — put it in your bag · G — let go`
-      : `F — put ${name} in your bag · G — let go`;
+      ? `X — wield ${name} · F — put it in your bag · G — let go, or swing and throw`
+      : `F — put ${name} in your bag · G — let go, or swing and throw`;
   }
   const item = inRange(who, items);
   if (!item) return null;
