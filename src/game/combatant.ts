@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
 import { Arm, type ArmInput } from "./arm";
 import { Fighter } from "./fighter";
@@ -443,7 +444,7 @@ export class Combatant {
   /**
    * Z: the shield onto the back, or off it onto the arm -- by the other hand,
    * over its own shoulder (see `OffArm.slingShield`). On the back it guards
-   * nothing, and the hand is free.
+   * what is behind you, and the hand is free.
    */
   sling(): Outcome {
     if (this.dead || this.fighter.down) return { ok: false, text: "" };
@@ -464,19 +465,27 @@ export class Combatant {
       ? { ok: true, text: "shield onto your back" } : { ok: false, text: "" };
   }
 
-  /** The shield's collider as the impact readout names it, as it comes and goes. */
+  /**
+   * The shield's colliders, on the arm and on the back, as the impact readout
+   * names them, as they come and go.
+   */
   private nameShield(): void {
-    const handle = this.offArm.shieldCollider?.handle ?? null;
-    if (handle === this.shieldHandle) return;
-    if (this.shieldHandle !== null) this.targets.forget(this.shieldHandle);
-    if (handle !== null) this.targets.register(handle, `${this.possessive} shield`);
-    this.shieldHandle = handle;
+    const now = [this.offArm.shieldCollider, this.offArm.slungCollider];
+    for (let i = 0; i < now.length; i++) {
+      const handle = now[i]?.handle ?? null;
+      const was = this.shieldHandles[i];
+      if (handle === was) continue;
+      if (was !== null) this.targets.forget(was);
+      if (handle !== null) this.targets.register(handle, `${this.possessive} shield`);
+      this.shieldHandles[i] = handle;
+    }
   }
 
-  private shieldHandle: number | null = null;
+  private readonly shieldHandles: (number | null)[] = [null, null];
 
   /**
-   * A blade has met this fighter's shield. True if it did.
+   * A blade has met this fighter's shield -- on the arm, or on the back.
+   * True if it did.
    *
    * The solver has already stopped it -- a shield meets blades the way another
    * blade does -- so there is no cut to weigh. But a blow that fails to cut
@@ -484,8 +493,10 @@ export class Combatant {
    * a shield still staggers you, it just leaves you whole.
    */
   block(impact: Impact): boolean {
-    const shield = this.offArm.shieldCollider;
-    if (!shield || impact.colliderHandle !== shield.handle) return false;
+    const hit = (c: { handle: number } | null) => c !== null && c.handle === impact.colliderHandle;
+    const back = this.offArm.slungCollider;
+    const onBack = back !== null && hit(back) && !fromInside(impact, back);
+    if (!hit(this.offArm.shieldCollider) && !onBack) return false;
     if (!this.dead) this.lastBlow = this.fighter.takeBlow(impact, this.mass, this.tuning);
     return true;
   }
@@ -523,11 +534,12 @@ export class Combatant {
 
   /**
    * Everything still attached to this body, kg: what a blow has to move.
-   * The hull with its chest and hips, the head and off arm while they are on,
-   * and the sword arm and weapon for as much of them as is left.
+   * The hull with its chest and hips, the head and off arm while they are on
+   * -- with a shield, if one is strapped there -- the sword arm and weapon for
+   * as much of them as is left, and a shield on the back.
    */
   get mass(): number {
-    let m = this.fighter.body.mass();
+    let m = this.fighter.body.mass() + this.offArm.slungMass;
     for (const part of this.fighter.parts) {
       if (part.body !== undefined && part.severed !== true) m += part.body.mass();
     }
@@ -597,6 +609,26 @@ export class Combatant {
     this.fighter.applyPose(alpha);
     this.arm.syncMeshes(showGhost);
   }
+}
+
+const _faceOut = new THREE.Vector3();
+const _faceQ = new THREE.Quaternion();
+
+/**
+ * A blade touching a shield on the back from between it and the back: the
+ * point of a cut to the front, reaching round the hips after it and clipping
+ * the inside of the rim. The solver stops it there as anywhere, but that is a
+ * blade tangled behind a body, not a blow the shield caught -- a slung shield
+ * guards what comes at its face. Which side of the boards the contact is on
+ * says which it was; the way the blow drove does not, since at the rim the
+ * normal runs across the corner.
+ */
+function fromInside(impact: Impact, shield: RAPIER.Collider): boolean {
+  const r = shield.rotation();
+  const c = shield.translation();
+  _faceOut.set(0, 1, 0).applyQuaternion(_faceQ.set(r.x, r.y, r.z, r.w));
+  return (impact.at.x - c.x) * _faceOut.x + (impact.at.y - c.y) * _faceOut.y
+    + (impact.at.z - c.z) * _faceOut.z < 0;
 }
 
 /** A cut, as the blood system wants it. */

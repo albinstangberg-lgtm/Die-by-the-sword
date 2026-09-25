@@ -20,6 +20,7 @@ import {
 } from "../src/game/arena";
 import { interact, Items, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
+import { SLUNG, SLUNG_TURN } from "../src/game/shield";
 import { Pickup } from "../src/game/pickup";
 import { Targets } from "../src/game/targets";
 import { Dummy, type SeverEvent } from "../src/game/dummy";
@@ -3916,6 +3917,59 @@ async function aShieldStopsABlade(): Promise<void> {
     `the hardest block moved the body ${held.weight.toFixed(2)} m/s`);
 }
 
+async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
+  console.log("\na shield on your back stops a cut from behind, and the blow still lands its weight");
+  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const run = async (shield: boolean, back = true) => {
+    const at = spawnFor(SWORDSMAN, 0, SPAWN.z - 1.1);
+    const rig = await buildRig({}, SWORDSMAN, at);
+    rig.foe.fighter.yaw = back ? 0 : Math.PI;  // its back to you, or its front
+    rig.holdFoe();
+    rig.pin(standAt);
+    rig.hold(30);
+    if (shield) {
+      rig.foe.equipShield();
+      rig.hold(30);
+      rig.foe.sling();
+    }
+    rig.hold(90);
+    let blocks = 0;
+    let damage = 0;
+    let weight = 0;
+    rig.impacts.addBlade(rig.arm, (i) => {
+      if (rig.foe.block(i)) {
+        blocks++;
+        weight = Math.max(weight, rig.foe.lastBlow?.speed ?? 0);
+        return;
+      }
+      if (rig.foe.receive(i)) damage += cutDamage(i);
+    });
+    // Level, across the shoulder blades, where the shield hangs.
+    const high = SWORDSMAN.build.standing.waist + SLUNG.y * SWORDSMAN.build.scale;
+    const target = new THREE.Vector3(0, high, at.z);
+    for (let swings = 0; swings < 12; swings++) throwForehand(rig, target, { level: true });
+    return { blocks, damage, weight, slung: rig.foe.shieldOnBack };
+  };
+  const bare = await run(false);
+  const held = await run(true);
+  check("a cut across the back meets the shield slung there, and is stopped by it",
+    held.slung && held.blocks >= 3,
+    `the blade met the shield on its back ${held.blocks} times in twelve swings`);
+  check("and the back behind it is cut far less",
+    bare.damage > 5 && held.damage < bare.damage * 0.5,
+    `${held.damage.toFixed(1)} damage behind a slung shield, ${bare.damage.toFixed(1)} without`);
+  check("the weight of a blow stopped on the back still arrives", held.weight > 0,
+    `the hardest moved the body ${held.weight.toFixed(2)} m/s`);
+  // The point of a cut to the front can reach round the hips and touch it
+  // from inside: that is no block, and it spares the front nothing.
+  const front = await run(true, false);
+  const bareFront = await run(false, false);
+  check("and it guards the back only: cuts to the front land as hard with it there as without",
+    front.slung && front.blocks <= 1 && front.damage > bareFront.damage * 0.7,
+    `${front.blocks} blocked; ${front.damage.toFixed(1)} damage to the front with a shield on the back, `
+      + `${bareFront.damage.toFixed(1)} without`);
+}
+
 async function theShieldArmIsSteered(): Promise<void> {
   console.log("\nthe left button steers the shield, and the sword stays put");
   const rig = await buildRig();
@@ -4113,10 +4167,30 @@ async function theShieldGoesOnYourBackToo(): Promise<void> {
   check("Z puts it on your back in about a second, the hand going up over the shoulder with it",
     on > 30 && on < 110 && over > 0.08,
     `${(on / 60).toFixed(2)} s; the hand rose ${(over * 100).toFixed(0)} cm over the shoulder`);
-  check("where it rides the chest, out of the world: nothing to stop a blade",
+  check("where it rides the chest, off the arm: one collider on the back, none on the arm",
     rig.player.shieldOnBack && !rig.player.hasShield && off.shieldCollider === null
-      && mesh !== null && mesh.parent === f.chest,
-    `on the back ${rig.player.shieldOnBack}, collider ${off.shieldCollider !== null}`);
+      && off.slungCollider !== null && mesh !== null && mesh.parent === f.chest,
+    `on the back ${rig.player.shieldOnBack}, on the arm ${off.shieldCollider !== null}, `
+      + `on the back ${off.slungCollider !== null}`);
+
+  // Walking and turning, the collider stays where the chest has the shield,
+  // behind the body and face out.
+  let drift = 0;
+  let facing = 1;
+  for (let i = 0; i < 90; i++) {
+    rig.step(1, { ...NO_KEYS, forward: i < 60, turnLeft: i > 20 && i < 70 });
+    const drawn = new THREE.Vector3();
+    const q = new THREE.Quaternion();
+    f.chestFrameWorld(SLUNG.clone().multiplyScalar(SWORDSMAN.build.scale), SLUNG_TURN, drawn, q);
+    const c = off.slungCollider!;
+    drift = Math.max(drift, drawn.distanceTo(new THREE.Vector3().copy(c.translation())));
+    const r = c.rotation();
+    const out = new THREE.Vector3(0, 1, 0).applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+    facing = Math.min(facing, out.dot(new THREE.Vector3(Math.sin(f.yaw), 0, Math.cos(f.yaw))));
+  }
+  check("walking and turning, it stays on the back where the shield is drawn, facing out",
+    drift < 0.01 && facing > 0.8,
+    `${(drift * 1000).toFixed(1)} mm from where it is drawn at worst; facing out ${facing.toFixed(2)}`);
 
   rig.step(40);
   rig.player.health = 50;
@@ -4154,7 +4228,7 @@ async function theShieldGoesOnYourBackToo(): Promise<void> {
   const second = rig.player.equipShield();
   const hang = interact(rig.player, items);
   check("slung, it is still the one shield: none on top of it, and the rack takes it back",
-    take.ok && !second && hang.ok && !rig.player.carriesShield,
+    take.ok && !second && hang.ok && !rig.player.carriesShield && off.slungCollider === null,
     `${take.text}; another ${second}; ${hang.text}`);
 
   // Anything that takes the arm away leaves it where it had got to.
@@ -4414,6 +4488,7 @@ async function run(): Promise<void> {
   await aShieldStopsABlade();
   await theShieldArmIsSteered();
   await theShieldGoesOnYourBackToo();
+  await aShieldOnYourBackStopsACutFromBehind();
   await whatYouCutOffYouCanCarryOff();
   await aCrouchGetsLow();
   await aVaultGoesOver();

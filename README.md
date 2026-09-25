@@ -36,7 +36,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 309 checks, no browser needed
+npm run smoke    # headless physics harness — 314 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -535,10 +535,24 @@ let go of it to where it is going.
 
 On your back it lies across the shoulder blades, face out, low enough that
 the sword's hilt stands clear over its rim and far enough out to lie over the
-scabbard rather than through it. It is out of the world there, as the sword
-is: a mesh riding the chest, with no collider, so it stops nothing — a cut
-from behind is a cut. What it buys is the hand: with the shield on your back
-and the sword in your hand you can drink without putting the sword away.
+scabbard rather than through it — and it still stops blades, the ones that
+come from behind. There it is a collider on the hull that carries the chest,
+placed each step where the posture has the chest, as the torso's own collider
+is, so it covers your back through every lean, turn and crouch. It meets other
+blades and nothing else: a cut across your back stops on it as a parry does,
+and it never catches on a door frame. A blow stopped there is weighed like
+any other — it can still stagger you — and the weight is the shield's too:
+3.2 kilos more for a blow to move, counted where the blow is weighed rather
+than put on the hull, which was tuned without it. In the harness a dozen
+level cuts across the shoulder blades do a ninth of the damage with it there.
+
+It guards the back and nothing else. The point of a cut to the front can
+reach round the hips and clip the inside of its rim; the solver stops the
+blade there as anywhere, but that is a blade tangled behind you, not a blow
+the shield caught, and it spares your front nothing: which side of the boards
+the blade touched decides it. What the shield on your back buys, besides, is
+the hand: with the shield there and the sword in your hand you can drink
+without putting the sword away.
 
 It is still the one shield. You cannot take another while it is on your back,
 and the rack takes it back from there as readily as from your arm. A ledge
@@ -1680,8 +1694,9 @@ Some things look like bugs and are not:
 - **H does nothing with a sword in one hand and a shield on the other arm.**
   Drinking takes a free hand. Z puts the shield on your back, and the hand is
   free.
-- **A shield on your back stops nothing.** It is out of the world there, as a
-  sword in its scabbard is. Z again to have it on your arm.
+- **A shield on your back only guards your back.** It stops a cut from behind
+  and nothing from in front; Z again to have it on your arm, where you can
+  put it in the way.
 - **The inventory does not pause the fight.** B opens it over whatever is
   going on, and the mouse still moves your sword.
 - **Space puts you on top of a low wall instead of jumping.** Only when you
@@ -1754,7 +1769,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 309 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 314 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1864,9 +1879,13 @@ and does nothing at a pillar.
 
 And the new kit after that: that Z puts the shield on your back in under a
 second, the hand going up over the shoulder with it, and takes it down the
-same way; that on the back it rides the chest with no collider, the empty hand
-hangs at rest and drinks with the sword still drawn, and back on the arm it
-has a collider again and holds its guard; that on your back it is still the
+same way; that on the back its collider leaves the arm for the back and stays
+where the shield is drawn, face out, walking and turning; that the empty hand
+hangs at rest and drinks with the sword still drawn, and back on the arm the
+shield has a collider there again and holds its guard; that on a body turned
+away, a dozen cuts across its back meet the shield slung there, do a ninth of
+the damage, and still land their weight, while the same cuts to its front
+land as hard as without it; that on your back it is still the
 one shield, the rack takes it back from there, and an arm cut off going for it
 leaves it there with nothing to take it down; that a head and a forearm with
 its sword in it come off and lie on the floor; that F goes and takes the head
@@ -1890,5 +1909,5 @@ it a fast tip tunnels straight through the thin post.
 Rounds and a reason to be in the rooms. Friendly fire. Fighting with what an
 opponent dropped — the orc's axe, which you can carry off with its arm now but
 not swing. A shield for an opponent, and the second hand a spear actually
-wants. A shield on your back that stops a cut from behind. Blood that stays on the
+wants. Blood that stays on the
 floor, and on the blade.

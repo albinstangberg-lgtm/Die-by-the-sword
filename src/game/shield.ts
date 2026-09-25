@@ -11,9 +11,9 @@ import * as THREE from "three";
  * for flesh. It does no damage and takes none. What it cannot do
  * is make a blow weigh less: the momentum still arrives, through the arm.
  *
- * On the back it is out of the world, as a sword in its scabbard is: a mesh
- * riding the chest, with no collider, that guards nothing. What it buys is
- * the other hand.
+ * On the back it rides the chest, and it still stops blades -- the ones that
+ * come from behind (see `OffArm.hangOnBack`). What it buys there is the
+ * other hand.
  *
  * Every length here is at human scale and multiplied by the build's.
  */
