@@ -2,9 +2,10 @@ import * as THREE from "three";
 import { ALL_COMBATANTS, GROUP, groups, type PhysicsWorld } from "../core/physics";
 import type { Targets } from "./targets";
 import type { ItemLayout } from "./items";
+import { Gate, Lever, LEVER_STANDOFF } from "./gate";
 
 /**
- * Three rooms and the doors between them.
+ * Four rooms and the doors between them.
  *
  * Everything here still exists to be hit -- stone that stops a blade dead,
  * pillars you can catch mid-swing, a beam that punishes a big overhead -- but
@@ -18,13 +19,17 @@ import type { ItemLayout } from "./items";
  *                       big swing gets caught on.
  *   the cell            through the east door of the hall. The goblin, in a
  *                       small bare room where its reach is the whole story.
+ *   the pen             at the other end of the hall, behind a gate. Two
+ *                       orcs, and nothing else: what two of them at once is
+ *                       like. The lever on the wall beside the gate opens it.
  *
  * Walls are what make that work, and they cost something: an opponent that
  * cannot see you no longer comes for you (see `Fighter.sees`), which is what
  * stops the orc spending the fight pressing into the far side of a wall.
  *
- * Geometry is static -- nothing here moves. The point is what the *arm* does
- * when it meets something immovable.
+ * Geometry is static -- nothing here moves but the pen's gate and its lever
+ * (see gate.ts). The point is what the *arm* does when it meets something
+ * immovable.
  */
 
 const WALL_H = 4.2;
@@ -42,7 +47,7 @@ export interface Room {
 }
 
 /**
- * The three rooms, as rectangles of clear floor.
+ * The four rooms, as rectangles of clear floor.
  *
  * Exported because they are the one description of the level anything else
  * should be reading: where a fighter belongs, where a test may look for it.
@@ -51,6 +56,7 @@ export const ROOMS = {
   training: { name: "the training room", minX: -6.5, maxX: 6.5, minZ: 0, maxZ: 13 },
   hall: { name: "the hall", minX: -7.5, maxX: 7.5, minZ: -14, maxZ: 0 },
   cell: { name: "the cell", minX: 7.5, maxX: 17, minZ: -12.5, maxZ: -3.5 },
+  pen: { name: "the pen", minX: -17.5, maxX: -7.5, minZ: -13, maxZ: -3 },
 } as const satisfies Record<string, Room>;
 
 /** Is this point inside that room's clear floor? */
@@ -67,6 +73,33 @@ export const DUMMY_AT = new THREE.Vector3(2.9, 0, 5.4);
 /** Each opponent's post, at floor level. Spawn heights are their own hulls'. */
 export const ORC_POST = new THREE.Vector3(-1.8, 0, -9.8);
 export const GOBLIN_POST = new THREE.Vector3(12.4, 0, -8.2);
+
+/**
+ * The pen's gate: the middle of its doorway, on the floor, in the hall's
+ * west wall -- across the hall from the cell's door, and on the same line.
+ */
+export const GATE_AT = new THREE.Vector3(ROOMS.hall.minX, 0, -8);
+
+/**
+ * The lever that opens it, on the hall's face of the same wall, a pace north
+ * of the doorway: its pin, a hand's height below the shoulder and standing
+ * out of the wall on its bracket, and the way its front faces -- into the
+ * hall, +X, a quarter turn the other way from the rack's.
+ */
+export const LEVER = {
+  at: new THREE.Vector3(ROOMS.hall.minX + WALL_T / 2 + LEVER_STANDOFF, 1.35, GATE_AT.z - 2.3),
+  facing: -Math.PI / 2,
+};
+
+/**
+ * The two orcs' posts in the pen, and the way each faces there: at the gate.
+ * Apart, so that neither is behind the other from the doorway, and far
+ * enough in that the doorway is the whole of what they can see.
+ */
+export const PEN_POSTS = [
+  { at: new THREE.Vector3(-11.4, 0, -6.2), facing: -Math.PI / 2 },
+  { at: new THREE.Vector3(-13.3, 0, -10.1), facing: -Math.PI / 2 },
+] as const;
 
 /**
  * A waist-high wall along the training room's west side, end on to the wall
@@ -114,7 +147,22 @@ export const ITEM_LAYOUT: ItemLayout = {
  */
 export const THIN_POST = new THREE.Vector3(4.7, 0, -3.2);
 
-export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targets): void {
+/** What of the arena moves: the pen's gate, and the lever that opens it. */
+export interface Arena {
+  readonly gate: Gate;
+  readonly lever: Lever;
+}
+
+/**
+ * How far the gate goes up, metres: clear of its doorway and a little over,
+ * into the gatehouse built over the doorway to take it -- the walls have no
+ * roof, and a gate winched up out of one would stand in the air over it.
+ */
+const GATE_LIFT = DOOR_H + 0.1;
+const GATEHOUSE_TOP = DOOR_H + GATE_LIFT + 0.3;
+const GATEHOUSE_HALF = DOOR_W / 2 + 0.4;
+
+export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targets): Arena {
   const { rapier, world } = phys;
 
   const filter = groups(GROUP.WORLD, GROUP.WORLD | GROUP.PROP | ALL_COMBATANTS);
@@ -229,6 +277,7 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   floor(ROOMS.training);
   floor(ROOMS.hall);
   floor(ROOMS.cell);
+  floor(ROOMS.pen);
 
   // --- the training room: the dummy, four pillars, and nothing else ---
   wall("south wall", "x", ROOMS.training.maxZ, ROOMS.training.minX, ROOMS.training.maxX);
@@ -255,7 +304,7 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   // room as well as the narrower one. The door is on the centre line, which
   // is where you are already walking.
   wall("north wall", "x", 0, ROOMS.hall.minX, ROOMS.hall.maxX, [0]);
-  wall("hall west wall", "z", ROOMS.hall.minX, ROOMS.hall.minZ, ROOMS.hall.maxZ);
+  wall("hall west wall", "z", ROOMS.hall.minX, ROOMS.hall.minZ, ROOMS.hall.maxZ, [GATE_AT.z]);
   wall("hall north wall", "x", ROOMS.hall.minZ, ROOMS.hall.minX, ROOMS.hall.maxX);
   wall("hall east wall", "z", ROOMS.hall.maxX, ROOMS.hall.minZ, ROOMS.hall.maxZ, [-8]);
 
@@ -276,7 +325,78 @@ export function buildArena(phys: PhysicsWorld, scene: THREE.Scene, targets: Targ
   wall("cell south wall", "x", ROOMS.cell.maxZ, ROOMS.cell.minX, ROOMS.cell.maxX);
   wall("cell north wall", "x", ROOMS.cell.minZ, ROOMS.cell.minX, ROOMS.cell.maxX);
   wall("cell east wall", "z", ROOMS.cell.maxX, ROOMS.cell.minZ, ROOMS.cell.maxZ);
+
+  // --- the pen: bare as well. Two orcs are the whole of it ---
+  wall("pen south wall", "x", ROOMS.pen.maxZ, ROOMS.pen.minX, ROOMS.pen.maxX);
+  wall("pen north wall", "x", ROOMS.pen.minZ, ROOMS.pen.minX, ROOMS.pen.maxX);
+  wall("pen west wall", "z", ROOMS.pen.minX, ROOMS.pen.minZ, ROOMS.pen.maxZ);
+
+  // The gatehouse: stone over the doorway, up past the top of the wall, for
+  // the gate to go up into. Scenery -- nothing reaches that high.
+  const houseY = (WALL_H + GATEHOUSE_TOP) / 2;
+  const houseHalf = (GATEHOUSE_TOP - WALL_H) / 2;
+  trim(stone, WALL_T / 2, houseHalf, GATEHOUSE_HALF, GATE_AT.x, houseY, GATE_AT.z);
+  trim(timber, WALL_T / 2 + 0.06, 0.12, GATEHOUSE_HALF + 0.06, GATE_AT.x, GATEHOUSE_TOP - 0.12, GATE_AT.z);
+  trim(timber, WALL_T / 2 + 0.06, 0.1, GATEHOUSE_HALF + 0.06, GATE_AT.x, WALL_H + 0.1, GATE_AT.z);
+
+  const gate = new Gate(phys, scene, targets, {
+    at: GATE_AT, along: "z", width: DOOR_W, height: DOOR_H, lift: GATE_LIFT,
+  });
+  const lever = new Lever(phys, scene, LEVER);
+  lever.onCaught = () => gate.open();
+
+  // And the chain that ties one to the other: up the wall from the lever's
+  // bracket, and along it to the gate, over the doorway. Scenery.
+  const face = ROOMS.hall.minX + WALL_T / 2 + 0.03;
+  scene.add(chain([
+    new THREE.Vector3(face, LEVER.at.y + 0.24, LEVER.at.z),
+    new THREE.Vector3(face, WALL_H - 0.35, LEVER.at.z),
+    new THREE.Vector3(face, WALL_H - 0.35, GATE_AT.z),
+  ]));
+
+  return { gate, lever };
 }
+
+/**
+ * Iron links along a path, each a quarter turn from the last. One mesh,
+ * however many links: they are all one thing.
+ */
+function chain(path: readonly THREE.Vector3[]): THREE.InstancedMesh {
+  const PITCH = 0.045;
+  const at: THREE.Vector3[] = [];
+  const along: THREE.Vector3[] = [];
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1];
+    const d = path[i].clone().sub(a);
+    const n = Math.max(1, Math.round(d.length() / PITCH));
+    const dir = d.clone().normalize();
+    for (let k = 0; k < n; k++) {
+      at.push(a.clone().addScaledVector(d, k / n));
+      along.push(dir);
+    }
+  }
+  const links = new THREE.InstancedMesh(
+    new THREE.TorusGeometry(0.02, 0.006, 5, 10),
+    new THREE.MeshStandardMaterial({ color: 0x3b3a38, roughness: 0.55, metalness: 0.7 }),
+    at.length,
+  );
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const turn = new THREE.Quaternion();
+  const one = new THREE.Vector3(1, 1, 1);
+  for (let i = 0; i < at.length; i++) {
+    // A torus lies in its own XY plane: its Y along the chain, and every
+    // other link turned a quarter about that.
+    q.setFromUnitVectors(Y, along[i]);
+    turn.setFromAxisAngle(Y, (i % 2) * Math.PI / 2);
+    m.compose(at[i], q.multiply(turn), one);
+    links.setMatrixAt(i, m);
+  }
+  links.castShadow = true;
+  return links;
+}
+
+const Y = new THREE.Vector3(0, 1, 0);
 
 /** A faint grid, so movement and the blade's arc read against something. */
 function floorGrid(room: Room): THREE.LineSegments {
