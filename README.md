@@ -14,8 +14,9 @@ them — and makes a cut look like one. Since then the body has learned to get
 out of its own arm's way: the chest turns ahead of a swing, the shoulder slides
 round the ribs, the head watches the blade, the feet step under a turn, the arm
 no longer goes straight through the chest to get across it, the forearm twists
-to keep the edge where you put it, and the wrist bends to keep the blade
-pointing where you aimed. And a blow now lands with its weight: the swing that
+to keep the edge where you put it, the wrist bends to keep the blade pointing
+where you aimed, and a hand raised overhead keeps its elbow under it instead of
+turning the arm over. And a blow now lands with its weight: the swing that
 puts a goblin on the floor does not move an orc. And nothing tells you what is
 coming any more: an opponent makes each swing up as it throws it, aimed at
 whatever of you is there, and the only warning is its weapon going back.
@@ -46,7 +47,7 @@ its reach.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 373 checks, no browser needed
+npm run smoke    # headless physics harness — 377 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -88,7 +89,8 @@ shoulder allows — and it belongs under your fingers.
 Right-drag is modal: while the button is down, horizontal mouse travel rolls the
 edge instead of sweeping the arm sideways. Vertical travel still aims, so you
 never lose height control while setting your edge. The HUD says `ROLLING` while
-it's live.
+it's live. It is also how you guard over your head: raised, the blade stands up
+over your hand, and rolled to the left it lies across your head.
 
 Left-drag is the same kind of switch for the other hand: while it is down, the
 mouse and the wheel move the off arm, and the sword holds where you left it.
@@ -1292,7 +1294,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Sixty-three things the physics taught us
+## Sixty-four things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1904,6 +1906,26 @@ apart now, and what they come to together is compared: 147 points with the
 shield and 161 without, where the code before gives 160 and 181. The ratio and
 the one cut in twelve allowed to catch the rim are what they were.
 
+**A pole the hand can point away from leaves the elbow no side.** The elbow
+hangs toward a pole, and goes to whichever side of the shoulder-to-hand line the
+pole is on. Set behind and below the hand, the pole points away from a spot in
+front of the chest, a little across it and twenty-four degrees up — almost
+straight above the guard — and a hand raised through there had no side for its
+elbow: it went over the top of the forearm, fifteen degrees in one step of an
+unhurried raise, while the blade dipped from upright to below level on its way
+up, and a sweep across at that height rolled the edge thirteen degrees in a
+step. Bending the pole a little cannot get rid of that spot. The elbow hangs
+under the arm wherever a hand is held low and went over it wherever one was
+held high, so somewhere between the two it has no side; only where can change.
+Above level the pole now tips down by as far as the hand has risen, so a hand
+going up gets no nearer that spot than it is at level, and overhead the pole
+hangs straight down: the spot is straight up, where no aim goes. Raised, the
+elbow stays under the arm and the weapon leans back over the head; at and below
+level nothing moved. What leaned on the arm going over the top went with it. A
+guard over the head is the blade rolled across it now, which an axe meets more
+often than it met the old one, and the orc's overhead, measured again, is
+thrown on a new edge.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -2164,7 +2186,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 373 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 377 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -2188,7 +2210,9 @@ frame, and that the droplets fall, land and go.
 And it holds the body to its claims: that the same cross-body sweep that went
 twenty centimetres into the old rigid chest now stays out of it at three
 heights, and a flick only grazes it; that nothing pushes on an arm at rest; that
-the original flick no longer spins the forearm; that a drag reaches the ghost
+the original flick no longer spins the forearm; that either hand raised from
+its guard to overhead keeps its elbow under the arm, and the sword goes up with
+it rather than dipping; that a drag reaches the ghost
 with no lag at all and a flick arrives within a few frames; that the chest is
 more than half turned before the hand crosses it while the hips lag behind;
 that planted feet do not skate, step one at a time, and end up under the hips;
