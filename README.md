@@ -29,9 +29,10 @@ dead or severed hand was holding are yours to take the same way: you hold
 them in your hand, F again puts them in your bag with your potions, and G
 lets go of them. You can crouch under a
 cut, climb a ledge, and vault what is waist high. And a body is a body to the
-end: it walks at the hips and chest and breathes standing still, a fighter who
-loses a sword arm curls over the stump and holds it, and one that dies goes
-limp where it stands and comes down in a heap.
+end: it walks at the hips and chest and breathes standing still, its feet step
+round after it as it turns on the spot and shuffle out and in as it steps
+aside, a fighter who loses a sword arm curls over the stump and holds it, and
+one that dies goes limp where it stands and comes down in a heap.
 
 And a fight flows now. A swing that meets nothing runs into the next, and one
 that goes round can carry the whole body round after it on its heel — Shift
@@ -45,7 +46,7 @@ its reach.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 363 checks, no browser needed
+npm run smoke    # headless physics harness — 373 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -182,7 +183,15 @@ instead.
 - **The hips take their time, the feet stay put.** The spine takes a turn fast,
   the hips take their share slowly underneath, and the feet stay planted while
   the hips turn over them — until they are wound up too far, and then the
-  leading foot steps, then the other.
+  leading foot steps, then the other. Turning on the spot, with A and D or on
+  your heel, is that kept up: the feet step round after the hips one at a
+  time, the leading foot first, quicker the faster the turn — five or six
+  steps a second at walking turn — each lifted clear of the floor and put down
+  as far ahead of the hips as they will have gone past it before it lifts
+  again, so a leg twists no more one way than the other. And a planted foot
+  stays where it was put, not only the way it pointed: the hip goes round
+  over it and the leg leans out to it. A foot the hip has simply moved off —
+  a body pushed about by its own swing — steps back under it.
 - **The trunk walks with the legs, and breathes.** Walking, the hips turn about
   six degrees with each stride and the chest turns back against them, the way
   arms swing against legs; the hip over the swinging leg drops while the chest
@@ -194,6 +203,15 @@ instead.
   the arm walks with the chest you can see rather than beside it. The legs
   take the hips' turn and tilt back out at the hip, so the feet stay where
   they were going.
+- **The legs go the way the body does.** The stride swings the legs along the
+  way the body is actually going, relative to the hips — a stagger included.
+  Backing off, the foot in the air goes back. Sideways a stride is a shuffle:
+  the leading leg steps out, the trailing one closes up to it, and the feet go
+  wide and narrow on their own sides and never cross, in shorter, quicker
+  steps than a walk. The hips stay square over it, and the body comes down a
+  few centimetres between the feet, onto knees that straighten as they go
+  wide, so both feet are on the floor at the widest. Going from one way to
+  another, the stride comes round over a tenth of a second.
 
 Three rules keep all of it from costing the arm anything. What makes room for
 the arm — the chest's turn, the hips, the shoulder sliding round the ribs —
@@ -1274,7 +1292,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Fifty-eight things the physics taught us
+## Sixty-three things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1826,6 +1844,66 @@ walking in went nearly half again as deep: inside its own guard, where it stood
 long enough to be crowded, and swung at you instead of stepping back out. It
 takes off now what its feet would carry it anyway.
 
+**A body turning on the spot stood on a turntable.** Held on A or D, the feet
+counted as moving, and moving feet follow the hips: they turned with them, flat
+on the floor, the legs straight, a figure on a pedestal going round. The feet
+that step when a swing winds the hips up were already there, and turning on the
+spot is that stepping kept up. What it needed that a wound-up hip does not was
+to get ahead of the turn: at walking turn the hips come round nearly half a
+radian while a foot is in the air, so a foot put down square is behind again
+before it is down, and the other, waiting for it, runs out of hip to twist in.
+Each foot lands as far past square as the hips will go before it lifts again
+now, the steps are timed from how fast the hips are turning, and the first
+comes from the foot on the side of the turn. Two seconds of A is five or six
+steps a foot, one at a time; once the turn is going no leg is more than a
+fifth of a radian off the hips, and even the foot left waiting through the
+first step is still inside what a hip allows when its turn comes.
+
+**A foot planted by where it points still slides.** The hips sit a hand
+either side of the middle of the body, so hips going round over planted feet
+carry each hip round a circle, and a foot that held only the way it pointed
+would go round with its hip: five centimetres a step, turning on the spot. A
+planted foot holds its place as well now, and the leg leans out to it —
+measured, it moves nothing at all while the body turns over it. The same lean
+holds a foot while a swing twists the hips, and a body shoved about by its own
+swing steps a foot back under it once the hip is twelve centimetres off it.
+
+**A stride that asks how far and not which way walks forward everywhere.** The
+legs' phase has always gone on with the distance covered, which is what keeps
+them from skating, and which way the distance went was never asked. So a
+sidestep slid the body along on legs walking ahead, and backing off was a
+moonwalk: the knee bent as the foot went forward, as it does walking, while the
+body went back. The stride swings the legs the way the body is going now. A leg
+swings out to the side a third as far as it swings ahead, so sideways the steps
+are shorter and quicker, a shuffle, and the body comes down between feet that
+go wide. At walking pace the planted foot still slides at about four tenths of
+the body's speed, where a walk ahead slides at three: to slide no more than a
+walk, a shuffle at that pace would have to step seven or eight times a second,
+and it steps six. And a stride turned from ahead to back flips the way it goes
+at the standstill in between, which taken as it comes would jump a leg halfway
+through a stride to its mirror in one step: it comes round over a tenth of a
+second instead, through standing.
+
+**A facing set outright is not a turn.** The feet measure how fast the hips
+come round from how far they came since the last step. The harness puts a
+fighter in place by setting its facing, and read as a turn, half a circle in
+one step is a hundred and eighty-eight radians a second: the feet stepped round
+after it like a spinning top. A body that has come round three times as far
+in one step as the quickest heel turn goes has been put there, and its feet
+are put down square under it.
+
+**Twelve cuts at a body they knock about come to anything.** The check that a
+shield slung on your back spares nothing in front compared twelve cuts at the
+front with it there and twelve without, and it failed once the feet learned to
+step — though no leg touched anything in any of those cuts. On the code before
+them, standing the swordsman a millimetre to one side took the same twelve
+anywhere from seven points to twenty-five, and failed the check two times in
+four. A body knocked about by each cut meets the next one somewhere else, and
+where it started decides the rest. It is cut from nine places a centimetre
+apart now, and what they come to together is compared: 147 points with the
+shield and 161 without, where the code before gives 160 and 181. The ratio and
+the one cut in twelve allowed to catch the rim are what they were.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -2046,12 +2124,13 @@ src/
     species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
     anatomy.ts       one set of proportions, scaled to any body
     fighter.ts       torso, locomotion, the jump, the climb and the vault, feet
-                     that stay planted, legs that bend into a crouch or a stoop,
-                     and a body that can be knocked over and get back up
+                     that stay planted and step round a turn, a stride that goes
+                     the way the body does, legs that bend into a crouch or a
+                     stoop, and a body that can be knocked over and get back up
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
                      how far a crouch sinks it and a stoop bows it over, the
-                     hips and chest walking with the legs, breathing, and
-                     curling round a lost arm
+                     hips and chest walking with the legs whichever way they
+                     go, breathing, and curling round a lost arm
     ragdoll.ts       a body with nobody in it, or knocked flat: hips, legs and
                      waist let go -- braced going over, gathered to get up
     offarm.ts        the other arm: a ghost hand of its own, a shield on it, and
@@ -2085,7 +2164,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 363 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 373 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
