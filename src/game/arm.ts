@@ -392,14 +392,24 @@ export class Arm {
   readonly fore: RAPIER.RigidBody;
   /** The weapon's body. Every part of the weapon is a collider on this one. */
   readonly blade: RAPIER.RigidBody;
-  /** The business end -- what a solver contact is attributed to. */
-  readonly bladeCollider: RAPIER.Collider;
   /** Every collider the weapon is made of, hilt to tip. */
   readonly weaponColliders: RAPIER.Collider[] = [];
+  /** The business end: see `bladeCollider`. */
+  private bladeColliderNow!: RAPIER.Collider;
 
   /** This fighter's proportions. Every length below is derived from them. */
   readonly build: Build;
-  readonly weapon: Weapon;
+  /** The weapon in the hand -- its own, or one taken up: see `takeUp`. */
+  private weaponNow: Weapon;
+  /** The weapon this arm was made with: what its scabbard is for, and what a reset puts back. */
+  private readonly homeWeapon: Weapon;
+  /**
+   * A weapon taken off somebody else is in the hand, and the arm's own is on
+   * the back, drawn in its scabbard. See `takeUp`.
+   */
+  private takenUp = false;
+  /** What the panel says the arm's own weapon weighs: see `applyMasses`. */
+  private tunedMass: number;
   /**
    * What this fighter's arm is allowed to exert, as a multiple of the tuning's
    * clamp. An orc swinging four kilos of axe on a human's force budget could
@@ -424,9 +434,9 @@ export class Arm {
   private readonly minReach: number;
   private readonly maxReach: number;
   /** Distance from the hand to the weapon's tip, along the forearm. */
-  private readonly tipY: number;
+  private tipY: number;
   /** Where the weapon's leverage peaks, 0..1 from guard to tip. */
-  private readonly strikePoint: number;
+  private strikePoint: number;
   /** Live total weapon mass, which the panel can change for the player. */
   private weaponMass: number;
   /** Dark caps on cut faces, cleared when a reset puts the arm back on. */
@@ -551,6 +561,10 @@ export class Arm {
   upperMesh!: THREE.Mesh;
   foreMesh!: THREE.Mesh;
   bladeMesh!: THREE.Group;
+  /** What of `bladeMesh` is the weapon rather than the hand round it. */
+  private weaponParts: THREE.Object3D[] = [];
+  /** The arm's own weapon drawn in its scabbard, while the hand has another. */
+  private scabbardBlade: THREE.Object3D | null = null;
   private ghostMesh!: THREE.Group;
 
   /**
@@ -667,7 +681,8 @@ export class Arm {
   ) {
     const { rapier, world } = phys;
     const build = this.build = fighter.build;
-    this.weapon = weapon;
+    this.weaponNow = this.homeWeapon = weapon;
+    this.tunedMass = weapon.mass;
 
     // Every length the controller uses comes from the body it is attached to,
     // so a goblin's arm is a goblin's arm rather than a human's drawn small.
@@ -742,37 +757,7 @@ export class Arm {
       this.fore,
     );
 
-    // --- the weapon ---
-    //
-    // One rigid body, one collider per part, so the solver sees the real mass
-    // distribution. An axe with 2.7kg of iron a metre from the hand genuinely
-    // has an axe's moment of inertia; nothing downstream needs to be told it is
-    // an axe. Thin in X (the flats), wide in Z (spine to edge), long in Y --
-    // Z rather than X because the forearm's X is spoken for by the elbow hinge,
-    // so putting the edge on Z lands it in the plane of the arm.
-    for (const part of weapon.parts) {
-      const desc = part.shape === "capsule"
-        ? rapier.ColliderDesc.capsule(
-            Math.max(0.005, part.halfLen - part.halfThick), part.halfThick)
-        : rapier.ColliderDesc.cuboid(part.halfThick, part.halfLen, part.halfWidth);
-      const collider = world.createCollider(
-        desc
-          .setTranslation(0, part.at, part.atZ ?? 0)
-          // No mass of its own: the weapon's is set on the body, whole -- see
-          // `weaponMassProperties` for why Rapier cannot be left to add it up.
-          .setDensity(0)
-          .setFriction(0.25)      // low: steel skids off stone rather than gripping
-          .setRestitution(0.12)   // a little — a hard parry should kick back
-          .setCollisionGroups(this.side.bladeFilter)
-          .setActiveEvents(rapier.ActiveEvents.CONTACT_FORCE_EVENTS)
-          .setContactForceEventThreshold(2.0),
-        this.blade,
-      );
-      this.weaponColliders.push(collider);
-    }
-    // The last part is the business end, and the one a solver contact is
-    // reported against when the weapon meets stone.
-    this.bladeCollider = this.weaponColliders[this.weaponColliders.length - 1];
+    this.buildWeapon(weapon);
     this.setWeaponMass(weapon.mass);
     this.measureLimbs();
 
@@ -797,6 +782,53 @@ export class Arm {
     this.buildMeshes(fighter.palette.skin);
     scene.add(this.group);
     if (weapon === SWORD) this.buildScabbard();
+  }
+
+  /** The weapon in the hand: its own, or one taken up. */
+  get weapon(): Weapon {
+    return this.weaponNow;
+  }
+
+  /** The business end -- what a solver contact is attributed to. */
+  get bladeCollider(): RAPIER.Collider {
+    return this.bladeColliderNow;
+  }
+
+  /**
+   * The weapon's colliders, on the weapon's body.
+   *
+   * One rigid body, one collider per part, so the solver sees the real mass
+   * distribution. An axe with 2.7kg of iron a metre from the hand genuinely
+   * has an axe's moment of inertia; nothing downstream needs to be told it is
+   * an axe. Thin in X (the flats), wide in Z (spine to edge), long in Y --
+   * Z rather than X because the forearm's X is spoken for by the elbow hinge,
+   * so putting the edge on Z lands it in the plane of the arm.
+   */
+  private buildWeapon(weapon: Weapon): void {
+    const { rapier, world } = this.phys;
+    for (const part of weapon.parts) {
+      const desc = part.shape === "capsule"
+        ? rapier.ColliderDesc.capsule(
+            Math.max(0.005, part.halfLen - part.halfThick), part.halfThick)
+        : rapier.ColliderDesc.cuboid(part.halfThick, part.halfLen, part.halfWidth);
+      const collider = world.createCollider(
+        desc
+          .setTranslation(0, part.at, part.atZ ?? 0)
+          // No mass of its own: the weapon's is set on the body, whole -- see
+          // `weaponMassProperties` for why Rapier cannot be left to add it up.
+          .setDensity(0)
+          .setFriction(0.25)      // low: steel skids off stone rather than gripping
+          .setRestitution(0.12)   // a little — a hard parry should kick back
+          .setCollisionGroups(this.side.bladeFilter)
+          .setActiveEvents(rapier.ActiveEvents.CONTACT_FORCE_EVENTS)
+          .setContactForceEventThreshold(2.0),
+        this.blade,
+      );
+      this.weaponColliders.push(collider);
+    }
+    // The last part is the business end, and the one a solver contact is
+    // reported against when the weapon meets stone.
+    this.bladeColliderNow = this.weaponColliders[this.weaponColliders.length - 1];
   }
 
   /**
@@ -1911,6 +1943,7 @@ export class Arm {
     this.group.add(this.upperMesh, this.foreMesh);
 
     this.bladeMesh = this.weapon.build();
+    this.weaponParts = [...this.bladeMesh.children];
     this.group.add(this.bladeMesh);
 
     // A hand around the grip, or the weapon grows out of a tapered stump. It
@@ -2259,6 +2292,12 @@ export class Arm {
       this.pried = false;
       this.moveHand(this.bladeMesh, 0);
     }
+    // Its own weapon back in the hand, whatever it had taken up.
+    if (this.takenUp || this.weaponNow !== this.homeWeapon) {
+      this.takenUp = false;
+      if (this.scabbardBlade) this.scabbardBlade.visible = false;
+      this.fitWeapon(this.homeWeapon, this.tunedMass);
+    }
     this.severedAt = null;
     for (const cap of this.caps) {
       cap.removeFromParent();
@@ -2467,6 +2506,83 @@ export class Arm {
     return true;
   }
 
+  /** A weapon taken off somebody else is in the hand, with the arm's own on the back. */
+  get wieldsTaken(): boolean {
+    return this.takenUp;
+  }
+
+  /**
+   * Take up a weapon that is not this arm's own -- the orc's axe, off the
+   * floor -- with the arm's own weapon on the back. False if the arm's own is
+   * not on the back, or the arm cannot.
+   *
+   * It is the arm's weapon from here as its own is: the body in the hand is
+   * given the other weapon's colliders, mass and shape, as they were declared
+   * for whoever it was made for -- an axe is an axe, whose ever hand it is in
+   * -- and jointed into the hand as a sword is drawn into it. So it swings
+   * with that weapon's inertia on this arm's strength, and cuts with its edge:
+   * a man with the orc's axe has the orc's axe and a man's arm to swing it.
+   * Its own weapon is drawn in the scabbard meanwhile.
+   */
+  takeUp(weapon: Weapon): boolean {
+    if (!this.sheathedNow || this.stow || this.takenUp || this.severedAt !== null || this.limp) {
+      return false;
+    }
+    this.takenUp = true;
+    this.fitWeapon(weapon, weapon.mass);
+    if (this.scabbardBlade) this.scabbardBlade.visible = true;
+    this.unsheathe();
+    return true;
+  }
+
+  /**
+   * Put a taken weapon up again: out of the hand, and the arm's own back on
+   * the back as it was -- the weapon taken is somebody else's business now
+   * (see `Items.unwield`). False if there is none up, or it is busy.
+   */
+  putUp(): boolean {
+    if (!this.takenUp || this.stow || this.severedAt !== null) return false;
+    this.loosen();
+    this.loose = false;
+    this.sheathedNow = true;
+    this.takenUp = false;
+    this.fitWeapon(this.homeWeapon, this.tunedMass);
+    if (this.scabbardBlade) this.scabbardBlade.visible = false;
+    this.moveHand(this.foreMesh, this.foreHalf);
+    this.holdSheathed(true);
+    return true;
+  }
+
+  /**
+   * Make the weapon's body this weapon: its colliders, its mass, its shape.
+   * The body stays the body -- whatever tracks it by handle is told by the
+   * handles changing (see `Impacts`), and whatever draws it keeps drawing it.
+   */
+  private fitWeapon(weapon: Weapon, mass: number): void {
+    const world = this.phys.world;
+    for (const c of this.weaponColliders) world.removeCollider(c, false);
+    this.weaponColliders.length = 0;
+    this.weaponNow = weapon;
+    this.buildWeapon(weapon);
+    this.tipY = weapon.grip + weapon.span;
+    this.strikePoint = strikePointOf(weapon);
+    this.setWeaponMass(mass);
+    this.fitWeaponGroups();
+    for (const c of this.weaponColliders) c.setEnabled(this.gripping);
+
+    for (const m of this.weaponParts) {
+      m.removeFromParent();
+      disposeTree(m);
+    }
+    const fresh = weapon.build();
+    this.weaponParts = [...fresh.children];
+    for (const m of this.weaponParts) this.bladeMesh.add(m);
+    // Faded as the rest of the arm is, if it is.
+    const fade = this.fadeAmount;
+    this.fadeAmount = Number.NaN;
+    this.setFade(fade);
+  }
+
   /**
    * Start putting the weapon up, on the back. False if there is nothing to do
    * it with -- no scabbard, no arm, a body on the floor -- or it is already
@@ -2481,7 +2597,7 @@ export class Arm {
    * the hand going with it all the way. See STOW_TIME.
    */
   sheathe(): boolean {
-    if (!this.scabbard || this.sheathedNow || this.stow
+    if (!this.scabbard || this.sheathedNow || this.stow || this.takenUp
       || this.severedAt !== null || this.limp) return false;
     this.stow = { draw: false, phase: "lift", time: 0, turn: 0 };
     return true;
@@ -2787,6 +2903,14 @@ export class Arm {
     // everything on the chest relative to it: the same frame as the sheath.
     g.position.copy(this.sheathPoint);
     g.quaternion.copy(this.sheathQuat);
+    // The arm's own weapon, as it sits in the scabbard: drawn there while the
+    // hand has another, when the weapon's body is that other one. The
+    // scabbard's frame is the sheathed weapon's own, drawn at the body's size.
+    const own = this.homeWeapon.build();
+    own.scale.setScalar(1 / s);
+    own.visible = false;
+    g.add(own);
+    this.scabbardBlade = own;
     this.fighter.chest.add(g);
     this.scabbard = g;
   }
@@ -2803,7 +2927,9 @@ export class Arm {
     this.upper.collider(0)?.setMass(limb);
     this.fore.collider(0)?.setMass(limb);
     this.measureLimbs();
-    this.setWeaponMass(t.bladeMass);
+    // The panel weighs the arm's own weapon; one taken up weighs what it weighs.
+    this.tunedMass = t.bladeMass;
+    if (!this.takenUp) this.setWeaponMass(t.bladeMass);
   }
 
   /**

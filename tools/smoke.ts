@@ -4428,6 +4428,151 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
     `head ${headGap.toFixed(2)} m from the torso; the sword in the fist ${fist() === foe.arm.bladeMesh}`);
 }
 
+async function theOrcsAxeCanBeWielded(): Promise<void> {
+  console.log("\nthe orc's axe, taken off it, is a weapon in your hand: its weight, its edge");
+  const orcAt = spawnFor(ORC, -1.5, 7.6);
+  const rig = await buildRig({}, ORC, orcAt);
+  rig.holdFoe();
+  const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+  items.watch([rig.foe]);
+  const arm = rig.arm;
+  const inner = (a: Arm) => a as unknown as { wristJoint: unknown; scabbardBlade: THREE.Object3D };
+  stepWith(rig, items, 30);
+
+  // Off with its head: dead, with the axe still in its fist.
+  const head = rig.foe.fighter.parts.find((p) => p.name === "head")!;
+  for (let i = 0; i < 8 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(head.collider.handle));
+  stepWith(rig, items, 150);
+  const axe = items.items.find((i) => i.kind === "weapon");
+  const axeBody = rig.foe.arm.blade;
+  check("the dead orc's axe lies there to be taken", rig.foe.dead && axe?.name === "the orc's axe",
+    items.items.filter((i) => i.piece).map((i) => i.name).join(", "));
+
+  // At the dummy, sword on the back, the axe in the hand, and X.
+  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  rig.place(standAt);
+  rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
+  rig.pin(standAt);
+  stepWith(rig, items, 60);
+  stow(rig, false);
+  const own = arm.liveWeaponMass;
+  items.hold(rig.player, axe!);
+  const up = items.wield(rig.player);
+  stepWith(rig, items, 60);
+  check("X takes it up: the arm's weapon is the axe, its weight and shape, jointed in the hand",
+    up.ok && arm.weapon === AXE && arm.wieldsTaken && arm.wielding && arm.liveWeaponMass === AXE.mass
+      && arm.weaponColliders.length === AXE.parts.length && inner(arm).wristJoint !== null
+      && arm.palm.children.length === 0 && rig.player.held === axe,
+    `${up.text}: ${arm.weapon.name}, ${arm.liveWeaponMass} kg in ${arm.weaponColliders.length} parts`);
+  check("the sword is on your back meanwhile, and the orc's own axe out of the world",
+    inner(arm).scabbardBlade.visible && !axeBody.isEnabled() && !arm.sheathed,
+    `sword drawn in the scabbard ${inner(arm).scabbardBlade.visible}, orc's axe in the world ${axeBody.isEnabled()}`);
+
+  // Swung at the dummy, it lands as an axe.
+  let hits = 0;
+  let asAxe = 0;
+  let best = 0;
+  const target = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
+  rig.impacts.addBlade(arm, (i) => {
+    if (!rig.dummy.receive(i)) return;
+    hits++;
+    if (i.weapon === AXE && i.massKg === AXE.mass) asAxe++;
+    best = Math.max(best, cutDamage(i));
+  });
+  for (let swings = 0; swings < 10; swings++) throwForehand(rig, target);
+  check("swung, it cuts with the axe's edge and weight",
+    hits > 0 && asAxe === hits && best > 0,
+    `${hits} hits on the dummy, ${asAxe} of them the axe's; best ${best.toFixed(1)} damage`);
+
+  // Ten seconds of the worst input there is, as every weapon gets in its
+  // owner's hand: a man's arm is not what the axe was tuned on.
+  let rand = 12345;
+  const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  let spin = 0;
+  let turn = 0;
+  let bend = 0;
+  let sane = true;
+  const q = new THREE.Quaternion();
+  for (let i = 0; i < 600; i++) {
+    rig.input.dx = (next() - 0.5) * 600;
+    rig.input.dy = (next() - 0.5) * 600;
+    rig.input.wheel = next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0;
+    rig.input.rollDx = (next() - 0.5) * 220;
+    rig.hold(1);
+    const r = arm.blade.rotation();
+    const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+    const w = arm.blade.angvel();
+    spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
+    turn = Math.max(turn, Math.abs(arm.state.twist));
+    bend = Math.max(bend, arm.state.wrist);
+    sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
+  }
+  // The same bounds every weapon is held to in its own owner's hand.
+  check("under ten seconds of the worst input nothing spins in the hand",
+    sane && spin < 100 && turn < 1.65 && bend < 1.3 && inner(arm).wristJoint !== null,
+    `peak spin about its length ${spin.toFixed(0)} rad/s, grip never past `
+      + `${(turn * 180 / Math.PI).toFixed(0)}deg, wrist never past ${(bend * 180 / Math.PI).toFixed(0)}deg`);
+  rig.step(60);
+
+  // X again: held again, and the sword's own weight and shape back on the back.
+  const down = items.unwield(rig.player);
+  check("X again puts it up: held in the hand, the sword back on the back as it was",
+    down.ok && !arm.wieldsTaken && arm.weapon === SWORD && arm.sheathed && arm.liveWeaponMass === own
+      && arm.weaponColliders.length === SWORD.parts.length && !inner(arm).scabbardBlade.visible
+      && rig.player.held === axe && arm.palm.children.length === 1,
+    `${down.text}; ${arm.weapon.name} ${arm.liveWeaponMass} kg, sheathed ${arm.sheathed}`);
+
+  // Taken up again and let go of: it leaves the hand where the axe was.
+  items.wield(rig.player);
+  stepWith(rig, items, 30);
+  const was = new THREE.Vector3().copy(arm.blade.translation());
+  const health = rig.player.health;
+  const drop = items.letGo(rig.player);
+  const gap = was.distanceTo(new THREE.Vector3().copy(axeBody.translation()));
+  const swordBack = arm.sheathed && arm.weapon === SWORD;
+  stepWith(rig, items, 120);
+  check("let go of while wielded, the orc's axe is where yours was, falls, and cuts nobody",
+    drop.ok && axeBody.isEnabled() && gap < 1e-6 && swordBack && rig.player.held === null
+      && axeBody.translation().y < 0.3 && rig.player.health === health,
+    `${drop.text}: ${(gap * 1000).toFixed(2)} mm from where it was in the hand, `
+      + `now at ${axeBody.translation().y.toFixed(2)} m; health ${rig.player.health.toFixed(1)}`);
+
+  // Wielded, F puts it straight in the bag.
+  items.hold(rig.player, axe!);
+  items.wield(rig.player);
+  stepWith(rig, items, 20);
+  const bagged = items.bag(rig.player);
+  check("F puts it in the bag straight out of the fight, the sword back on the back",
+    bagged.ok && rig.player.inventory.pieces.includes(axe!) && arm.sheathed && arm.weapon === SWORD
+      && rig.player.held === null, bagged.text);
+
+  // With it up, a reset: the sword in your hand, the axe in the orc's.
+  items.unbag(rig.player, axe!);
+  items.wield(rig.player);
+  stepWith(rig, items, 10);
+  items.reset();
+  rig.player.reset(rig.tuning, standAt);
+  rig.fighter.yaw = 0;
+  rig.foe.reset(rig.tuning, orcAt);
+  rig.impacts.resetSweeps();
+  stepWith(rig, items, 60);
+  check("a reset puts your sword back in your hand and the axe back in the orc's",
+    arm.weapon === SWORD && !arm.wieldsTaken && arm.wielding && !inner(arm).scabbardBlade.visible
+      && arm.weaponColliders.length === SWORD.parts.length && rig.foe.arm.weapon === AXE
+      && axeBody.isEnabled() && inner(rig.foe.arm).wristJoint !== null && rig.player.held === null,
+    `yours ${arm.weapon.name}, the orc's ${rig.foe.arm.weapon.name}`);
+  hits = 0;
+  let asSword = 0;
+  rig.impacts.addBlade(arm, (i) => {
+    if (!rig.dummy.receive(i)) return;
+    hits++;
+    if (i.weapon === SWORD) asSword++;
+  });
+  for (let swings = 0; swings < 6 && hits === 0; swings++) throwForehand(rig, target);
+  check("and the sword cuts as a sword again", hits > 0 && asSword === hits,
+    `${hits} hits, ${asSword} of them the sword's`);
+}
+
 async function theNewKeysAreWhereTheySay(): Promise<void> {
   console.log("\nthe new keys are where the HUD says");
   check("C crouches", KEY_MAP.KeyC === "crouch", `C -> ${KEY_MAP.KeyC}`);
@@ -4530,6 +4675,7 @@ async function run(): Promise<void> {
   await theShieldGoesOnYourBackToo();
   await aShieldOnYourBackStopsACutFromBehind();
   await whatYouCutOffYouCanCarryOff();
+  await theOrcsAxeCanBeWielded();
   await aCrouchGetsLow();
   await aVaultGoesOver();
   await aClimbGoesUp();
