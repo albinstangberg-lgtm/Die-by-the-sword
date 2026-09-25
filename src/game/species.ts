@@ -509,10 +509,21 @@ export const ORC: Species = {
       // did on the same edge, because a chop timed by the axe's own weight
       // lands harder than one held for a count. Its edge is the side of the
       // band that cuts about as hard as the cleave did.
+      //
+      // Measured again once a raised arm stopped turning over (see
+      // `tipPole`): the axe goes up behind the orc's head now, the elbow under
+      // it, where it used to go up in front with the elbow over the top and
+      // come down turning half over on the way. On the old edge that landed
+      // it on the flat -- a leap drew blood one time in five, against seven in
+      // ten before -- and the edge next to it is where the same chop does about
+      // what it did: over 160 leaps two in three draw blood, against seven in
+      // ten, for 1.7 points a leap against 1.4; it comes round about as
+      // quickly; and the orc measures its reach, off the middle of this band,
+      // two and a half centimetres short of where it did.
       name: "overhead", aims: ["head", "body"],
       from: { yaw: [-0.55, -0.35], pitch: [0.9, 1.1], reach: [0.3, 0.4] },
       to: { yaw: [0, 0.1], pitch: [-0.85, -0.65], reach: [1, 1] },
-      roll: [0.45, 0.8], step: 1,
+      roll: [0.25, 0.45], step: 1,
       at: { min: 0.72 },
       favour: 3,
     },

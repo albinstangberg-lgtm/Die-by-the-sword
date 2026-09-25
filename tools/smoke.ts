@@ -2301,6 +2301,103 @@ async function aFlickDoesNotSnapTheArm(): Promise<void> {
     `tracking error ${rig.arm.state.trackingError.toFixed(3)} m after 1.5s`);
 }
 
+/**
+ * Where an elbow is round its own arm, read off the forearm's body: the unit
+ * direction from the shoulder-to-hand line out to it, into `out`, and how far
+ * under that line it hangs, -1..1 -- its share along the arm's own down.
+ */
+function elbowRound(
+  shoulder: THREE.Vector3,
+  fore: {
+    translation(): { x: number; y: number; z: number };
+    rotation(): { x: number; y: number; z: number; w: number };
+  },
+  half: number, out: THREE.Vector3,
+): number {
+  const r = fore.rotation();
+  const t = fore.translation();
+  const along = new THREE.Vector3(0, half, 0)
+    .applyQuaternion(new THREE.Quaternion(r.x, r.y, r.z, r.w));
+  const centre = new THREE.Vector3(t.x, t.y, t.z);
+  const arm = centre.clone().add(along).sub(shoulder).normalize();
+  out.copy(centre).sub(along).sub(shoulder);
+  out.addScaledVector(arm, -out.dot(arm)).normalize();
+  return out.dot(new THREE.Vector3(0, -1, 0).addScaledVector(arm, arm.y).normalize());
+}
+
+async function aRaisedArmDoesNotTurnOver(): Promise<void> {
+  console.log("\nraising the hand does not turn the arm over");
+  // The elbow hangs toward a pole behind and below the hand, and the pole
+  // points away from a spot in front of the chest, a little across it and 24
+  // degrees up: almost straight above the guard. Raised through there the
+  // elbow had no side of the arm to be on, and went over the top of it to
+  // the other -- fifteen degrees in one step of an unhurried raise -- while
+  // the blade dipped from upright to below level on its way up.
+  const RATE = 0.6;
+  const shoulder = new THREE.Vector3();
+  const was = new THREE.Vector3();
+  const now = new THREE.Vector3();
+  const blade = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  /** Raise an aim to the top of its range and hold it there, measuring the elbow each step. */
+  const raise = (
+    rig: Rig, pitch: () => number, lift: (dy: number) => void,
+    where: (out: THREE.Vector3) => THREE.Vector3, fore: Parameters<typeof elbowRound>[1],
+    each?: () => void,
+  ) => {
+    const half = rig.fighter.build.segment.foreArm.length / 2;
+    let turn = 0;
+    let under = 1;
+    for (let i = 0; i < 240; i++) {
+      if (pitch() < Arm.LIMITS.pitch[1]) lift(-(RATE * STEP) / rig.tuning.sensitivity);
+      rig.step(1);
+      under = Math.min(under, elbowRound(where(shoulder), fore, half, now));
+      if (i > 0) turn = Math.max(turn, now.angleTo(was));
+      was.copy(now);
+      each?.();
+    }
+    return { turn: (turn * 180) / Math.PI, under };
+  };
+
+  const rig = await buildRig();
+  rig.step(60);
+  let start = NaN;
+  let lowest = 1;
+  const sword = raise(rig, () => rig.arm.aim.pitch, (dy) => { rig.input.dy = dy; },
+    (out) => rig.fighter.shoulderWorld(out), rig.arm.fore, () => {
+      const r = rig.arm.blade.rotation();
+      blade.set(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+      if (Number.isNaN(start)) start = blade.y;
+      lowest = Math.min(lowest, blade.y);
+    });
+  check("raised from the guard, the elbow goes round a few degrees a step at most",
+    sword.turn < 5, `${sword.turn.toFixed(1)} degrees in a step at worst (it was 15)`);
+  check("and hangs under the arm all the way up", sword.under > 0,
+    `${sword.under.toFixed(2)} under it at worst, where 1 is straight under and -1 straight ` +
+    `over the top (it was -1)`);
+  check("and the blade goes up with the hand, never down", lowest > start - 0.05,
+    `pointing ${lowest.toFixed(2)} up at its lowest, ${start.toFixed(2)} at the guard ` +
+    `(it dipped to -0.10)`);
+
+  // The other hand's pole points away from a spot as far across the body the
+  // other way, as high up: raised through it empty, its elbow swung 31.
+  const other = await buildRig();
+  other.step(60);
+  const off = other.player.offArm;
+  other.input.guarding = true;
+  for (let i = 0; i < 120; i++) {
+    other.input.offDx = -(-0.34 - off.aimNow.yaw) / other.tuning.sensitivity * 0.25;
+    other.input.offDy = -(-0.4 - off.aimNow.pitch) / other.tuning.sensitivity * 0.25;
+    other.step(1);
+  }
+  const empty = raise(other, () => off.aimNow.pitch, (dy) => { other.input.offDy = dy; },
+    (out) => other.fighter.offShoulderWorld(out), other.fighter.offLimb.fore);
+  check("nor does the other hand, raised empty",
+    empty.turn < 5 && empty.under > 0,
+    `${empty.turn.toFixed(1)} degrees in a step at worst (it was 31), ` +
+    `${empty.under.toFixed(2)} under the arm (it was -1)`);
+}
+
 async function slowInputIsUntouched(): Promise<void> {
   console.log("\nintent reaches the arm untouched, and a flick is only rounded off");
   const rig = await buildRig();
@@ -2843,6 +2940,23 @@ async function theWristKeepsTheLine(): Promise<void> {
   }
 }
 
+/**
+ * How far the grip is turned as its stop counts it, radians.
+ *
+ * `state.twist` is the turn about the weapon's own length, which is what the
+ * grip is driven by. The joint's stop holds the turn's share of the hand's
+ * whole rotation instead, and the two agree only with the wrist straight: bent
+ * fifty-six degrees, the orc's axe hard against its stop and no further read
+ * 109 on the first count. So a grip is held to its stop on the stop's own.
+ */
+function gripTurn(arm: Arm): number {
+  const f = arm.fore.rotation();
+  const b = arm.blade.rotation();
+  const rel = new THREE.Quaternion(f.x, f.y, f.z, f.w).invert()
+    .multiply(new THREE.Quaternion(b.x, b.y, b.z, b.w));
+  return 2 * Math.asin(Math.min(1, Math.abs(rel.y)));
+}
+
 async function noGripSpinsUnderAbuse(): Promise<void> {
   console.log("\nnothing spins in the hand, whoever is holding it");
   // With the weapons' inertia about their own length finally right -- a
@@ -2867,7 +2981,7 @@ async function noGripSpinsUnderAbuse(): Promise<void> {
       const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
       const w = rig.foe.arm.blade.angvel();
       spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
-      turn = Math.max(turn, Math.abs(rig.foe.arm.state.twist));
+      turn = Math.max(turn, gripTurn(rig.foe.arm));
       bend = Math.max(bend, rig.foe.arm.state.wrist);
     }
     // The wrist's stop is 60 degrees about each of its two axes, so a bend
@@ -3866,7 +3980,9 @@ async function weaponsKnockEachOther(): Promise<void> {
     `${took} of ${tried} times`);
 
   // And in a fight: stand with your guard up over your head, in front of an
-  // orc bringing its axe down on it.
+  // orc bringing its axe down on it. Raised, the blade stands upright over
+  // the hand now that the arm no longer turns over on the way up, which is no
+  // guard against a chop: rolled across the head, as you hold it, it is.
   const guard = await buildRig({}, ORC, spawnFor(ORC, 12.2, -9.8));
   guard.ai.aimOverride = "head";
   const home = new THREE.Vector3(12.2, SPAWN.y, -6.0);
@@ -3884,6 +4000,7 @@ async function weaponsKnockEachOther(): Promise<void> {
     const s = guard.tuning.sensitivity;
     guard.input.dx = -(0.2 - aim.yaw) / s * 0.2;
     guard.input.dy = -(0.9 - aim.pitch) / s * 0.2;
+    guard.input.rollDx = (-1.5 - aim.roll) / guard.tuning.rollSensitivity * 0.2;
     guard.player.position(me);
     guard.foe.position(it);
     faceToward(guard.fighter, it.x - me.x, it.z - me.z, facing);
@@ -6040,7 +6157,7 @@ async function theOrcsAxeCanBeWielded(): Promise<void> {
     const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
     const w = arm.blade.angvel();
     spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
-    turn = Math.max(turn, Math.abs(arm.state.twist));
+    turn = Math.max(turn, gripTurn(arm));
     bend = Math.max(bend, arm.state.wrist);
     sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
   }
@@ -6182,7 +6299,7 @@ async function everyWeaponCanBeWielded(): Promise<void> {
       const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
       const w = arm.blade.angvel();
       spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
-      turn = Math.max(turn, Math.abs(arm.state.twist));
+      turn = Math.max(turn, gripTurn(arm));
       bend = Math.max(bend, arm.state.wrist);
       sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
     }
@@ -6286,6 +6403,7 @@ async function run(): Promise<void> {
 
   await theArmKeepsOutOfItsOwnChest();
   await aFlickDoesNotSnapTheArm();
+  await aRaisedArmDoesNotTurnOver();
   await slowInputIsUntouched();
   await theChestLeadsTheArm();
   await theFeetStayPlantedThenStep();
