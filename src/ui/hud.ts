@@ -141,6 +141,7 @@ export class Hud {
           <dt>wheel</dt><dd>reach</dd>
           <dt>W / S</dt><dd>forward, back</dd>
           <dt>A / D</dt><dd>turn</dd>
+          <dt>Shift</dt><dd>+ A / D: turn on your heel</dd>
           <dt>Q / E</dt><dd>sidestep</dd>
           <dt>Space</dt><dd data-f="jumphint">jump &middot; W+Space climb</dd>
           <dt>V</dt><dd>vault</dd>
