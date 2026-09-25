@@ -36,7 +36,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 327 checks, no browser needed
+npm run smoke    # headless physics harness — 333 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -643,14 +643,21 @@ axe in it cuts nothing — until you take it up.
 
 ### Wielding what you took
 
-Holding an opponent's weapon, **X** takes it up, and you fight with it. It is
+Holding an opponent's weapon — the orc's axe, the goblin's spear, the
+swordsman's sword, and whatever anything carries that comes after them —
+**X** takes it up, and you fight with it. It is
 not a skin on your sword: the body in your hand is given the axe's colliders,
 the axe's 3.65 kilos and the axe's shape, as they were made for the orc —
 an axe is an axe, whoever's hand it is in — and jointed into your hand the way
 your sword is drawn into it. So it swings with the axe's inertia on your arm's
 strength, which is a man's, not an orc's: it comes round slower than your
 sword and commits you to every swing, and it cuts with the axe's edge and
-heft. The goblin's spear takes up the same way, and bites with its point. Your sword stays
+heft. The goblin's spear takes up the same way and bites with its point, and
+is thrust from a spear's distance: from a sword's, its point is past the
+target before the thrust begins, and what goes into it is the shaft, side on.
+Nothing here is written for the axe or the spear; it is written for what a
+weapon declares — its parts, its mass, its edge or its point — so a weapon
+added to the game can be taken up the day it is added. Your sword stays
 in its scabbard, drawn there, and the orc's axe itself stays out of the world
 while the arm has it.
 
@@ -1733,6 +1740,9 @@ Some things look like bugs and are not:
   wielding it: it is out of the world until you take it up with X.
 - **The orc's axe is slow in your hand.** It weighs what it weighs, and your
   arm is a man's. The orc swings it on an orc's strength.
+- **The goblin's spear does nothing close in.** Its point is past anything a
+  sword's length away, and what reaches it is the shaft. Stand off, and
+  thrust.
 - **F takes the body away from you for a moment.** It walks you over, turns
   you, and puts you on your haunches. Press a key and you have it back.
 - **X takes a second, and a sword half put away is not one you can swing.**
@@ -1816,7 +1826,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 327 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 333 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1956,7 +1966,13 @@ spins nothing in your hand, as for every weapon in its owner's; that X again
 puts it up, your sword back on your back at its own weight; that let go of
 while wielded it is where yours was, falls, and cuts nobody; that F bags it
 straight out of the fight; and that a reset puts your sword back in your hand,
-the axe back in the orc's, and your sword cuts as a sword again.
+the axe back in the orc's, and your sword cuts as a sword again. And that it
+is not only the axe: that every weapon anything carries — every one in the
+list, and whatever the bestiary carries besides — is taken off whatever
+carries it, dead, taken up, and swung at the dummy with that creature's own
+first shape of swing, a thrust from a spear's distance, landing every time as
+itself and cutting; that nothing spins in your hand under the same ten seconds
+of abuse; and that X puts it up again.
 
 ## Stack
 

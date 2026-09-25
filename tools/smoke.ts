@@ -27,9 +27,9 @@ import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
-  GOBLIN, ORC, SWORDSMAN, jointScaleFor, maxHealthFor, type Species,
+  GOBLIN, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, type Cut, type Species,
 } from "../src/game/species";
-import { AXE, SPEAR, SWORD, weaponMassProperties } from "../src/game/weapons";
+import { AXE, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon } from "../src/game/weapons";
 import { Ai, type Swing } from "../src/game/ai";
 import { judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
@@ -340,9 +340,9 @@ function steerTo(
  * across it: the cut a shield held over the chest is there to stop.
  */
 function forehandAt(
-  rig: Rig, target: THREE.Vector3, level = false,
+  rig: Rig, target: THREE.Vector3, level = false, cut: Cut = FOREHAND,
 ): { from: ArmPose; to: ArmPose; roll: number } {
-  const roll = mid(FOREHAND.roll);
+  const roll = mid(cut.roll);
   const shoulder = rig.fighter.shoulderWorld(new THREE.Vector3());
   let yaw = Math.atan2(-(target.x - shoulder.x), -(target.z - shoulder.z)) - rig.fighter.yaw;
   while (yaw > Math.PI) yaw -= Math.PI * 2;
@@ -351,11 +351,11 @@ function forehandAt(
   const drop = level ? 0 : 1;
   return {
     from: {
-      yaw: yaw + mid(FOREHAND.from.yaw),
-      pitch: pitch + mid(FOREHAND.from.pitch) * drop,
-      reach: mid(FOREHAND.from.reach),
+      yaw: yaw + mid(cut.from.yaw),
+      pitch: pitch + mid(cut.from.pitch) * drop,
+      reach: mid(cut.from.reach),
     },
-    to: { yaw: yaw + mid(FOREHAND.to.yaw), pitch: pitch + mid(FOREHAND.to.pitch) * drop, reach: 1 },
+    to: { yaw: yaw + mid(cut.to.yaw), pitch: pitch + mid(cut.to.pitch) * drop, reach: 1 },
     roll,
   };
 }
@@ -371,9 +371,9 @@ function forehandAt(
  * The hold stands the foe still, so a knock is felt and nothing swings back.
  */
 function throwForehand(
-  rig: Rig, target: THREE.Vector3, how: { level?: boolean; each?: () => void } = {},
+  rig: Rig, target: THREE.Vector3, how: { level?: boolean; each?: () => void; cut?: Cut } = {},
 ): void {
-  const cut = forehandAt(rig, target, how.level);
+  const cut = forehandAt(rig, target, how.level, how.cut);
   steerTo(rig, cut.from, cut.roll, 45, HAND_PX, how.each);
   steerTo(rig, cut.to, cut.roll, 30, HAND_PX, how.each);
 }
@@ -4573,6 +4573,94 @@ async function theOrcsAxeCanBeWielded(): Promise<void> {
     `${hits} hits, ${asSword} of them the sword's`);
 }
 
+async function everyWeaponCanBeWielded(): Promise<void> {
+  console.log("\nevery weapon anything carries can be taken off it and fought with");
+  // Every weapon there is -- the list, and whatever anything in the bestiary
+  // carries, so a creature that brings a new one along is held to this too.
+  const weapons = new Set<Weapon>([...Object.values(WEAPONS), ...Object.values(SPECIES).map((s) => s.weapon)]);
+  const bestiary: Species[] = Object.values(SPECIES);
+  for (const weapon of weapons) {
+    // Taken off whatever carries it, and swung with that creature's own first
+    // shape of swing -- a spear is thrust, not swept.
+    const carrier = bestiary.find((s) => s.weapon === weapon) ?? { ...SWORDSMAN, weapon };
+    const cut = carrier.cuts[0];
+    const at = spawnFor(carrier, -1.5, 7.6);
+    const rig = await buildRig({}, carrier, at);
+    rig.holdFoe();
+    const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
+    items.watch([rig.foe]);
+    const arm = rig.arm;
+    stepWith(rig, items, 30);
+    const head = rig.foe.fighter.parts.find((p) => p.name === "head")!;
+    for (let i = 0; i < 8 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(head.collider.handle));
+    stepWith(rig, items, 150);
+    const taken = items.items.find((i) => i.kind === "weapon");
+
+    // At its own distance: a cut at a sword's, a thrust with the point a
+    // hand's breadth short at full stretch. From a sword's distance a spear's
+    // point is past the target before the thrust has begun, and what goes
+    // into it is the shaft, side on.
+    const reach = SWORDSMAN.build.armLength - 0.08 + weapon.grip + weapon.span;
+    const standOff = weapon.bite === "point" ? reach - 0.2 : 1.1;
+    const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + standOff);
+    rig.place(standAt);
+    rig.fighter.yaw = 0;
+    rig.pin(standAt);
+    stepWith(rig, items, 60);
+    stow(rig, false);
+    if (taken) items.hold(rig.player, taken);
+    const up = items.wield(rig.player);
+    stepWith(rig, items, 60);
+    let hits = 0;
+    let own = 0;
+    let best = 0;
+    rig.impacts.addBlade(arm, (i) => {
+      if (!rig.dummy.receive(i)) return;
+      hits++;
+      if (i.weapon === weapon && i.massKg === weapon.mass) own++;
+      best = Math.max(best, cutDamage(i));
+    });
+    // A cut goes through the arm, where it can take it off; a thrust goes
+    // into the middle of the body, which is what a point is for -- aimed at
+    // an arm it goes past it and lays the shaft along the ribs.
+    const target = weapon.bite === "point"
+      ? new THREE.Vector3().copy(rig.dummy.limbs.get("torso")!.body.translation())
+      : new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
+    for (let swings = 0; swings < 10; swings++) throwForehand(rig, target, { cut });
+
+    let rand = 12345;
+    const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    let spin = 0;
+    let turn = 0;
+    let bend = 0;
+    let sane = true;
+    const q = new THREE.Quaternion();
+    for (let i = 0; i < 600; i++) {
+      rig.input.dx = (next() - 0.5) * 600;
+      rig.input.dy = (next() - 0.5) * 600;
+      rig.input.wheel = next() > 0.9 ? 1 : next() < 0.1 ? -1 : 0;
+      rig.input.rollDx = (next() - 0.5) * 220;
+      rig.hold(1);
+      const r = arm.blade.rotation();
+      const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(q.set(r.x, r.y, r.z, r.w));
+      const w = arm.blade.angvel();
+      spin = Math.max(spin, Math.abs(w.x * axis.x + w.y * axis.y + w.z * axis.z));
+      turn = Math.max(turn, Math.abs(arm.state.twist));
+      bend = Math.max(bend, arm.state.wrist);
+      sane &&= finite(arm.blade.translation()) && finite(arm.fore.translation());
+    }
+    rig.step(60);
+    const down = items.unwield(rig.player);
+    check(`${carrier.name}'s ${weapon.name}: taken off it dead, taken up, and swung with its ${cut.name}, it lands as itself`,
+      taken?.name === `${carrier.name}'s ${weapon.name}` && up.ok && hits > 0 && own === hits && best > 0,
+      `${up.text || "not taken up"}; ${hits} hits on the dummy, ${own} of them its own; best ${best.toFixed(1)} damage`);
+    check(`${carrier.name}'s ${weapon.name}: nothing spins in your hand, and X puts it up again`,
+      sane && spin < 100 && turn < 1.65 && bend < 1.3 && down.ok && arm.weapon === SWORD && arm.sheathed,
+      `peak spin ${spin.toFixed(0)} rad/s, grip ${(turn * 180 / Math.PI).toFixed(0)}deg, `
+        + `wrist ${(bend * 180 / Math.PI).toFixed(0)}deg; ${down.text}`);
+  }
+}
+
 async function theNewKeysAreWhereTheySay(): Promise<void> {
   console.log("\nthe new keys are where the HUD says");
   check("C crouches", KEY_MAP.KeyC === "crouch", `C -> ${KEY_MAP.KeyC}`);
@@ -4676,6 +4764,7 @@ async function run(): Promise<void> {
   await aShieldOnYourBackStopsACutFromBehind();
   await whatYouCutOffYouCanCarryOff();
   await theOrcsAxeCanBeWielded();
+  await everyWeaponCanBeWielded();
   await aCrouchGetsLow();
   await aVaultGoesOver();
   await aClimbGoesUp();

@@ -479,4 +479,12 @@ export const SPEAR: Weapon = {
   },
 };
 
+/**
+ * Every weapon there is. Whatever carries one can have it taken off it, dead
+ * or with its hand cut off, and it can be taken up and fought with (see
+ * `Arm.takeUp`): nothing about that is written for any one weapon, only for
+ * what a `Weapon` declares. The harness takes each of these -- and whatever
+ * anything in the bestiary carries -- off whatever carries it and swings it
+ * at the dummy, so a new one is held to that the day it is added.
+ */
 export const WEAPONS = { sword: SWORD, axe: AXE, spear: SPEAR } as const;
