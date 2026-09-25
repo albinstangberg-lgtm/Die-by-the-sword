@@ -522,6 +522,11 @@ export class Arm {
    * kinematic, touching nothing, but not on the back yet either.
    */
   private loose = false;
+  /**
+   * A hand nobody works any more has let go of its weapon: see `letGo`. The
+   * weapon is a thing of its own until a reset puts it back in the hand.
+   */
+  private pried = false;
   /** The weapon's pose where the part of the stow moving it began, chest frame. */
   private readonly stowP = new THREE.Vector3();
   private readonly stowQ = new THREE.Quaternion();
@@ -2250,6 +2255,9 @@ export class Arm {
       this.sheathedNow = false;
       this.loose = false;
       this.moveHand(this.bladeMesh, 0);
+    } else if (this.pried) {
+      this.pried = false;
+      this.moveHand(this.bladeMesh, 0);
     }
     this.severedAt = null;
     for (const cap of this.caps) {
@@ -2437,9 +2445,26 @@ export class Arm {
     return this.stow?.draw === true;
   }
 
-  /** The hand's joint has the weapon: not on the back, and not on its way there. */
+  /** The hand's joint has the weapon: not on the back, not on its way there, and not let go of. */
   private get gripping(): boolean {
-    return !this.sheathedNow && !this.loose;
+    return !this.sheathedNow && !this.loose && !this.pried;
+  }
+
+  /**
+   * A hand that has been cut off, or is on a body that is dead, lets go of
+   * its weapon, as a hand pried open does: the joint that held it goes, and
+   * the fist stays with the arm. Somebody is taking one off the other. False,
+   * and nothing happens, while anyone is working the hand, or with the
+   * weapon on the back.
+   */
+  letGo(dead: boolean): boolean {
+    if (!this.wristJoint || !this.gripping) return false;
+    if (this.severedAt === null && !dead) return false;
+    this.phys.world.removeImpulseJoint(this.wristJoint, true);
+    this.wristJoint = null;
+    this.pried = true;
+    this.moveHand(this.foreMesh, this.foreHalf);
+    return true;
   }
 
   /**

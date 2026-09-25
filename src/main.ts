@@ -189,33 +189,42 @@ async function main(): Promise<void> {
   const pending: Action[] = [];
   input.onAction = (a) => pending.push(a);
   const perform = (a: Action) => {
-    // A number, with the inventory open: whatever is on that line.
+    // A number, with the inventory open: whatever is on that line -- a
+    // potion drunk, anything else out of the bag and into the hand.
     if (typeof a === "object") {
       const entry = bag.open ? player.inventory.entries()[a.use] : undefined;
       if (!entry) return;
-      const out = entry.kind === "potion" ? player.drink() : items.drop(player, entry.item);
-      // A piece put down is its bodies back in the world, across the room
-      // from where they left it -- and a weapon still in a severed fist
-      // would sweep that whole way on its next step.
-      if (out.ok && entry.kind === "remains") impacts.resetSweeps();
+      const out = entry.kind === "potion" ? player.drink() : items.unbag(player, entry.item);
       hud.showNote(out.text, !out.ok);
       return;
     }
     switch (a) {
       case "sheathe": {
-        // Whatever the hand was doing -- going for something -- it is
-        // wanted for the sword now.
+        // Whatever the hand was doing -- going for something, holding
+        // something -- it is wanted for the sword now.
         pickup.cancel();
+        if (player.held) hud.showNote(items.letGo(player).text);
         if (!player.arm.stowing) {
           if (player.arm.sheathed) player.arm.draw(); else player.arm.sheathe();
         }
         break;
       }
       case "interact": {
-        // Again, while going for something: never mind.
+        // Again, while going for something: never mind. With something in
+        // the hand: into the bag with it.
         if (pickup.active) { pickup.cancel(); break; }
+        if (player.held) {
+          const out = items.bag(player);
+          hud.showNote(out.text, !out.ok);
+          break;
+        }
         const out = pickup.start(input.keys);
         if (!out.ok) hud.showNote(out.text, true);
+        break;
+      }
+      case "drop": {
+        const out = items.letGo(player);
+        hud.showNote(out.text, !out.ok);
         break;
       }
       case "sling": {
@@ -380,7 +389,8 @@ async function main(): Promise<void> {
           ? (player.fighter.offLimb.elbowOn && player.fighter.offLimb.shoulderOn ? "arm" : "lost")
           : "none",
     potions: player.potions,
-    remains: player.inventory.remains.length,
+    bagged: player.inventory.pieces.length,
+    holding: player.held?.name ?? null,
     healing: player.healing,
     stance: player.dead || fighter.down ? "down"
       : fighter.vaulting ? "vaulting"

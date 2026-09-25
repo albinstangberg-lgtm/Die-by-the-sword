@@ -16,8 +16,10 @@ export interface Kit {
   /** Where the shield is, or where it is going -- or that it went with the arm. */
   shield: "none" | "arm" | "back" | "slinging" | "unslinging" | "lost";
   potions: number;
-  /** Pieces of other people in the pack. */
-  remains: number;
+  /** Pieces of other people, and their weapons, in the bag. */
+  bagged: number;
+  /** What the sword hand is holding, if anything: a piece of somebody, or their weapon. */
+  holding: string | null;
   /** Drinking one: health still to come back. */
   healing: number;
   stance: "standing" | "crouching" | "vaulting" | "climbing" | "picking up" | "airborne" | "down";
@@ -145,7 +147,8 @@ export class Hud {
           <dt>C</dt><dd>crouch</dd>
           <dt>X</dt><dd>sheathe / draw</dd>
           <dt>Z</dt><dd>shield on back / arm</dd>
-          <dt>F</dt><dd>go and pick up</dd>
+          <dt>F</dt><dd>pick up &middot; into bag</dd>
+          <dt>G</dt><dd>let go</dd>
           <dt>H</dt><dd>drink a potion</dd>
           <dt>B</dt><dd>inventory</dd>
           <dt>Tab</dt><dd>tuning panel</dd>
@@ -257,8 +260,8 @@ export class Hud {
       : shielded ? "shield" : "other arm / shield";
     this.guardHint.style.color = kit.guarding ? "var(--ink)" : "";
 
-    const sig = [kit.sword, kit.shield, kit.potions, kit.remains, Math.ceil(kit.healing), kit.stance,
-      kit.prompt ?? ""].join("|");
+    const sig = [kit.sword, kit.shield, kit.potions, kit.bagged, kit.holding ?? "",
+      Math.ceil(kit.healing), kit.stance, kit.prompt ?? ""].join("|");
     if (sig === this.lastKitSig) return;
     this.lastKitSig = sig;
 
@@ -268,8 +271,9 @@ export class Hud {
     this.kitEl.innerHTML = `
       <dt>sword</dt><dd>${SWORD_TEXT[kit.sword]}</dd>
       <dt>shield</dt><dd>${SHIELD_TEXT[kit.shield]}</dd>
+      <dt>holding</dt><dd>${kit.holding ?? "nothing"}</dd>
       <dt>potions</dt><dd>${potions}</dd>
-      <dt>body parts</dt><dd>${kit.remains}</dd>
+      <dt>in bag</dt><dd>${kit.bagged}</dd>
       <dt>stance</dt><dd>${kit.stance}</dd>`;
 
     this.promptEl.textContent = kit.prompt ?? "";

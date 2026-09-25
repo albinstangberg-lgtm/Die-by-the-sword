@@ -24,10 +24,10 @@ shield you steer with the other mouse button, and the sword can go on your
 back — the hand takes it there, over the shoulder — to leave a hand free for
 a potion, which you walk over, get down to and take. The shield can go on
 your back too, by the other hand over its own shoulder, to free that hand
-instead. What you cut off an opponent — a head, an arm, a forearm with the
-axe still in its fist — is yours to take the same way, and it goes in an
-inventory with your potions, where you can drink one or put a piece of
-somebody down again. You can crouch under a
+instead. What you cut off an opponent — a head, an arm — and the weapon its
+dead or severed hand was holding are yours to take the same way: you hold
+them in your hand, F again puts them in your bag with your potions, and G
+lets go of them. You can crouch under a
 cut, climb a ledge, and vault what is waist high. And a body is a body to the
 end: it walks at the hips and chest and breathes standing still, a fighter who
 loses a sword arm curls over the stump and holds it, and one that dies goes
@@ -56,10 +56,11 @@ npm run build    # production bundle
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand |
 | **Z** | shield on your back, and back on your arm |
-| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent; sword on your back first; F again, or any key, calls it off |
+| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
+| **G** | let go of what is in your hand |
 | **H** | drink a potion — takes a free hand |
 | **B** | open and close the inventory |
-| **1–9** | with the inventory open: use what is on that line — drink a potion, put a piece down |
+| **1–9** | with the inventory open: use what is on that line — drink a potion, take a piece or a weapon out into your hand |
 | **Tab** | tuning panel |
 | **R** | reset the fight |
 | **Esc** | release the mouse |
@@ -618,38 +619,55 @@ seconds rather than at once, so drinking in the middle of a fight is a bet on
 those two seconds. There is one by the rack, two in the hall — one behind the
 block — and one at the back of the cell.
 
-### What you cut off
+### What you cut off, and their weapons
 
 Whatever you cut off an opponent can be taken like anything else lying about:
 a head, an off arm — whole, or an upper arm and a forearm if the elbow went
-first — and a sword arm or forearm, which keeps hold of its weapon, so the
-orc's forearm comes with its axe. The prompt names it — *F — take the orc's
-head* — and F goes and gets it, down to the floor for it, the hand on it.
+first — and a sword arm or forearm. So can the weapon a hand was holding once
+that hand is cut off or the body it belongs to is dead: the orc's axe. A hand
+like that keeps hold of its weapon as it falls, and lets go of it as you take
+one or the other — the joint that held it goes, and the fist stays with the
+arm — so the forearm and the axe are two things to take. Where they lie
+together F goes for the weapon first. The prompt names what it would take —
+*F — take the orc's axe* — and F goes and gets it, down to the floor for it,
+the hand on it.
 
-Unlike a potion these are physical. They fell where the cut threw them and
-lie where they came to rest, so where one is is asked of its bodies every
+And you keep it in your hand. A potion goes straight into your bag, being for
+using; a head or an axe is held, with the sword on your back, until **F**
+again puts it in the bag or **G** lets go of it. Held, it takes the hand: F
+picks up nothing else — it offers to bag what you hold instead — and it is
+not a hand to drink with. **X** lets go of it to draw your sword, and so does
+anything else that takes the hand away: a blow that puts you down, a cut.
+Held is not wielded: what is in your hand is out of the world, and the orc's
+axe in it cuts nothing.
+
+These are physical, unlike the potions. They fell where the cut threw them
+and lie where they came to rest, so where one is is asked of its bodies every
 step. Taken, a piece is the very bodies the fighter was made of taken out of
-the world — disabled and hidden, joints and all — and what comes up in your
-hand is a copy of it, so the body bowed over it does not kick it about. A
-reset finds every piece where it expects it, on the floor or in your pack,
-and puts it back on whoever lost it.
+the world — disabled and hidden, joints and all — and what you hold is a copy
+of it, so the body bowed over it does not kick it about. A reset finds every
+piece where it expects it, on the floor, in your hand or in your bag, puts it
+back on whoever lost it, and the weapon back in the fist.
 
-Put down again, a piece comes back into the world in front of you at knee
-height and falls to the floor. It goes as far out as a pace, lying away from
-you, and short of any wall; where there is no room ahead for the length of it
-— an arm with an axe in it, facing a wall — it lies across your front instead,
-toward whichever side has more floor. A weapon that comes back into the world
-that way has its sweep forgotten, so it cuts nobody on the way. Only an
-opponent's parts: nobody goes back for their own arm.
+Let go of, a piece comes back into the world in front of you from your
+hand's height and falls to the floor. It goes as far out as a pace, lying
+away from you, and short of any wall; where there is no room ahead for the
+length of it — a spear, facing a wall — it lies across your front instead,
+toward whichever side has more floor. A weapon nobody is swinging cuts
+nobody — one in a hand that has been cut off, one let go of, one falling —
+so the axe you drop does not take your foot off. Only an opponent's parts:
+nobody goes back for their own arm.
 
 ### The inventory
 
 **B** opens it and closes it: what you have on — where the sword is, where the
-shield is — and what you carry, numbered. Potions are one line, however many;
-each piece of somebody is a line of its own. With it open, the number beside a
-line uses it: a potion is drunk, by the same rules as **H**, and a piece is put
-down. The fight does not stop while it is open, and the mouse is still your
-arm: looking in your pack in the middle of a fight costs what it costs.
+shield is, what is in your hand — and what is in your bag, numbered. Potions
+are one line, however many; each piece of somebody, and each weapon, is a line
+of its own. With it open, the number beside a line uses it: a potion is drunk,
+by the same rules as **H**, and a piece or a weapon comes out of the bag into
+your hand, if the hand is free to take it. The fight does not stop while it
+is open, and the mouse is still your arm: looking in your bag in the middle
+of a fight costs what it costs.
 
 ### Crouching
 
@@ -1686,6 +1704,12 @@ Some things look like bugs and are not:
   blade, not the weight behind it.
 - **F does nothing with your sword drawn.** The hand that picks things up is
   the one holding it. X first.
+- **F puts a head in your bag rather than picking the next thing up.** With
+  something in your hand, that is what F does. Press it again for the next.
+- **Your sword comes out and the head you were holding hits the floor.** The
+  hand lets go of it to take the sword. F first, to keep it.
+- **The orc's axe in your hand cuts nothing.** You are holding it, not
+  wielding it: it is out of the world until you let it go.
 - **F takes the body away from you for a moment.** It walks you over, turns
   you, and puts you on your haunches. Press a key and you have it back.
 - **X takes a second, and a sword half put away is not one you can swing.**
@@ -1744,10 +1768,10 @@ src/
     shield.ts        a round shield: what it weighs, how it is drawn, and where
                      it rides on the back
     drive.ts         an angular PD held inside what each axis's inertia can take
-    items.ts         potions, the shield, the rack and what was cut off
-                     somebody, taking them, and putting remains back down
-    remains.ts       what comes off a body: its pieces, out of the world and back
-    inventory.ts     what a body carries: potions, and pieces of other people
+    items.ts         potions, the shield, the rack, what was cut off somebody
+                     and their weapon: taking them, holding them, letting go
+    remains.ts       what comes off a body, and the weapon a dead hand lets go of
+    inventory.ts     the bag: potions, and pieces of other people put in it
     pickup.ts        F: walking over, getting down to it, and reaching for it
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
@@ -1888,13 +1912,18 @@ the damage, and still land their weight, while the same cuts to its front
 land as hard as without it; that on your back it is still the
 one shield, the rack takes it back from there, and an arm cut off going for it
 leaves it there with nothing to take it down; that a head and a forearm with
-its sword in it come off and lie on the floor; that F goes and takes the head
-into the pack, where nothing of it is drawn or touched and it is no longer
-offered; that put down it comes back in front of you and falls to the floor;
-that the forearm goes in the pack sword and all, comes out still gripping it,
-and cuts nobody on the way; that put down facing a wall it lies across your
-front and settles on the floor; that a reset puts every piece back on, even
-from the pack; and that Z, B and the numbers are where the HUD says.
+its sword in it come off and lie on the floor as three things to take; that F
+goes for the head and keeps it in the hand, where nothing of it is drawn or
+touched, the hand takes nothing else and F offers to bag it; that F again puts
+it in the bag, and out of the bag it comes back into the hand; that G lets go
+of it, and it comes back in front of you from your hand's height and falls to
+the floor; that F takes the sword out of the dead fist, leaving the fist on
+the forearm and the forearm lying there for the next F; that drawing your own
+sword lets go of it, and it falls without cutting you; that let go of facing a
+wall it lies across your front and settles with no more speed than its fall
+gave it; that a reset puts every piece back on, from the hand and the bag, and
+the sword back in the fist; and that Z, B, G and the numbers are where the
+HUD says.
 
 ## Stack
 
@@ -1907,7 +1936,7 @@ it a fast tip tunnels straight through the thin post.
 ## What's next
 
 Rounds and a reason to be in the rooms. Friendly fire. Fighting with what an
-opponent dropped — the orc's axe, which you can carry off with its arm now but
-not swing. A shield for an opponent, and the second hand a spear actually
+opponent dropped — the orc's axe, which you can pick up and carry now but not
+swing. A shield for an opponent, and the second hand a spear actually
 wants. Blood that stays on the
 floor, and on the blade.

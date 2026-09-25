@@ -199,8 +199,11 @@ export class Impacts {
     for (const entry of new Set(this.blades.values())) {
       // A weapon on its owner's back, or on its way there or back, cuts
       // nothing, and when it is back in the hand it must not sweep from the
-      // back to the hand through whatever is between.
-      if (entry.arm.stowed) {
+      // back to the hand through whatever is between. Nor does one nobody is
+      // swinging -- in a hand cut off, or let go of, or carried off by
+      // someone -- which falls on you, or is put down beside you, and is
+      // only steel.
+      if (!entry.arm.wielding) {
         entry.cutter.reset();
         continue;
       }

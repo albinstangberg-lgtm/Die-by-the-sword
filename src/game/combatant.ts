@@ -12,7 +12,7 @@ import type { Wound, WoundEnd } from "./blood";
 import type { Targets } from "./targets";
 import type { Tuning } from "../tuning";
 import type { Keys } from "../input/input";
-import { POTION_HEAL, POTION_TIME, type Outcome } from "./items";
+import { POTION_HEAL, POTION_TIME, type Item, type Outcome } from "./items";
 import { Inventory } from "./inventory";
 
 /**
@@ -87,8 +87,13 @@ export class Combatant {
 
   health: number;
   dead = false;
-  /** What it carries: potions, and anything it has cut off someone and taken. */
+  /** Its bag: potions, and whatever of other people it has put in there. */
   readonly inventory = new Inventory();
+  /**
+   * What the sword hand is holding, with the sword away: a piece of somebody,
+   * or their weapon, picked up and not yet put in the bag. See `Items.hold`.
+   */
+  held: Item | null = null;
   /** Health still to come back from the one being drunk, and how fast. */
   private healLeft = 0;
   private healRate = 0;
@@ -360,12 +365,13 @@ export class Combatant {
   }
 
   /**
-   * A hand with nothing in it: the sword hand with the sword away, or the
-   * other hand with no shield on its arm -- on the back will do -- and not
-   * busy putting one there. Drinking takes one.
+   * A hand with nothing in it: the sword hand with the sword away and nothing
+   * picked up in it, or the other hand with no shield on its arm -- on the
+   * back will do -- and not busy putting one there. Drinking takes one.
    */
   get freeHand(): boolean {
-    const sword = this.arm.severedAt === null && this.arm.sheathed && !this.arm.stowing;
+    const sword = this.arm.severedAt === null && this.arm.sheathed && !this.arm.stowing
+      && this.held === null;
     const l = this.fighter.offLimb;
     const other = l.shoulderOn && l.elbowOn && !this.offArm.hasShield && !this.offArm.slinging;
     return sword || other;
@@ -589,6 +595,7 @@ export class Combatant {
     this.bodyDamage.clear();
     this.lastBlow = null;
     this.inventory.clear();
+    this.held = null;
     this.healLeft = 0;
     this.healRate = 0;
     // Puts the rotation locks back on, too: a body that died or was knocked

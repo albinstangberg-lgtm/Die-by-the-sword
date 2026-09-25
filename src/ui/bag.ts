@@ -4,10 +4,11 @@ import { SHIELD_TEXT, SWORD_TEXT, type Kit } from "./hud";
 /**
  * The inventory, on B.
  *
- * A list and nothing more: what you have on you, what you carry, numbered,
- * and what the number does -- drink a potion, put a piece of somebody down.
+ * A list and nothing more: what you have on you and in your hand, what is in
+ * your bag, numbered, and what the number does -- drink a potion, take a
+ * piece of somebody back out into your hand.
  * The fight does not stop while it is open, and the mouse is still your arm:
- * looking in a pack in the middle of a fight costs what it costs.
+ * looking in a bag in the middle of a fight costs what it costs.
  */
 export class Bag {
   private readonly root: HTMLElement;
@@ -35,7 +36,7 @@ export class Bag {
   update(who: Combatant, kit: Kit): void {
     if (!this.shown) return;
     const entries = who.inventory.entries();
-    const sig = [kit.sword, kit.shield, Math.ceil(kit.healing),
+    const sig = [kit.sword, kit.shield, kit.holding ?? "", Math.ceil(kit.healing),
       ...entries.map((e) => `${e.name}:${e.kind === "potion" ? e.count : ""}`)].join("|");
     if (sig === this.lastSig) return;
     this.lastSig = sig;
@@ -52,8 +53,9 @@ export class Bag {
       <dl>
         <dt>sword</dt><dd>${SWORD_TEXT[kit.sword]}</dd>
         <dt>shield</dt><dd>${SHIELD_TEXT[kit.shield]}</dd>
+        <dt>holding</dt><dd>${kit.holding ?? "nothing"}</dd>
       </dl>
-      ${entries.length ? `<ol>${lines}</ol>` : `<p class="empty">nothing in your pack</p>`}
+      ${entries.length ? `<ol>${lines}</ol>` : `<p class="empty">nothing in your bag</p>`}
       ${healing}
       <p class="note">${entries.length ? "1&ndash;9 to use &middot; " : ""}B to close &middot; the fight goes on</p>`;
   }

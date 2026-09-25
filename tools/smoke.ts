@@ -18,7 +18,7 @@ import {
   buildArena, CRATE, DUMMY_AT, GOBLIN_POST, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, ORC_POST, ROOMS,
   SPAWN, THIN_POST,
 } from "../src/game/arena";
-import { interact, Items, type Item } from "../src/game/items";
+import { interact, Items, promptFor, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
 import { SLUNG, SLUNG_TURN } from "../src/game/shield";
 import { Pickup } from "../src/game/pickup";
@@ -4255,7 +4255,7 @@ function stepWith(rig: Rig, items: Items, n: number, keys: Keys = NO_KEYS): void
 }
 
 async function whatYouCutOffYouCanCarryOff(): Promise<void> {
-  console.log("\nwhat you cut off someone can be picked up, carried, and put down again");
+  console.log("\nwhat you cut off someone, and their weapon: into your hand, into your bag, and let go of");
   // Out in the open floor of the training room, where nothing else is lying.
   const at = spawnFor(SWORDSMAN, -1.2, 7.4);
   const rig = await buildRig({}, SWORDSMAN, at);
@@ -4268,25 +4268,38 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   const cut = (handle: number, times: number) => {
     for (let i = 0; i < times; i++) foe.receive(fakeImpact(handle));
   };
+  const wrist = () => (foe.arm as unknown as { wristJoint: unknown }).wristJoint;
+  const fist = () => (foe.arm as unknown as { handMeshObj: THREE.Object3D }).handMeshObj.parent;
   stepWith(rig, items, 30);
 
   // The sword forearm first: once the head is off, nothing else lands.
   cut(foe.arm.fore.collider(0)!.handle, 4);
   cut(part("head").collider.handle, 4);
   stepWith(rig, items, 150);
-  const remains = items.items.filter((i) => i.kind === "remains");
-  const head = remains.find((i) => i.name === "the swordsman's head");
-  const hand = remains.find((i) => i.name === "the swordsman's forearm and sword");
+  const lying = items.items.filter((i) => i.piece);
+  const head = lying.find((i) => i.name === "the swordsman's head");
+  const fore = lying.find((i) => i.name === "the swordsman's forearm");
+  const sword = lying.find((i) => i.name === "the swordsman's sword");
   const headBody = part("head").body!;
-  check("a head and a forearm with its sword in it come off, and lie on the floor to be taken",
-    foe.dead && remains.length === 2 && head !== undefined && hand !== undefined
-      && head.at.y < 0.3 && head.at.distanceTo(new THREE.Vector3().copy(headBody.translation())) < 1e-6,
-    remains.map((i) => `${i.name} at ${i.at.y.toFixed(2)} m`).join("; "));
+  check("a head, a forearm, and the sword still in its fist lie on the floor to be taken",
+    foe.dead && lying.length === 3 && head?.kind === "remains" && fore?.kind === "remains"
+      && sword?.kind === "weapon" && head.at.y < 0.3
+      && head.at.distanceTo(new THREE.Vector3().copy(headBody.translation())) < 1e-6,
+    lying.map((i) => `${i.name} (${i.kind}) at ${i.at.y.toFixed(2)} m`).join("; "));
 
-  // Go and get the head, as F does: sword away, over to it, down, and up.
+  // Go and get it, as F does: sword away, over to it, down, and up -- from
+  // the side of it away from everything else lying there, as you would.
   const go = (target: Item) => {
     let outcome: { ok: boolean; text: string } | null = null;
-    const from = new THREE.Vector3(target.at.x + 1.3, SPAWN.y, target.at.z + 0.4);
+    const others = items.items.filter((i) => i.piece && !i.taken && i !== target);
+    const away = new THREE.Vector3(1.3, 0, 0.4);
+    if (others.length) {
+      const c = others.reduce((sum, i) => sum.add(i.at), new THREE.Vector3()).multiplyScalar(1 / others.length);
+      away.set(target.at.x - c.x, 0, target.at.z - c.z);
+      if (away.lengthSq() < 1e-6) away.set(1, 0, 0);
+      away.setLength(1.3);
+    }
+    const from = new THREE.Vector3(target.at.x + away.x, SPAWN.y, target.at.z + away.z);
     rig.place(from);
     stepWith(rig, items, 20);
     stow(rig, false);
@@ -4299,22 +4312,34 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
     return { start, aimedAt, outcome: outcome as { ok: boolean; text: string } | null };
   };
   const got = go(head!);
-  check("F goes for it and takes it, into the pack",
-    got.start.ok && got.aimedAt === head && got.outcome?.ok === true
-      && rig.player.inventory.remains.includes(head!) && head!.taken,
-    `${got.start.text}; ${got.outcome?.text}`);
-  const entries = rig.player.inventory.entries();
-  check("where it is out of the world: nothing of it drawn, nothing of it to touch",
-    !headBody.isEnabled() && !part("head").mesh.visible
-      && entries.some((e) => e.kind === "remains" && e.name === head!.name && e.verb === "drop"),
-    `enabled ${headBody.isEnabled()}, shown ${part("head").mesh.visible}; the pack lists ${entries.map((e) => e.name).join(", ")}`);
-  const again = items.nearest(rig.player.position(new THREE.Vector3()), 5);
-  check("and it is no longer lying there to be taken", again !== head, again?.name ?? "nothing near");
+  check("F goes for the head and keeps it in the hand, not the bag",
+    got.start.ok && got.aimedAt === head && got.outcome?.ok === true && rig.player.held === head
+      && head!.taken && !rig.player.inventory.pieces.includes(head!),
+    `${got.start.text}; ${got.outcome?.text}; holding ${rig.player.held?.name}`);
+  const busy = pickup.start(NO_KEYS);
+  const prompt = promptFor(rig.player, items);
+  check("held, it is out of the world, and the hand takes nothing else: F says it would bag it",
+    !headBody.isEnabled() && !part("head").mesh.visible && rig.arm.palm.children.length === 1
+      && !busy.ok && busy.text.startsWith("your hand is full")
+      && prompt?.startsWith("F — put the swordsman's head in your bag") === true,
+    `enabled ${headBody.isEnabled()}; ${busy.text}; prompt "${prompt}"`);
 
-  // Put down, it comes back in front of you and falls to the floor.
-  stepWith(rig, items, 30);
-  const drop = items.drop(rig.player, head!);
-  rig.impacts.resetSweeps();
+  const bagged = items.bag(rig.player);
+  const entries = rig.player.inventory.entries();
+  check("F again puts it in the bag, and the hand is empty",
+    bagged.ok && rig.player.held === null && rig.arm.palm.children.length === 0
+      && entries.some((e) => e.kind === "piece" && e.item === head && e.verb === "hold")
+      && !headBody.isEnabled(),
+    `${bagged.text}; the bag lists ${entries.map((e) => `${e.name} (${e.verb})`).join(", ")}`);
+  const out = items.unbag(rig.player, head!);
+  check("and from the bag it comes back out into the hand",
+    out.ok && rig.player.held === head && !rig.player.inventory.pieces.includes(head!)
+      && rig.arm.palm.children.length === 1, out.text);
+
+  // Let go of, it comes back into the world in front of you and falls.
+  stepWith(rig, items, 20);
+  const hand = rig.arm.handPosition.y;
+  const drop = items.letGo(rig.player);
   const f = rig.fighter;
   const p = f.body.translation();
   const h = headBody.translation();
@@ -4322,59 +4347,72 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   const startY = h.y;
   stepWith(rig, items, 90);
   const landed = headBody.translation().y;
-  check("put down from the pack, it comes back in front of you and falls to the floor",
+  check("G lets go of it: it comes back in front of you, from your hand, and falls to the floor",
     drop.ok && headBody.isEnabled() && part("head").mesh.visible && !head!.taken
-      && ahead > 0.25 && startY - landed > 0.2 && landed < 0.3
-      && !rig.player.inventory.remains.includes(head!),
-    `${drop.text}: ${ahead.toFixed(2)} m ahead, from ${startY.toFixed(2)} m to ${landed.toFixed(2)} m`);
+      && rig.player.held === null && rig.arm.palm.children.length === 0
+      && ahead > 0.25 && Math.abs(startY - hand) < 0.05 && landed < 0.3,
+    `${drop.text}: ${ahead.toFixed(2)} m ahead, from ${startY.toFixed(2)} m (hand at ${hand.toFixed(2)}) to ${landed.toFixed(2)} m`);
 
-  // An arm still holding its sword takes the sword with it, both ways.
+  // The sword: the dead fist lets go of it as it is taken, and the forearm
+  // stays where it lies.
   const health = rig.player.health;
   const blade = foe.arm.blade;
-  const took = go(hand!);
-  const gone = !blade.isEnabled() && !foe.arm.fore.isEnabled();
-  stepWith(rig, items, 30);
-  const back = items.drop(rig.player, hand!);
-  rig.impacts.resetSweeps();
-  stepWith(rig, items, 120);
-  const fq = foe.arm.fore.rotation();
-  const fp = foe.arm.fore.translation();
-  const fist = new THREE.Vector3(0, SWORDSMAN.build.segment.foreArm.length / 2, 0)
-    .applyQuaternion(new THREE.Quaternion(fq.x, fq.y, fq.z, fq.w)).add(new THREE.Vector3(fp.x, fp.y, fp.z));
-  const grip = fist.distanceTo(new THREE.Vector3().copy(blade.translation()));
-  check("a forearm with a sword in it goes in the pack sword and all, and comes out still gripping it",
-    took.outcome?.ok === true && gone && back.ok && blade.isEnabled() && grip < 0.05,
-    `${took.outcome?.text}; ${back.text}: the sword ${(grip * 100).toFixed(1)} cm from the fist`);
-  check("and put down, the sword cuts nobody on its way back into the world",
-    rig.player.health === health, `health ${health.toFixed(1)} -> ${rig.player.health.toFixed(1)}`);
+  const took = go(sword!);
+  check("F takes the sword out of the dead fist: the sword in your hand, the forearm left lying",
+    took.outcome?.ok === true && rig.player.held === sword && !blade.isEnabled()
+      && wrist() === null && fist() === foe.arm.foreMesh
+      && foe.arm.fore.isEnabled() && !fore!.taken,
+    `${took.outcome?.text}; the fist still on the forearm ${fist() === foe.arm.foreMesh}`);
 
-  // Put down facing a wall half a metre off, it lies across your front
+  // Bagged, the next thing F goes for is the forearm it came out of.
+  items.bag(rig.player);
+  const next = pickup.start(NO_KEYS);
+  const nextOne = pickup.target;
+  pickup.cancel();
+  items.unbag(rig.player, sword!);
+  check("and the next F goes for the forearm it came out of",
+    next.ok && nextOne === fore, `${next.text}`);
+
+  // Drawing your own sword, the hand lets go of it.
+  stepWith(rig, items, 20);
+  rig.arm.draw();
+  stepWith(rig, items, 150);
+  check("drawing your own sword, the hand lets go of it, and it falls without cutting you",
+    rig.player.held === null && blade.isEnabled() && !sword!.taken && rig.arm.wielding
+      && blade.translation().y < 0.3 && rig.player.health === health,
+    `holding ${rig.player.held?.name ?? "nothing"}; the sword at ${blade.translation().y.toFixed(2)} m; `
+      + `health ${health.toFixed(1)} -> ${rig.player.health.toFixed(1)}`);
+
+  // Let go of facing a wall half a metre off, it lies across your front
   // rather than into the stone, and settles rather than being thrown out.
-  go(hand!);
   const wall = ROOMS.training.maxZ;
   rig.place(new THREE.Vector3(1.5, SPAWN.y, wall - 0.55));
   rig.fighter.yaw = Math.PI;                  // facing +Z, the south wall
-  rig.player.inventory.stow(hand!);           // the reset emptied the pack, not the piece
   stepWith(rig, items, 30);
-  const bits = hand!.piece!.bits;
-  const walled = items.drop(rig.player, hand!);
-  rig.impacts.resetSweeps();
+  stow(rig, false);
+  const taken = items.hold(rig.player, sword!);
+  stepWith(rig, items, 10);
+  const walled = items.letGo(rig.player);
+  // Falling from where it was let go of is all the speed it should have.
+  const fall = Math.sqrt(2 * -rig.tuning.gravity * blade.translation().y);
   let fastest = 0;
   for (let i = 0; i < 120; i++) {
     stepWith(rig, items, 1);
-    for (const b of bits) {
-      const v = b.body.linvel();
-      fastest = Math.max(fastest, Math.hypot(v.x, v.y, v.z));
-    }
+    const v = blade.linvel();
+    fastest = Math.max(fastest, Math.hypot(v.x, v.y, v.z));
   }
-  const deepest = Math.max(...bits.map((b) => b.body.translation().z));
-  const highest = Math.max(...bits.map((b) => b.body.translation().y));
-  check("put down against a wall, it lies across your front and settles on the floor",
-    walled.ok && deepest < wall - 0.02 && highest < 0.3 && fastest < 4,
-    `nearest the wall ${(wall - deepest).toFixed(2)} m off it, highest ${highest.toFixed(2)} m, fastest ${fastest.toFixed(1)} m/s`);
+  const deepest = blade.translation().z;
+  const tip = foe.arm.pointAlongBlade(1, new THREE.Vector3());
+  check("let go of against a wall, it lies across your front and settles on the floor",
+    taken.ok && walled.ok && Math.max(deepest, tip.z) < wall - 0.02 && blade.translation().y < 0.3
+      && fastest < fall + 1,
+    `nearest the wall ${(wall - Math.max(deepest, tip.z)).toFixed(2)} m off it, `
+      + `fastest ${fastest.toFixed(1)} m/s against ${fall.toFixed(1)} from the fall`);
 
-  // A reset puts every piece back on whoever lost it, wherever it had got to.
+  // A reset puts every piece back on whoever lost it, from the hand or the bag.
   go(head!);
+  items.bag(rig.player);
+  items.hold(rig.player, sword!);
   items.reset();
   rig.player.reset(rig.tuning, SPAWN);
   foe.reset(rig.tuning, at);
@@ -4382,11 +4420,12 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   stepWith(rig, items, 60);
   const torso = foe.position(new THREE.Vector3());
   const headGap = torso.distanceTo(new THREE.Vector3().copy(headBody.translation()));
-  check("a reset puts the pieces back on, even from the pack, and nothing is left lying about",
+  check("a reset puts the pieces back on, from the hand and the bag, and the sword back in the fist",
     headBody.isEnabled() && part("head").mesh.visible && !part("head").severed && !foe.arm.disarmed
-      && blade.isEnabled() && headGap < 1.2 && rig.player.inventory.empty
-      && !items.items.some((i) => i.kind === "remains"),
-    `head ${headGap.toFixed(2)} m from the torso; pack empty ${rig.player.inventory.empty}`);
+      && blade.isEnabled() && wrist() !== null && fist() === foe.arm.bladeMesh && foe.arm.wielding
+      && headGap < 1.2 && rig.player.inventory.empty && rig.player.held === null
+      && rig.arm.palm.children.length === 0 && !items.items.some((i) => i.piece),
+    `head ${headGap.toFixed(2)} m from the torso; the sword in the fist ${fist() === foe.arm.bladeMesh}`);
 }
 
 async function theNewKeysAreWhereTheySay(): Promise<void> {
@@ -4399,6 +4438,7 @@ async function theNewKeysAreWhereTheySay(): Promise<void> {
     `X -> ${ACTION_MAP.KeyX}, F -> ${ACTION_MAP.KeyF}, H -> ${ACTION_MAP.KeyH}`);
   const one = ACTION_MAP.Digit1;
   const nine = ACTION_MAP.Digit9;
+  check("G lets go of what is in your hand", ACTION_MAP.KeyG === "drop", `G -> ${ACTION_MAP.KeyG}`);
   check("Z slings the shield, B opens the inventory, and 1 to 9 use what is in it",
     ACTION_MAP.KeyZ === "sling" && ACTION_MAP.KeyB === "bag"
       && typeof one === "object" && one.use === 0 && typeof nine === "object" && nine.use === 8,
