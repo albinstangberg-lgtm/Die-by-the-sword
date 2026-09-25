@@ -33,10 +33,19 @@ end: it walks at the hips and chest and breathes standing still, a fighter who
 loses a sword arm curls over the stump and holds it, and one that dies goes
 limp where it stands and comes down in a heap.
 
+And a fight flows now. A swing that meets nothing runs into the next, and one
+that goes round can carry the whole body round after it on its heel — Shift
+and a turn, which you have too. An opponent keeps its weapon where its last
+swing left it and never quite still, draws back on its way in or while it
+gives ground, meets a swing it sees drawn back with its own weapon, hops
+clear, lets go of a swing when a cut hurts, limps on a cut leg — as you do —
+fights differently once it is badly hurt, and shows you its weapon from out of
+its reach.
+
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 341 checks, no browser needed
+npm run smoke    # headless physics harness — 363 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -50,6 +59,7 @@ npm run build    # production bundle
 | **wheel** | reach — extend and retract, for whichever arm the mouse is on |
 | **W / S** | forward, back |
 | **A / D** | turn (arrow keys also work) |
+| **Shift** | with A / D: turn on your heel — three and a half times as fast, enough to carry a swing on round with you |
 | **Q / E** | sidestep |
 | **Space** | jump — or, with **W** held at a ledge, climb it |
 | **V** | vault whatever is in front of you, if it is waist high |
@@ -1097,6 +1107,137 @@ short of it costs you. Against a player who swings once a second whatever is
 in reach, all three do about the damage they did before any of this — what has
 changed is when: on your misses, and as you walk in.
 
+### One swing into the next
+
+A swing used to end with the guard back up in the one place it was always
+held, and the next began from there, whatever the last had done: swing, reset,
+swing. Now:
+
+- **A miss runs into the next swing.** A swing that goes through nothing ends
+  where another starts — a forehand's follow-through is a backhand's wind-up,
+  the orc's axe swung round high ends where its sweep along the floor begins,
+  and a spear drawn back off a thrust is ready to thrust again — and now and
+  then, instead of bringing its guard back up, it goes straight into the one
+  that starts there. Stepping back out of a swing is not the end of it.
+- **Stopped on your guard, it hacks again.** A swing stopped on your weapon,
+  your shield or the stone has nothing left to carry on with. What can follow
+  it is the same again, drawn back the way it came.
+- **Never off a swing that drew blood.** A run is how it gets past you, not
+  how it finishes you: against a player who stands and takes it, all three do
+  what they did before any of this.
+- **Every swing in a run is drawn back for.** The drawing back is short — the
+  end of one is the start of the next — but it is there, and far enough to
+  see. The weapon going back still means a swing is coming, every time.
+- **A run is paid for.** At the end of one it stands a moment with its guard
+  up getting its breath, about a sixth of a second for every swing past the
+  first, and while it does it can get out of the way of nothing.
+
+| | runs, after a miss or a block | the most in one | what follows what |
+|---|---|---|---|
+| **swordsman** | more often than not | three | forehand into backhand into forehand |
+| **orc** | one in three | two | round high into along the floor, and back; the overhead ends where nothing starts |
+| **goblin** | half the time | three | jab, jab, jab |
+
+### Carried round
+
+A swing that goes round and meets nothing can carry the whole body round
+after it. The weapon stays out at full stretch where the swing ended, the body
+goes round under it on its heel, stepping toward you as it turns, and the
+weapon comes round at you again at the speed a body turning carries it — at
+the height of your middle, whatever it went for the first time. It is the
+orc's wide swing six times in ten it misses, and the swordsman's forehand or
+backhand one time in five.
+
+Its back is to you for the middle of it. That is the moment to go in: it is
+committed to going round, and its weapon is behind it. Stay where you stepped
+back to and the weapon arrives. It comes out of a spin a beat slow getting its
+guard back.
+
+The turn on its heel is yours too: **Shift** with a turn. It is three and a
+half times as fast as an ordinary turn, a full circle in about seven tenths of
+a second, and you can step while you do it. Carry a swing round with it.
+
+### Its guard
+
+It used to hold its weapon in one place between swings, still, until the next —
+something you could learn to stop watching. Now:
+
+- **It keeps its weapon where its last swing left it**: over on its left after
+  a forehand, over on its right after a backhand, most of the way, and eases
+  it back in its own time. Where one swing ends is where the next is quickest
+  from.
+- **It shifts its guard as it goes round you** — higher, further across or
+  less — every second or three, at a guard's pace and not a swing's (see the
+  findings below).
+- **It is never quite still.** It sways.
+
+None of it is a weapon going back, and none of it goes below the chest: an axe
+held low in front of an orc comes up through you on the way to its next
+overhead.
+
+### Drawn back on the move
+
+It used to stop, and then draw back. Now:
+
+- **Pressing in, it often draws back on its way**, and the swing goes as it
+  arrives: a weapon going back on something still walking at you. Get away,
+  and it gives the swing up, as a leap does.
+- **Now and then it gives ground as the weapon goes back**, a step, and comes
+  in again behind it. Follow it as it backs off and you walk onto the swing.
+  The goblin does it most, the swordsman now and then, the orc never.
+
+### Meeting your blade
+
+Its feet used to be its only answer to a blade. Now it may put its weapon in
+the way, a reaction time after it sees yours go back — not when your blade
+arrives, which is too late for a weapon to get anywhere, but as it is drawn
+back, which is what anyone watching an arm reads, and what you read off its.
+What comes of it is the weapons' business (see [Weapons meeting](#weapons-meeting)):
+a weapon held still in the way of a hard swing stops it and is knocked aside
+by it, as anything held still is; the orc's axe, still on its way into place as
+your blade meets it, sends your sword back instead; and a goblin's spear shaft
+is a broom handle. Your weapon knocked aside is an opening, and it takes it.
+
+What it reads is a weapon going back fast and near it. Draw back slowly, or
+from out of its reach, and there is nothing to read — and nothing it reads
+comes any sooner than a reaction time after.
+
+### Hurt
+
+- **It flinches.** A cut that lands while it draws back may take the swing
+  off it: the goblin more often than not, the swordsman half the time, the orc
+  never. That is pain, not balance — a stagger still takes a swing off
+  anything light enough to rock.
+- **A cut leg lames it — and you.** A knee's worth of damage to the legs takes
+  nearly half of anyone's walking pace and half their jump. A potion mends it
+  with the rest of you.
+- **Badly hurt, it fights like it.** The orc gets angry: under two fifths of
+  its health it hardly waits between swings, runs three together, and stops
+  getting out of the way of anything. The goblin gets away: under half, it
+  waits longer between thrusts, gives ground, hops back from everything and
+  stops offering you a target. The swordsman gets careful: longer between
+  swings, and more of yours met with its sword.
+
+### Hops and taunts
+
+- **A step out of the way is sometimes a hop**: the jump key, back and away,
+  off the floor, further than a step goes and committed to the line it left
+  on. The goblin hops two times in three it gets out of the way, the swordsman
+  now and then and after a run of swings, the orc never.
+- **Out of its reach, it shows you its weapon.** Back out of its circle and
+  stand, or stand well off as it comes for you, and now and then it stops: the
+  orc beats the floor with its axe, the swordsman salutes, the goblin shakes
+  its spear at you over its head. With you knocked down, it may stand off and
+  do it rather than come and finish you. Never a weapon going back, so never a
+  lie, and it is over the moment you come at it. And never the moment you have
+  got away from the orc: that is what it leaps for.
+
+| | parries | hops | lunges | flinches | taunts | badly hurt |
+|---|---|---|---|---|---|---|
+| **swordsman** | three in ten swings it reads | one in three | a quarter of its swings from standing | half the time | now and then: a salute | gets careful |
+| **orc** | a quarter, with an axe | never | never | never | a fifth: beats the floor | gets angry |
+| **goblin** | hardly ever | two in three | a third | four in five | now and then: shakes its spear | gets away |
+
 ### Steps have weight
 
 A step used to be at full pace the moment the key went down and stopped dead
@@ -1133,7 +1274,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Fifty-one things the physics taught us
+## Fifty-eight things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1632,6 +1773,59 @@ a sword's length — which is exactly what a goblin that keeps its distance neve
 does. Each could have been made to pass by loosening a number, and would then
 have been measuring nothing.
 
+**A guard shifted at a swing's pace is a swing.** The first guard that moved
+between swings went to its next place as fast as the arm could be moved, which
+is the speed a swing goes, and a sword brought round that fast a foot from you
+cuts. Standing still in front of a swordsman going round you, you lost eight
+times as much health while it went round you as before its guard moved at all.
+A guard shifts over half a second now.
+
+**Carried round, a weapon leads with a different edge.** The first spin held
+the edge the swing had led with — the band it was measured to cut in — and
+landed on the flat three times in four. An arm sweeping a weapon across and a
+body carrying it round move it through the air differently: at the rolls the
+orc's wide swing cuts in, a spin led with the edge at a third to a half of
+square, and the best rolls for going round, measured the same way with the
+weapon held out and the body turning, are on the other side of flat.
+
+**A heavy head trails a fast turn by a quarter of it.** The first spin was
+over once the body had come all the way round, and the axe had not: turning
+at nine radians a second, the head trailed the arm that held it by a radian
+and a half, and the spin stopped with the axe still behind you. It is over when
+the weapon has come past you now. The same lag drew the hand in, and the first
+spin, which shortened the arm to put the head on you, swept the head's circle
+past in front of you. It keeps its arm out and moves its feet to put the
+circle through you.
+
+**A parry decided when the blade arrives is too late.** It first answered a
+swing with its weapon when it answered with its feet: on seeing the blade come
+at it. A reaction time after that and an arm's travel after that, the cut had
+landed — in a dozen forehands it got its sword to one, and took more than a
+swordsman that did nothing, whose guard had at least stayed where it was. It
+reads your weapon going back now, which is what anyone watching an arm does,
+and meets most of them.
+
+**Following up a hit that landed made standing still fatal.**
+The first runs followed any swing that stopped — on your guard, on the stone,
+or in you — and a cut that landed was followed by the same again. Against a
+player standing still, three swordsmen in eight killed them inside forty
+seconds, where before none had. A run is how it gets past you, not how it
+finishes you: it follows only a swing that met nothing, or met your weapon.
+
+**A creature that taunts whenever it is out of reach taunts at itself.** The
+first taunts came whenever it was well outside its own circle — and it was,
+every time it gave ground or stepped back out of offering you a target. The
+swordsman spent a tenth of a fight saluting, and every salute ended with it
+walking back in, nearer than it had been going round you. It taunts now when
+you have backed off, not when it has.
+
+**A step taken from a step goes further.** Stepping inside your reach to draw
+a swing was timed as if from a standing start — what a step loses getting
+going it makes up coasting to a stop — and one begun while it was already
+walking in went nearly half again as deep: inside its own guard, where it stood
+long enough to be crowded, and swung at you instead of stepping back out. It
+takes off now what its feet would carry it anyway.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -1666,7 +1860,8 @@ is knocked by a heavier blow, at 0 none, and the weapon is held wherever it is
 hit.
 
 Movement adds `step ease` — how long the feet take to get to walking pace and
-to stop, everyone's — `jump height` and `air control`. Presets: **heavy** (a sword that
+to stop, everyone's — `pivot speed`, how fast Shift and a turn take you round
+on your heel, everyone's too, `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
 to lift it). Try `rigid` for ten seconds to hear what the mechanic sounds like
 when you take the clamp away.
@@ -1814,6 +2009,24 @@ Some things look like bugs and are not:
   goblin in about two, and much faster by both, if you manage to bring them
   together. Twice as fast, while blades passed through bodies: your guard,
   held still, now stops blows that used to go through it.
+- **An opponent that misses you can swing again at once.** From where the
+  miss ended, drawn back a little way. Not after a swing that landed.
+- **The orc turns its back on you.** It is going round after an axe that met
+  nothing, and the axe is coming round again. Go in.
+- **Shift and A spins you round.** On your heel, fast. It is how anything
+  carries a swing round.
+- **An opponent's weapon moves when it is not swinging.** Its guard is held
+  where its last swing left it, shifts, and sways. Only a weapon going back is
+  a swing coming.
+- **It swings while it is still walking at you**, and **it backs off as its
+  weapon goes back, then comes at you.** Both are drawn back first.
+- **It puts its weapon in the way of yours** when it sees yours go back. The
+  orc's, still moving as yours meets it, knocks yours aside.
+- **It lets go of a swing when you cut it.** Not the orc.
+- **A cut leg slows you down.** Anybody's. A potion mends it.
+- **A badly hurt orc stops waiting.** A badly hurt goblin stops coming.
+- **The orc beats the floor with its axe.** You are out of its reach; it is
+  telling you what it thinks of that.
 
 ## Structure
 
@@ -1872,7 +2085,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 341 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 363 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.

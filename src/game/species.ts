@@ -85,6 +85,78 @@ export interface Cut {
    * reaches for first is most of what it is like to fight.
    */
   readonly favour?: number;
+  /**
+   * Whether, having gone round through nothing, it may carry on round with
+   * the whole body: the weapon held out where the swing ended, the body going
+   * round under it on its heel, its back to you on the way, and the weapon
+   * coming round at you again. Only a swing that goes ROUND can.
+   *
+   * `roll` is the edge it rolls to as it goes round, and it is not the
+   * swing's. Carried round by a body turning, the weapon travels a different
+   * way through the air than an arm sweeping it does, and the rolls that lead
+   * with the edge through a swing are near the worst there are for going
+   * round: the orc's wide swing, carried round at its own edge, landed on the
+   * flat three times in four. These were measured the same way the swings'
+   * were, weapon held out and body turning.
+   */
+  readonly spin?: { readonly chance: number; readonly roll: Span };
+}
+
+/**
+ * One swing flowing into the next.
+ *
+ * A swing that goes through nothing ends where another begins: a forehand's
+ * follow-through is a backhand's wind-up, an axe swung round high ends where
+ * the sweep along the floor starts, and a spear drawn back off a thrust is a
+ * spear ready to thrust. So a creature that misses does not always go back to
+ * its guard first. Every swing in the run is still drawn back for -- only the
+ * last one's end is the next one's start, and the drawing back is short.
+ *
+ * Stopped on something -- your guard, your weapon, the stone -- a blade has
+ * nothing left to carry on with, and what can follow it is the same again,
+ * drawn back the way it came. Never off a swing that drew blood: a run is how
+ * it gets past you, not how it finishes you.
+ */
+export interface Flow {
+  /** Chance, after a swing that went through nothing, that another follows from where it ended. */
+  readonly combo: number;
+  /** The most swings it throws in one run, the first included. */
+  readonly chain: number;
+}
+
+/** An arm pose, off level: yaw, pitch and reach as a shape's are, and the edge's roll. */
+export interface Pose4 {
+  readonly yaw: number;
+  readonly pitch: number;
+  readonly reach: number;
+  readonly roll: number;
+}
+
+/**
+ * What it does with its weapon to taunt you (see `Footwork.taunt`): back and
+ * forth between two poses, off level, a beat at each. Neither is anywhere a
+ * swing of its own starts from. A weapon going back means a swing is coming,
+ * every time, and a taunt that looked like one would be a lie.
+ */
+export interface Display {
+  readonly a: Pose4;
+  readonly b: Pose4;
+  /** How many times it goes to each. */
+  readonly beats: number;
+  /** Seconds one beat takes: to the first pose and on to the second. */
+  readonly beat: number;
+}
+
+/**
+ * How it fights once it is badly hurt: whatever it declares here in place of
+ * its usual, below this share of its health. Not a difficulty setting -- a
+ * mood, and a creature's own: an orc gets angry, a goblin gets away.
+ */
+export interface Temper {
+  readonly below: number;
+  readonly aggression?: number;
+  readonly footwork?: Partial<Footwork>;
+  readonly flow?: Partial<Flow>;
 }
 
 /**
@@ -163,6 +235,44 @@ export interface Footwork {
    * and swings while your weapon is on its way back. Rolled once a miss.
    */
   readonly counter: number;
+  /**
+   * Chance a step out of the way is a hop instead: off the floor on the jump
+   * key, back and away, further than a step goes -- and, like any jump,
+   * committed to the line it left on.
+   */
+  readonly hop: number;
+  /**
+   * Chance it answers a swing with its weapon rather than its feet, rolled as
+   * it sees your weapon go back -- sooner than it could step out of the swing
+   * itself (see `wariness`) -- and put across the line yours is coming on a
+   * reaction time later. What comes of it is the weapons' own business (see
+   * `Impacts.clash`): held still, a weapon stops a hard swing and is knocked
+   * aside by it; the orc's axe, still moving as yours meets it, knocks yours
+   * aside instead; and a spear shaft is a broom handle.
+   */
+  readonly parry: number;
+  /**
+   * Chance a swing it would throw from where it stands is thrown from giving
+   * ground instead: a step back as the weapon goes back, then in again behind
+   * it, so that following it is walking onto the swing.
+   */
+  readonly lunge: number;
+  /**
+   * Chance a cut that lands on it while it draws back takes the swing off it.
+   * Pain rather than balance: a stagger takes a swing off anything light
+   * enough to rock, and this is the swing it lets go of because it hurt. The
+   * orc does not.
+   */
+  readonly flinch: number;
+  /**
+   * Chance, once you have backed out of its reach -- or as it sets off for you
+   * from well out of it, or with you on the floor -- that it shows you its
+   * weapon first: never drawn back, so never a lie. The orc beats the floor
+   * with its axe, the swordsman salutes, the goblin shakes its spear at you.
+   * Not when it has stepped out of your reach itself: a creature that
+   * saluted every time it gave ground did little else.
+   */
+  readonly taunt: number;
 }
 
 export interface Species {
@@ -186,6 +296,12 @@ export interface Species {
    */
   readonly aggression: number;
   readonly footwork: Footwork;
+  /** How one swing runs into the next. */
+  readonly flow: Flow;
+  /** How it fights once badly hurt, if any differently. */
+  readonly temper?: Temper;
+  /** What it does with its weapon to taunt you. */
+  readonly display: Display;
   /**
    * Distances it wants to fight at, as fractions of its own measured strike
    * reach -- the horizontal distance from its own centre to where its weapon
@@ -242,10 +358,29 @@ export const SWORDSMAN: Species = {
   power: sizedPower(HUMAN_BUILD),
   aggression: 1,
   // It fences: goes round you, gives ground about as often as it takes it,
-  // and every so often steps in only to see what you do.
+  // and every so often steps in only to see what you do. It meets a swing
+  // with its sword about as often as with its feet, and now and then hops
+  // clear instead of stepping.
   footwork: {
     patience: [0.5, 1.5], settle: 0.26, wariness: 0.35, retreat: 0.35, feint: 0.12,
     rock: 0.4, give: 0.5, bait: 0.15, counter: 0.7,
+    hop: 0.3, parry: 0.3, lunge: 0.25, flinch: 0.5, taunt: 0.1,
+  },
+  // Forehand into backhand into forehand: a sword is light enough to keep
+  // going, and a miss is where a run of them starts.
+  flow: { combo: 0.55, chain: 3 },
+  // Hurt, it gets careful: longer between swings, and more of them met with
+  // the sword than walked into.
+  temper: {
+    below: 0.4,
+    footwork: { patience: [0.9, 2.0], parry: 0.5, bait: 0, taunt: 0 },
+  },
+  // A salute: the blade upright before its face, then down and out to its
+  // side, point to the floor.
+  display: {
+    a: { yaw: 0.05, pitch: 0.85, reach: 0.25, roll: 0 },
+    b: { yaw: -0.8, pitch: -0.65, reach: 0.9, roll: 0 },
+    beats: 1, beat: 1.3,
   },
   range: { close: 0.68, strike: 1.0, far: 1.26 },
   // Your body, mostly, and everything else as often as each other -- your
@@ -265,12 +400,15 @@ export const SWORDSMAN: Species = {
       from: { yaw: [-1.3, -1.1], pitch: [0.3, 0.5], reach: [0.45, 0.55] },
       to: { yaw: [0.9, 1.05], pitch: [-0.35, -0.1], reach: [1, 1] },
       roll: [-1.4, -0.8], step: 0,
+      // Round on its heel after a forehand that met nothing: see `spin`.
+      spin: { chance: 0.2, roll: [0.4, 1.0] },
     },
     {
       name: "backhand", aims: ["head", "body", "arm"],
       from: { yaw: [0.95, 1.1], pitch: [0.3, 0.45], reach: [0.45, 0.55] },
       to: { yaw: [-1.3, -1.1], pitch: [-0.2, -0.1], reach: [1, 1] },
       roll: [-1.2, -0.7], step: 0,
+      spin: { chance: 0.2, roll: [-0.8, -0.2] },
     },
     {
       // Along the floor at your shins, from its right. Legs are thin, and
@@ -313,10 +451,32 @@ export const ORC: Species = {
   aggression: 1.15,
   // It stalks rather than circles: a heavy step, a long plant, and never long
   // before the axe goes up. It does not feint -- everything it starts, it
-  // means -- and it gets out of the way of very little.
+  // means -- and it gets out of the way of very little. What it does with a
+  // swing it sees coming is put the axe in its way, which knocks aside
+  // anything you can swing. It does not hop, it does not flinch, and once you
+  // have backed off out of its reach it beats the floor with the axe at you.
   footwork: {
     patience: [0.25, 0.9], settle: 0.42, wariness: 0.1, retreat: 0.1, feint: 0,
     rock: 0.12, give: 0.1, bait: 0, counter: 0.5,
+    hop: 0, parry: 0.25, lunge: 0, flinch: 0, taunt: 0.2,
+  },
+  // Round high and back along the floor, or along the floor and back round
+  // high: two, and then it has to get the axe up again. The overhead ends
+  // where nothing else starts, and is on its own.
+  flow: { combo: 0.35, chain: 2 },
+  // Hurt, it gets angry: less waiting, more of it in a run, and no more
+  // getting out of the way of anything.
+  temper: {
+    below: 0.4,
+    aggression: 1.6,
+    footwork: { patience: [0.1, 0.45], wariness: 0, retreat: 0, parry: 0.1, taunt: 0 },
+    flow: { combo: 0.65, chain: 3 },
+  },
+  // It beats the floor in front of it with the axe head: down, up, down.
+  display: {
+    a: { yaw: 0.25, pitch: -1.05, reach: 1, roll: 0 },
+    b: { yaw: 0.25, pitch: 0.2, reach: 0.7, roll: 0 },
+    beats: 3, beat: 0.55,
   },
   // It keeps its distance more than a swordsman does: an axe wants room.
   range: { close: 0.78, strike: 1.0, far: 1.24 },
@@ -344,11 +504,14 @@ export const ORC: Species = {
     },
     {
       // The whole axe round at waist height. It runs out of arc: give ground.
+      // Give ground just far enough for it to miss and 3.65kg of iron going
+      // round carries the orc round after it, and it comes round again.
       name: "wide swing", aims: ["body", "head"],
       from: { yaw: [-1.5, -1.3], pitch: [0.3, 0.4], reach: [0.5, 0.6] },
       to: { yaw: [1.2, 1.35], pitch: [-0.2, -0.1], reach: [1, 1] },
       roll: [-1.5, -1.1], step: 0,
       at: { min: 0.7 },
+      spin: { chance: 0.6, roll: [0.4, 0.9] },
     },
     {
       // Backhand along the floor. It is already travelling along the ground,
@@ -390,10 +553,30 @@ export const GOBLIN: Species = {
   aggression: 0.85,
   // Never still. It skips about at the end of its spear, darts in to make you
   // flinch, and hops back from most of what you swing at it: a goblin that
-  // stands and takes a sword cut is a dead goblin.
+  // stands and takes a sword cut is a dead goblin. It gives ground as the
+  // spear goes back and comes in behind the point, and a cut that lands on
+  // it while it draws back is usually the end of that thrust.
   footwork: {
     patience: [0.6, 1.8], settle: 0.14, wariness: 0.6, retreat: 0.55, feint: 0.22,
     rock: 0.35, give: 0.8, bait: 0.12, counter: 0.45,
+    hop: 0.65, parry: 0.08, lunge: 0.35, flinch: 0.8, taunt: 0.12,
+  },
+  // Jab, jab, jab: a spear drawn back off a thrust is ready to thrust again.
+  flow: { combo: 0.5, chain: 3 },
+  // Hurt, it gets away: it waits longer between thrusts, gives ground, hops
+  // back from everything, and stops offering you anything to swing at.
+  temper: {
+    below: 0.5,
+    aggression: 0.4,
+    footwork: {
+      patience: [1.2, 2.6], wariness: 0.85, retreat: 0.85, give: 0.95, bait: 0, hop: 0.9, taunt: 0,
+    },
+  },
+  // It shakes the spear at you over its head.
+  display: {
+    a: { yaw: -0.35, pitch: 0.9, reach: 0.75, roll: 0 },
+    b: { yaw: 0.35, pitch: 0.9, reach: 0.75, roll: 0 },
+    beats: 4, beat: 0.3,
   },
   // It thrusts rather than sweeps, so it fights at arm's length and hates
   // anything closer.

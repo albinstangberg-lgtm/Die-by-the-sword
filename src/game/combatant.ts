@@ -31,6 +31,9 @@ const SEVERABLE: Record<string, keyof typeof JOINT_INTEGRITY> = {
   offElbow: "elbow",
 };
 
+/** The parts of a body that are its legs: what a cut to lames it. */
+const LEGS = /(thigh|shin)$/;
+
 /** Cutting either of these disarms the fighter — the sword goes with the hand. */
 type ArmJoint = "shoulder" | "elbow";
 
@@ -338,6 +341,10 @@ export class Combatant {
 
     this.health = Math.max(0, this.health - amount);
     this.onHurt?.(amount, target.part);
+    if (LEGS.test(target.part)) {
+      this.legWound += amount;
+      this.fighter.lame = Math.min(1, this.legWound / (JOINT_INTEGRITY.knee * this.jointScale));
+    }
 
     if (target.joint !== null && !this.arm.disarmed) {
       this.joints[target.joint] -= amount;
@@ -412,6 +419,11 @@ export class Combatant {
     const step = Math.min(this.healLeft, this.healRate * dt);
     this.healLeft -= step;
     this.health = Math.min(this.maxHealth, this.health + step);
+    // A cut leg mends with the rest of it.
+    if (this.legWound > 0) {
+      this.legWound = Math.max(0, this.legWound - step);
+      this.fighter.lame = Math.min(1, this.legWound / (JOINT_INTEGRITY.knee * this.jointScale));
+    }
   }
 
   // --- the shield ------------------------------------------------------------
@@ -509,6 +521,12 @@ export class Combatant {
 
   /** Body parts other than the sword arm, cut free once they have taken enough. */
   private bodyDamage = new Map<string, number>();
+  /**
+   * What has landed on its legs, health. A knee's worth of it -- what it would
+   * take to cut through one, if a leg could be cut off -- and it is as lame as
+   * it gets. See `Fighter.lame`.
+   */
+  private legWound = 0;
 
   private severBodyPart(name: string, amount: number, impact: Impact): void {
     const joint = SEVERABLE[name];
@@ -593,6 +611,7 @@ export class Combatant {
     this.joints.shoulder = JOINT_INTEGRITY.shoulder * this.jointScale;
     this.joints.elbow = JOINT_INTEGRITY.elbow * this.jointScale;
     this.bodyDamage.clear();
+    this.legWound = 0;
     this.lastBlow = null;
     this.inventory.clear();
     this.held = null;

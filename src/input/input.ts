@@ -24,6 +24,11 @@ export interface Keys {
   vault: boolean;
   /** Held: sink onto bent knees. */
   crouch: boolean;
+  /**
+   * Held: turn on your heel. A and D turn the body round several times as
+   * fast -- what carries a swing on round with you, all the way.
+   */
+  pivot: boolean;
 }
 
 /**
@@ -72,6 +77,8 @@ export const KEY_MAP: Record<string, keyof Keys> = {
   Space: "jump",
   KeyV: "vault",
   KeyC: "crouch",
+  ShiftLeft: "pivot",
+  ShiftRight: "pivot",
   // The arrow keys stay live as an alias; some people reach for them first.
   ArrowLeft: "turnLeft",
   ArrowRight: "turnRight",
@@ -80,7 +87,7 @@ export const KEY_MAP: Record<string, keyof Keys> = {
 export class Input {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false,
+    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
   };
 
   /** Mouse travel since the last `consumeMouse()`, in pixels. */

@@ -128,6 +128,14 @@ export interface Tuning {
   stepEase: number;
   turnSpeed: number;   // rad/s
   /**
+   * How fast a turn on your heel goes, rad/s at human size: Shift held with a
+   * turn. The feet stay where they are and the body goes round over them --
+   * the spin a swing carries on into. Thrown, like a jump, so it goes with
+   * the square root of the body's size: a goblin comes round quicker than an
+   * orc.
+   */
+  pivotSpeed: number;
+  /**
    * How high a standing jump clears, metres. The take-off speed is derived
    * from this and gravity, so lowering gravity floats the jump rather than
    * making it higher -- which is what you want from a knob called "gravity".
@@ -183,6 +191,7 @@ export const DEFAULTS: Tuning = {
   moveSpeed: 3.1,
   stepEase: 0.1,
   turnSpeed: 2.5,
+  pivotSpeed: 9,
   jumpHeight: 0.62,
   airControl: 0.055,
 
@@ -252,6 +261,8 @@ export const CONTROLS: Control[] = [
   { group: "Movement", key: "stepEase", label: "step ease  (s)", min: 0, max: 0.4, step: 0.01,
     hint: "How long the feet take to get up to walking pace and to stop. At 0 every step starts and stops dead. Everyone's, the opponents' included." },
   { group: "Movement", key: "turnSpeed", label: "turn speed  (rad/s)", min: 0, max: 6, step: 0.1 },
+  { group: "Movement", key: "pivotSpeed", label: "pivot speed  (rad/s)", min: 0, max: 16, step: 0.5,
+    hint: "How fast Shift and a turn take you round on your heel. A full turn in about seven tenths of a second at 9: fast enough to carry a swing round with you. Everyone's." },
   { group: "Movement", key: "jumpHeight", label: "jump height  (m)", min: 0, max: 2, step: 0.02 },
   { group: "Movement", key: "airControl", label: "air control", min: 0, max: 1, step: 0.005,
     hint: "How much of your ground steering you keep in the air. Near 0 a jump commits you to the line you left on." },
