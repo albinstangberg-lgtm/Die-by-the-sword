@@ -62,6 +62,33 @@ import {
 export const POLE = { back: 1.0, down: 0.45, right: 0.25 };
 
 /**
+ * Tip a unit pole further under the arm as its aim rises above level, in place.
+ *
+ * The elbow goes to whichever side of the shoulder-to-hand line the pole is
+ * on, so an aim pointing straight AWAY from the pole leaves it no side at all,
+ * and an aim passing near there sends it over the top of the arm to the other
+ * one. Hung behind and below the hand, `POLE` points away from a spot in front
+ * of the chest, a little across it and 24 degrees up: almost straight above
+ * the guard. Raised through there the whole arm turned over -- the elbow swung
+ * up over the forearm, fifteen degrees in a step of an unhurried raise, the
+ * blade dipped from upright to below level, and the edge rolled half a turn.
+ *
+ * So above level the pole tips down by as far as the aim has risen, and a hand
+ * going up never gets any nearer that spot than it is at level, where the elbow
+ * already turned no faster than it does anywhere else. Overhead the pole hangs
+ * straight down: the elbow stays under the raised arm and the weapon leans back
+ * over the head, ready to come down. At and below level nothing moves -- every
+ * swing was tuned there.
+ */
+export function tipPole(pole: THREE.Vector3, pitch: number): THREE.Vector3 {
+  const flat = Math.hypot(pole.x, pole.z);
+  if (pitch <= 0 || flat < 1e-9) return pole;
+  const fall = Math.min(Math.PI / 2, Math.atan2(-pole.y, flat) + pitch);
+  const s = Math.cos(fall) / flat;
+  return pole.set(pole.x * s, -Math.sin(fall), pole.z * s);
+}
+
+/**
  * The shoulder drive runs softer than the wrist. It is steering a lighter
  * segment and mostly only needs to keep the elbow from wandering, and a
  * shoulder as stiff as the wrist makes the whole limb feel welded rather than
@@ -1057,14 +1084,15 @@ export class Arm {
     // which way the edge faces through a swing, and it was tuned against the
     // hull: hung off a turning chest instead it presented the flat, and cut
     // quality in a real sweep fell by half. The posture moves the shoulder;
-    // the clearance pass below keeps the elbow out of the ribs.
+    // the clearance pass below keeps the elbow out of the ribs. Raised above
+    // level it tips under the arm, so the arm never turns over on the way up.
     const torsoYaw = this.fighter.yaw;
     const right = this._refA.set(Math.cos(torsoYaw), 0, -Math.sin(torsoYaw));
     const back = this._refC.set(Math.sin(torsoYaw), 0, Math.cos(torsoYaw));
-    const pole = this._refB.set(0, -POLE.down, 0)
+    const pole = tipPole(this._refB.set(0, -POLE.down, 0)
       .addScaledVector(right, POLE.right)
       .addScaledVector(back, POLE.back)
-      .normalize();
+      .normalize(), pitch);
     // A guided hand hangs its elbow its own way, and the roll -- the edge the
     // mouse asked for -- is not what it is doing.
     const hang = this.guidePole;
