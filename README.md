@@ -44,10 +44,24 @@ clear, lets go of a swing when a cut hurts, limps on a cut leg — as you do —
 fights differently once it is badly hurt, and shows you its weapon from out of
 its reach.
 
+And nothing just walks up to you. A double tap of W, S, Q or E is a quick step
+that way — twice walking pace for under a fifth of a second, then a moment's
+rest — and everyone has it: an opponent closes the last of the gap with one as
+its weapon goes back, straight in or on a slant round your side, goes straight
+back out after swinging, and gets out of the way of your swing with one. The
+goblin is never still; the orc hardly ever bothers.
+
+And at the far end of the orc's hall there is a gate, with a lever on the wall
+beside it. F goes to the lever as it goes to anything, and the hand takes hold
+of the handle and pulls it down — jointed to the bar, the arm's own clamped
+drive against the lever's spring — until it catches. The gate grinds up into
+the gatehouse over it, and the two orcs in the pen behind it hear it go and
+come out to see why.
+
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 377 checks, no browser needed
+npm run smoke    # headless physics harness — 409 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -63,12 +77,13 @@ npm run build    # production bundle
 | **A / D** | turn (arrow keys also work) |
 | **Shift** | with A / D: turn on your heel — three and a half times as fast, enough to carry a swing on round with you |
 | **Q / E** | sidestep |
+| **W W, S S, Q Q, E E** | double tap: a quick step that way — a metre or so in under a fifth of a second, then a moment's rest before the next |
 | **Space** | jump — or, with **W** held at a ledge, climb it |
 | **V** | vault whatever is in front of you, if it is waist high |
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand — or, holding an opponent's weapon, take it up and fight with it, and put it up again |
 | **Z** | shield on your back, and back on your arm |
-| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
+| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon — or pull the lever beside the pen's gate; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
 | **G** | let go of what is in your hand — in the middle of a swing, throw it |
 | **H** | drink a potion — takes a free hand |
 | **B** | open and close the inventory |
@@ -761,6 +776,30 @@ your hand, if the hand is free to take it. The fight does not stop while it
 is open, and the mouse is still your arm: looking in your bag in the middle
 of a fight costs what it costs.
 
+### Pulling the lever
+
+The lever beside the pen's gate is taken hold of rather than taken. **F** goes
+to it as it goes to anything — the body walks over and turns square to the
+wall, and the hand goes up for the handle under the arm's own drive — and once
+the hand is within three centimetres of it, it takes hold: a joint between the
+hand and the bar, made where the hand has got to, so that it has nothing to
+pull together. Then the hand's ghost is taken down the arc the handle goes
+round, and on past the bottom, and the arm follows it as it follows anything.
+The lever is two kilos of iron on a pin, sprung up against its stop, and it
+takes about thirty newtons at the handle to bring it down to the catch. The arm
+pays that in lag — the hand trails its ghost by five to seven centimetres all
+the way down — and the body leans into it. Just over half a second after the
+hand takes hold, the lever is past the catch and stays down, the hand lets go
+of it, and the gate beside it starts to go up.
+
+Nothing throws it but a hand. A blade goes through it, as it goes through the
+door frames — a lever an axe could hook, or knock over in the middle of a
+fight, is one more thing to go wrong at the height a weapon is carried — and
+it is the sword hand that pulls it, so the sword has to be on your back first,
+as for anything F does. Let go of short of the catch — a key of your own, a
+blow — and it springs back up to its stop, and nothing opens. Once it is down
+it stays down, and the gate stays up, until a reset.
+
 ### Crouching
 
 Hold **C** and the hips sink 38 centimetres, the chest tips forward over them,
@@ -800,24 +839,24 @@ there climbs onto it instead.
 
 ## The testing area
 
-Three rooms, and the point of them is that they are not one room.
+Four rooms, and the point of them is that they are not one room.
 
 ```
-        ┌───────────────────────────┐
-        │          THE HALL         │           ┌───────────────┐
-        │           an orc          │   door    │   THE CELL    │
-        │  a low beam, a block and  ├───────────┤   a goblin,   │
-        │        a thin post        │           │  and nothing  │
-        │                           │           │     else      │
-        └────────────┐   ┌──────────┘           └───────────────┘
-                     │   │ door
-        ┌────────────┘   └──────────┐
-        │     THE TRAINING ROOM     │
-        │   the practice dummy and  │
-        │        four pillars       │
-        │                           │
-        └───────────────────────────┘
-               you start here
+                              ┌───────────────────────────┐
+  ┌───────────────┐           │          THE HALL         │           ┌───────────────┐
+  │    THE PEN    │   gate    │           an orc          │   door    │   THE CELL    │
+  │   two orcs,   ├───────────┤  a low beam, a block and  ├───────────┤   a goblin,   │
+  │  and nothing  │   lever   │        a thin post        │           │  and nothing  │
+  │     else      │           │                           │           │     else      │
+  └───────────────┘           └────────────┐   ┌──────────┘           └───────────────┘
+                                           │   │ door
+                              ┌────────────┘   └──────────┐
+                              │     THE TRAINING ROOM     │
+                              │   the practice dummy and  │
+                              │        four pillars       │
+                              │                           │
+                              └───────────────────────────┘
+                                     you start here
 ```
 
 You start in the training room with the practice dummy and four pillars — and
@@ -828,6 +867,20 @@ the door is the hall, which holds the orc and the scenery a big swing gets
 caught on. East out of the hall is the cell, which holds the goblin and
 nothing at all, because a spear's reach is the whole argument and a cluttered
 room would answer it for you.
+
+West out of the hall, across it from the cell's door and on the same line, is
+the pen, and the pen has a gate. Two orcs wait in it — the second orc and the
+third, as the fight panel has them, told apart by what they wear — and nothing
+else, because what two of them at once is like is the whole of it. You open
+the gate yourself, with the lever on the hall's side of the wall a pace north
+of it (see [Pulling the lever](#pulling-the-lever)), when you want to find
+out. Shut, the gate is a wall: timber and iron that stops a blade, a body and
+a line of sight the way stone does, so the orcs behind it neither see you nor
+come for you, and you do not see them. Opened, it is winched up in a little
+over three seconds into the gatehouse built over the doorway to take it — the
+walls have no roof, and a gate wound up out of one would stand in the air —
+and the doorway is a doorway like the others. It comes down again only with a
+reset.
 
 Walls change what an opponent can know, and that turns out to be the whole of
 the layout:
@@ -863,6 +916,20 @@ all of them it knew where you actually were. Step through the door out of the
 orc's hall and along the other side of the wall, and it walked most of the way
 across its hall toward you, into the stone, and gave up there — wherever there
 was — and waited against the wall.
+
+**The gate going up is heard.** Standing at the lever you are a pace north of
+the doorway, where nobody in the pen can see you through it, so sight alone
+would leave the two orcs waiting at their posts with the gate wide open until
+you walked in front of it. But a gate grinding up is a noise, and anything
+within ten metres of it that is not already after you goes to see: to the
+gateway, on out the far side of it from where it stood, and a look round
+from there — the same search it makes where it last saw you. It learns nothing
+of you by the noise. The ray it always casts decides whether it finds you,
+and from the doorway you are three paces off and in plain sight; if you have
+gone, it gives up and walks home, and waits there with the gate open behind it.
+The fight panel says `looking` while it is looking, and `fighting` once it has
+seen you. The goblin is twenty metres off, through the stone, and hears
+nothing.
 
 ## The bestiary
 
@@ -1258,6 +1325,51 @@ comes any sooner than a reaction time after.
 | **orc** | a quarter, with an axe | never | never | never | a fifth: beats the floor | gets angry |
 | **goblin** | hardly ever | two in three | a third | four in five | now and then: shakes its spear | gets away |
 
+### Quick steps
+
+A double tap of a movement key throws you that way at twice walking pace for
+under a fifth of a second — a metre or so, at your size — and the next cannot
+start until seven tenths of a second after this one did. It goes where it set
+off, whatever the keys do after. It is from the floor only, on feet that are
+your own: a jump off one takes off at the keys' own pace, and a cut leg takes
+its share off it, as it does off a walk. The tap is tight — two presses of the
+same key, the first let go of within a fifth of a second and the second down
+within a quarter of a second of that, nothing else pressed between — because
+the keys are tapped all the time to edge in and out of reach, and a quick step
+nobody asked for costs a fight. One asked for a moment too soon, still resting
+or still in the air, waits that moment rather than be lost.
+
+It is everyone's, on the same flag and the same rest:
+
+- **In with a swing.** Its moment come and you not quite in its reach, an
+  opponent may close the last of the gap with a quick step as its weapon goes
+  back — straight in from further off, or on a slant round your side from
+  where it goes round you — and swing from where it lands, once it has turned
+  back square to you. The weapon going back is still the tell; the step is
+  how fast what follows arrives.
+- **Out after it.** Giving ground after a swing, the first step back may be a
+  quick one; and after a swing it quick-stepped in to throw, it goes straight
+  back out as readily as it quick-steps at all.
+- **Out of the way.** A step out of the way of your swing may be a quick one,
+  and in the first fifth of a second it has gone twice as far as a step goes.
+- **Round you**, now and then: a flick round your side and out of its circle,
+  and back in on the next step.
+
+| | quick steps | in with a swing |
+|---|---|---|
+| **swordsman** | two in five of its steps out of the way, or out of reach | nearly half the time |
+| **orc** | one in ten: a heavy thing throwing its weight about | one in seven |
+| **goblin** | seven in ten — nine, badly hurt | three in five |
+
+Against someone standing still they are no deadlier for it. Over at least
+thirty-two forty-second fights each, the swordsman left you 41 health of 100 on average
+where it used to leave 38, the orc 43 where it left 39, and the goblin 81
+where it left 77 — no worse, within what that many fights can tell apart.
+Against the harness's player that walks straight in swinging, the swordsman is
+as dangerous as it was. The goblin, out of reach again the moment it has
+thrust, is not: it costs that player a couple of points more a bout, and
+killed it in four bouts of forty, where it used to kill it in none of twenty.
+
 ### Steps have weight
 
 A step used to be at full pace the moment the key went down and stopped dead
@@ -1294,7 +1406,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Sixty-four things the physics taught us
+## Sixty-seven things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1742,6 +1854,16 @@ holding it. About one run of the harness in a hundred found a corpse fourteen
 metres from where it fell, without a blow having landed on it. A weapon nobody
 is swinging stops meeting bodies now.
 
+**A quick step stretches the shoulder by its speed, not by its start.** The
+first quick steps took the harness's opponent's hand eleven centimetres past
+where its arm ends, where walking takes it five. Easing the step up to pace
+three times as slowly changed nothing. The drive damps the hand against its
+speed through the world, not past the shoulder, so a body going at twice
+walking pace leaves its hand behind by twice as much for as long as it goes,
+and the shoulder, a soft joint, gives. It is yours as much as theirs, and the
+check that an opponent's arm never exceeds its reach measures quick steps on
+their own now, against a bound yours is held to as well.
+
 And five about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1926,6 +2048,24 @@ guard over the head is the blade rolled across it now, which an axe meets more
 often than it met the old one, and the orc's overhead, measured again, is
 thrown on a new edge.
 
+**The world's rays see nothing before it has stepped.** Rapier finds what a ray
+hits in a structure it brings up to date as it steps, so a ray cast before the
+first step finds no walls at all — and every opponent looks before the first
+step. That never mattered while you started twenty metres from anybody. It
+mattered once the harness put you beside the lever: the pen's two orcs, the
+shut gate between you, noticed you on their very first thought and were at the
+gate before it had moved. Anything moved outright between steps is the same:
+a reset shuts the gate, and until the world steps a ray still finds it up. The
+rays are brought up to date by hand now, before the first step and after every
+reset.
+
+**The fifth fighter was one bit too many.** Every fighter had three collision
+bits of its own — body, weapon, hull — which left room for four in sixteen, and
+the pen's two orcs made five. But no hull ever needed telling from another:
+every hull bumps into every other, whoever's side it is on, and nothing meets
+its own colliders anyway. The hulls share one bit now, and at two bits a
+fighter there is room for six.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -1961,13 +2101,16 @@ hit.
 
 Movement adds `step ease` — how long the feet take to get to walking pace and
 to stop, everyone's — `pivot speed`, how fast Shift and a turn take you round
-on your heel, everyone's too, `jump height` and `air control`. Presets: **heavy** (a sword that
+on your heel, everyone's too, `quick step` and `quick step rest`, how fast a
+double tap throws you as a multiple of walking pace and how long until the
+next, everyone's as well, `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
 to lift it). Try `rigid` for ten seconds to hear what the mechanic sounds like
 when you take the clamp away.
 
 The arm's knobs drive your arm only. An orc's force budget is its own, scaled
-from its size. The world's — gravity, the impact knobs and step ease — are everyone's.
+from its size. The world's — gravity, the impact knobs, step ease, the pivot
+and the quick step — are everyone's.
 
 ## Deliberate behaviours
 
@@ -2127,6 +2270,29 @@ Some things look like bugs and are not:
 - **A badly hurt orc stops waiting.** A badly hurt goblin stops coming.
 - **The orc beats the floor with its axe.** You are out of its reach; it is
   telling you what it thinks of that.
+- **Tapping W twice throws you a metre.** Two short taps of the same key, close
+  together. A key held, tapped slowly, or with another between is a walk.
+- **It comes at you from the side.** A quick step in on a slant lands it round
+  your side and turned off you, and it squares up before it swings. Turn to
+  meet it.
+- **Your arm trails a quick step.** Anybody's does. The hand is damped against
+  its speed through the world, and a body going at twice walking pace leaves it
+  behind for a moment.
+- **F does nothing at the lever with your sword drawn.** The hand that pulls it
+  is the sword hand. X first, as for anything F does.
+- **The lever takes a moment, and your hand lags it.** It is sprung, and the
+  arm pulls it down against the spring under the same clamp as a swing. The
+  body leans in to do it.
+- **Your sword goes straight through the lever.** It is scenery to a blade,
+  like the door frames. Only a hand moves it.
+- **Let go of the lever halfway and it springs back up.** A blow, or a key of
+  your own, and the gate stays shut. It only stays down once it has caught.
+- **The gate does not come down again.** Once the lever has caught, the gate is
+  up until a reset.
+- **Two orcs come out when the gate goes up, though they never saw you.** They
+  heard it. They come to look, and from the doorway you are in plain sight.
+- **Pull the lever and walk away, and they go back in.** They look round the
+  gateway, find nobody, and walk home to wait by the open gate.
 
 ## Structure
 
@@ -2165,13 +2331,19 @@ src/
                      of them and throwing them
     remains.ts       what comes off a body, and the weapon a dead hand lets go of
     inventory.ts     the bag: potions, and pieces of other people put in it
-    pickup.ts        F: walking over, getting down to it, and reaching for it
+    pickup.ts        F: walking over, getting down to it, and reaching for it --
+                     or taking hold of a lever and pulling it down
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
-    arena.ts         three rooms built to be hit, the doors between them, a
-                     ledge to climb, and where the things lying about go
+    arena.ts         four rooms built to be hit, the doors between them, a
+                     ledge to climb, the pen's gate and the gatehouse over it,
+                     and where the things lying about go
+    gate.ts          the pen's gate, winched up into its gatehouse, and the
+                     lever on the wall beside it: a sprung bar on a pin that a
+                     hand takes hold of and pulls down until it catches
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
-    ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
+    ai.ts            the opponent's brain — mouse deltas and your keys, nothing
+                     more; and what it does about a noise it hears
     cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
@@ -2186,7 +2358,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 377 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 409 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -2203,7 +2375,8 @@ lands cuts, and never exceeds the reach of its own arm.
 It also holds the layout to its claims: that each subject is in its own room,
 that a wall stops a line of sight and a doorway does not, that an opponent
 which cannot see you neither moves nor swings — and that walking into its room
-starts a fight. And it takes a joint apart to check that the cut reports two
+starts a fight; that the pen's gate, shut, stops a line of sight and the step
+probe as the walls do, and is a doorway once it is up. And it takes a joint apart to check that the cut reports two
 faces to bleed from, that both are attached to something that is placed every
 frame, and that the droplets fall, land and go.
 
@@ -2347,6 +2520,24 @@ carries it, dead, taken up, and swung at the dummy with that creature's own
 first shape of swing, a thrust from a spear's distance, landing every time as
 itself and cutting; that nothing spins in your hand under the same ten seconds
 of abuse; and that X puts it up again.
+
+And the lever and the pen: that with the sword drawn F goes nowhere and the
+prompt says to put it up; that F walks you over to the lever and the hand goes
+up to within a couple of centimetres of the handle, and nothing moves the
+lever until the hand has hold of it; that the hand stays on the bar, jointed
+there to within a millimetre, the whole way down, the body leaning in and the
+arm never flailing; that the lever catches and stays down and the hand lets go
+of it, and the gate starts up about half a second later and is clear of its
+doorway in under four; that a lever that is down is not offered again; that a
+reset puts it up and shuts the gate; and that let go of halfway, it springs
+back up and nothing opens. That the game's five fit in the collision groups,
+every weapon reaching whoever it should and nobody else, and every hull still
+bumping into every other. And, with all five in one arena: that behind the
+shut gate the pen's two hold their posts, facing it, within noticing distance
+of you and unable to see you; that the gate going up is heard in the pen and
+not in the cell; that they come out through the gateway, find you, and swing,
+without a cut between them; and that with nobody to find, they look, give it
+up, and go home.
 
 ## Stack
 

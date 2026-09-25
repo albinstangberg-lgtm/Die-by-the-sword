@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ARM_RANGE, type ArmInput } from "./arm";
 import type { Combatant } from "./combatant";
 import type { Keys } from "../input/input";
+import { QUICK_TIME } from "./fighter";
 import type { Tuning } from "../tuning";
 import type { Aim, Cut, Flow, Footwork, Leap, Span, Species } from "./species";
 
@@ -544,6 +545,15 @@ const PARRY_HOLD: Span = [0.15, 0.9];
 /** How far a hop is expected to carry it, in seconds of its walking pace: the room it asks for. */
 const HOP = 0.6;
 
+// --- quick steps ------------------------------------------------------------------
+
+/**
+ * How often a step round you is a quick one, as a share of `Footwork.quick`
+ * -- which is mostly about getting out of the way, and a creature that shot
+ * round you every other step would be doing little else.
+ */
+const QUICK_ROUND = 0.25;
+
 // --- being hurt -----------------------------------------------------------------
 
 /** The least a cut has to take off it, health, to count as one it feels. */
@@ -569,8 +579,9 @@ const TAUNT_REST = 6;
  *   stand     it stands, and the swing goes once the weapon is back
  *   approach  it comes in with the weapon going back, and swings as it arrives
  *   lunge     it gives ground as the weapon goes back, then comes in behind it
+ *   dart      it quick-steps in as the weapon goes back, and swings from where it lands
  */
-export type Approach = "stand" | "approach" | "lunge";
+export type Approach = "stand" | "approach" | "lunge" | "dart";
 
 /**
  * One swing, made up as it is thrown: the shape its arm makes, the part of you
@@ -671,6 +682,7 @@ export class Ai implements ArmInput {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
     turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
+    dash: false,
   };
 
   private state: State = "waiting";
@@ -735,6 +747,12 @@ export class Ai implements ArmInput {
      * and taunts.
      */
     combos: 0, spins: 0, approaches: 0, lunges: 0, parries: 0, hops: 0, flinches: 0, taunts: 0,
+    /**
+     * And its quick steps: all of them, and of those, swings thrown off one
+     * in, steps straight back out of reach after a swing, out of the way of
+     * one of yours, and round you.
+     */
+    quickSteps: 0, darts: 0, quickOuts: 0, quickDodges: 0, quickRounds: 0,
   };
 
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
@@ -767,11 +785,23 @@ export class Ai implements ArmInput {
   private comingIn = false;
   /** Coming for you, it stops to show you its weapon first: see `taunt`. */
   private showOff = false;
+  /** Coming for you, it closes the last of the gap with a quick step: see `dartIn`. */
+  private darting = false;
+  /**
+   * How far a quick step takes it from standing, metres, to a stop: what it
+   * has to go by to land one where its weapon works. See `Footwork.quick`.
+   */
+  private quick = 1;
   private snag = 0;
   /** Seconds its weapon has been all but still in this part of a swing. See `STALLED`. */
   private stall = 0;
   /** Whether it is after you: it has noticed you and not yet given you up. */
   private engaged = false;
+  /**
+   * After you only because it heard something, and not yet having seen you:
+   * see `hear`.
+   */
+  private heard = false;
   /** Seconds since it last saw you. */
   private lost = Infinity;
   /**
@@ -960,13 +990,15 @@ export class Ai implements ArmInput {
   }
 
   /**
-   * All the fight panel says about it: whether it has noticed you, and whether
-   * it has anything left to fight with. Never what it is about to do. That is
-   * on its arm, where anybody's is.
+   * All the fight panel says about it: whether it has noticed you -- or only
+   * heard something, and gone to look -- and whether it has anything left to
+   * fight with. Never what it is about to do. That is on its arm, where
+   * anybody's is.
    */
-  get outlook(): "waiting" | "fighting" | "beaten" {
+  get outlook(): "waiting" | "looking" | "fighting" | "beaten" {
     if (this.state === "waiting" || this.state === "return") return "waiting";
-    return this.state === "beaten" ? "beaten" : "fighting";
+    if (this.state === "beaten") return "beaten";
+    return this.heard ? "looking" : "fighting";
   }
 
   /**
@@ -1007,10 +1039,12 @@ export class Ai implements ArmInput {
       this.postYaw = self.fighter.yaw;
     }
     this.pace = self.fighter.walkSpeed(t);
+    this.quick = self.fighter.quickReach(t) + this.pace * t.stepEase / 2;
     this.timer -= dt;
     this.clock += dt;
     this.keys.jump = false;
     this.keys.pivot = false;
+    this.keys.dash = false;
     this.tauntRest = Math.max(0, this.tauntRest - dt);
     // Back on the floor from a hop of its own. Not for the first moment of it:
     // the ground probe goes on finding the floor for two steps after the feet
@@ -1170,6 +1204,9 @@ export class Ai implements ArmInput {
           this.commit(range, null, this.lungeFrom(self) ? "lunge" : "stand");
           break;
         }
+        // Or it does not walk up to you at all: it closes the last of the gap
+        // with a quick step, as its weapon goes back. See `dartIn`.
+        if (this.patience <= 0 && this.darting && this.dartIn(self, range, close, inner)) break;
         // Nearly there, and pressing: it draws back on its way in, and swings
         // as it arrives. See `comeOn`.
         if (this.patience <= 0 && this.comingIn && this.onTheWay(self, range, inner)) {
@@ -1307,6 +1344,9 @@ export class Ai implements ArmInput {
           case "lunge":
             this.lungeIn(self, range, strike, inner, t);
             break;
+          case "dart":
+            this.darted(self, range, strike, inner, t);
+            break;
           case "stand":
             this.hold(0, 0);
             if (this.done(self, WINDUP, THERE.windup)) this.begin("strike", 0);
@@ -1355,7 +1395,8 @@ export class Ai implements ArmInput {
         //
         // A swing drawn back on the way in, or from giving ground, comes in
         // behind itself whatever its shape: that is what it was for.
-        const stepIn = s.cut.step > 0 || s.move === "approach" || s.move === "lunge";
+        const stepIn = s.cut.step > 0 || s.move === "approach" || s.move === "lunge"
+          || s.move === "dart";
         this.hold(
           stepIn && range > strike ? 1
             : s.cut.step < 0 && this.roomFor(self, -1, 0, 0.3) ? -1 : 0,
@@ -1485,6 +1526,7 @@ export class Ai implements ArmInput {
     this.answerIn = -1;
     if (move === "approach") this.tally.approaches++;
     if (move === "lunge") this.tally.lunges++;
+    if (move === "dart") this.tally.darts++;
     this.begin("windup", 0);
   }
 
@@ -1707,14 +1749,17 @@ export class Ai implements ArmInput {
     // otherwise something that circles only briefly between swings, like the
     // orc, went round you the same way all fight.
     this.side = Math.random() < OFF_HAND ? 1 : -1;
-    // Out of a run of swings, the first step back may be a hop.
+    // Out of a run of swings, the first step back may be a hop -- or out of
+    // any swing, a quick step. In off a quick step, it goes straight back out
+    // as readily as it quick-steps at all: in, swing, and out.
     const run = this.chain > 1;
     this.chain = 0;
+    const retreat = this.swing?.move === "dart" ? Math.max(fw.retreat, fw.quick) : fw.retreat;
     const roll = Math.random();
-    if (roll < fw.retreat) {
+    if (roll < retreat) {
       this.begin("backoff", RETREAT);
-      this.retreat(self, run && Math.random() < fw.hop);
-    } else if (roll < fw.retreat + PRESS * this.mood.aggression) {
+      this.retreat(self, run && Math.random() < fw.hop, Math.random() < fw.quick);
+    } else if (roll < retreat + PRESS * this.mood.aggression) {
       this.patience = 0;
       this.begin("close", 0);
     } else {
@@ -1909,6 +1954,63 @@ export class Ai implements ArmInput {
   }
 
   /**
+   * Its moment come, and you not quite where its weapon works: a quick step
+   * in with the weapon going back -- straight at you from further off, in on
+   * a slant round your side from nearer -- if either lands it where it can
+   * swing from, and there is floor for it. What you see is a weapon going
+   * back on something that was not coming, and then is.
+   */
+  private dartIn(self: Combatant, range: number, close: number, inner: number): boolean {
+    if (!this.squared || !this.sighted || this.knocked || !self.fighter.quickReady) return false;
+    const d = this.quick;
+    const lands = (r: number) => r >= close && r <= inner;
+    let side = 0;
+    let at = range - d;
+    if (!lands(at) || !this.roomFor(self, 1, 0, d)) {
+      // As much of it round you as in.
+      const k = d * Math.SQRT1_2;
+      at = Math.hypot(range - k, k);
+      if (!lands(at)) return false;
+      side = [this.side, -this.side].find((way) => this.roomFor(self, 1, way, d)) ?? 0;
+      if (side === 0) return false;
+      this.side = side;
+    }
+    this.commit(at, null, "dart");
+    this.quickStep(1, side, 0);
+    return true;
+  }
+
+  /**
+   * Drawing back off a quick step in: the feet go where the step throws them,
+   * the weapon going back meanwhile, and once they are down it comes on as if
+   * it had walked in -- squared up to you, since a step in on a slant lands
+   * it turned off you.
+   */
+  private darted(self: Combatant, range: number, strike: number, inner: number, t: Tuning): void {
+    if (self.fighter.quickStepping) {
+      this.hold(0, 0);
+      return;
+    }
+    if (!this.squared) {
+      this.hold(0, 0);
+      if (this.clock > CARRY) this.begin("close", 0);
+      return;
+    }
+    this.comeOn(self, range, strike, inner, t);
+  }
+
+  /**
+   * A quick step that way, on the keys you would use: the feet that way, and
+   * the double tap. See `Keys.dash`.
+   */
+  private quickStep(fwd: number, side: number, settle: number): void {
+    this.step = { fwd, side, time: QUICK_TIME, settle };
+    this.hold(fwd, side);
+    this.keys.dash = true;
+    this.tally.quickSteps++;
+  }
+
+  /**
    * Step toward you (1) or away from you (-1), whichever way it happens to be
    * facing: the keys that go nearest that way from where it is turned. For a
    * body going round.
@@ -1977,6 +2079,7 @@ export class Ai implements ArmInput {
 
   /** Come for you, and look for an opening once there. */
   private engage(): void {
+    this.heard = false;
     this.patience = this.rollPatience();
     this.side = Math.random() < OFF_HAND ? 1 : -1;
     this.weave = Math.random() < 0.65 ? this.side : 0;
@@ -2000,6 +2103,7 @@ export class Ai implements ArmInput {
     this.sighted = (this.engaged || near) && self.sees(foe);
     if (this.sighted) {
       this.engaged = true;
+      this.heard = false;
       this.lost = 0;
       this._lastSeen.copy(this._foe);
       const v = foe.fighter.body.linvel();
@@ -2107,9 +2211,37 @@ export class Ai implements ArmInput {
     this._gaze.z -= Math.cos(yaw) * 4;
   }
 
+  /**
+   * It heard something, at `at` -- the pen's gate going up. If it is not
+   * already after you, it goes to look, as it would where it last saw you:
+   * there, on a little the way `on` points if there is floor that way, and a
+   * look round from there. It learns nothing of you by it. The same ray it
+   * always casts decides whether it finds you, from wherever looking takes
+   * it -- and once it has heard something it is after it, so that ray is not
+   * held to the distance at which it would notice you -- and if it does not
+   * find you, it gives up and goes home the way it came.
+   */
+  hear(at: THREE.Vector3, on: THREE.Vector3): void {
+    if (this.engaged || (this.state !== "waiting" && this.state !== "return")) return;
+    // Not at its post yet: it would have nowhere to go home to.
+    if (this.trail.length === 0) return;
+    this.engaged = true;
+    this.heard = true;
+    this.lost = GLIMPSE;
+    this._lastSeen.copy(at);
+    this._lastChest.copy(at);
+    this._lastEyes.copy(at);
+    // As if whatever it was had gone on that way at a walk.
+    const len = Math.hypot(on.x, on.z);
+    if (len > 1e-6) this._heading.set(on.x / len, 0, on.z / len).multiplyScalar(2 * MOVING);
+    else this._heading.set(0, 0, 0);
+    this.hunt();
+  }
+
   /** It has lost you, and looked, and it has had enough. */
   private giveUp(): void {
     this.engaged = false;
+    this.heard = false;
     this.stand();
     this.idle();
     this.begin("return", 0);
@@ -2264,6 +2396,14 @@ export class Ai implements ArmInput {
     }
 
     if (Math.random() < REVERSE) this.side = -this.side;
+    // Now and then the step round you is a quick one: a flick round your side
+    // and out of its band, and back in to it on the next.
+    if (fwd === 0 && Math.random() < fw.quick * QUICK_ROUND && self.fighter.quickReady
+      && this.roomFor(self, 0, this.side, this.quick)) {
+      this.quickStep(0, this.side, settle);
+      this.tally.quickRounds++;
+      return;
+    }
     const time = this.stride();
     const move = this.findRoom(self, fwd, this.side, this.pace * time);
     if (move === null) {
@@ -2278,18 +2418,27 @@ export class Ai implements ArmInput {
    * One step of giving ground: back, usually on a slant. With no floor behind
    * it, it goes round instead.
    */
-  private retreat(self: Combatant, hop = false): void {
+  private retreat(self: Combatant, hop = false, quick = false): void {
     const time = this.stride();
     const slant = Math.random() < 0.6 ? this.side : 0;
-    // A hop goes further than a step, and asks the stone for all of it.
+    // A hop goes further than a step, and asks the stone for all of it. So
+    // does a quick step.
     const far = hop && self.fighter.grounded
       && this.findRoom(self, -1, slant, this.pace * HOP)?.fwd === -1;
-    const move = this.findRoom(self, -1, slant, this.pace * (far ? HOP : time));
+    const dash = !far && quick && self.fighter.quickReady
+      && this.findRoom(self, -1, slant, this.quick)?.fwd === -1;
+    const move = this.findRoom(self, -1, slant,
+      far ? this.pace * HOP : dash ? this.quick : this.pace * time);
     if (move === null || move.fwd >= 0) {
       this.circle(this.rollPatience());
       return;
     }
     if (move.side !== 0) this.side = move.side;
+    if (dash) {
+      this.quickStep(move.fwd, move.side, 0.05);
+      this.tally.quickOuts++;
+      return;
+    }
     this.step = { fwd: move.fwd, side: move.side, time, settle: 0.05 };
     if (far) this.hop();
   }
@@ -2407,12 +2556,21 @@ export class Ai implements ArmInput {
     // and away, off the floor, further than a step goes.
     const hop = self.fighter.grounded && Math.random() < this.mood.footwork.hop
       && this.findRoom(self, -1, away, this.pace * HOP) !== null;
-    const move = this.findRoom(self, -1, away, this.pace * (hop ? HOP : DODGE));
+    // Or a quick step, the same way, and out of it sooner than a step gets it.
+    const quick = !hop && self.fighter.quickReady && Math.random() < this.mood.footwork.quick
+      && this.findRoom(self, -1, away, this.quick) !== null;
+    const move = this.findRoom(self, -1, away,
+      hop ? this.pace * HOP : quick ? this.quick : this.pace * DODGE);
     // Nowhere to go, it stands and takes it.
     if (move === null) return;
     this.stand();
-    this.step = { fwd: move.fwd, side: move.side, time: DODGE, settle: 0.06 };
-    this.hold(move.fwd, move.side);
+    if (quick) {
+      this.quickStep(move.fwd, move.side, 0.06);
+      this.tally.quickDodges++;
+    } else {
+      this.step = { fwd: move.fwd, side: move.side, time: DODGE, settle: 0.06 };
+      this.hold(move.fwd, move.side);
+    }
     this.begin("evade", 0);
     if (hop) this.hop();
   }
@@ -2867,6 +3025,7 @@ export class Ai implements ArmInput {
     if (state === "close") {
       this.comingIn = Math.random() < COME_IN * Math.min(1, this.mood.aggression);
       this.showOff = Math.random() < this.mood.footwork.taunt;
+      this.darting = Math.random() < this.mood.footwork.dart;
     }
   }
 
@@ -2879,6 +3038,7 @@ export class Ai implements ArmInput {
     this.keys.turnRight = false;
     this.keys.jump = false;
     this.keys.pivot = false;
+    this.keys.dash = false;
   }
 
   /** Turn toward the foe. */
@@ -2944,6 +3104,7 @@ export class Ai implements ArmInput {
     this.state = "waiting";
     this.timer = 0;
     this.engaged = false;
+    this.heard = false;
     this.lost = Infinity;
     this.leg = "go";
     // Its post is wherever it next stands.
@@ -3008,6 +3169,32 @@ export class Ai implements ArmInput {
     this.wounded = false;
     this.comingIn = false;
     this.showOff = false;
+    this.darting = false;
     this.idle();
   }
 }
+
+/**
+ * A noise at `at` -- the pen's gate going up: every one of `listeners` alive
+ * and within `earshot` of it, flat metres, hears it (see `Ai.hear`) and goes
+ * to see, on out the far side of it from where it stood. How many did.
+ */
+export function noise(
+  at: THREE.Vector3, earshot: number,
+  listeners: readonly { readonly combatant: Combatant; readonly ai: Ai }[],
+): number {
+  let heard = 0;
+  for (const { combatant, ai } of listeners) {
+    if (combatant.dead) continue;
+    combatant.position(_listener);
+    const dx = at.x - _listener.x;
+    const dz = at.z - _listener.z;
+    if (Math.hypot(dx, dz) > earshot) continue;
+    ai.hear(at, _on.set(dx, 0, dz));
+    heard++;
+  }
+  return heard;
+}
+
+const _listener = new THREE.Vector3();
+const _on = new THREE.Vector3();
