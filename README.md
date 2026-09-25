@@ -22,7 +22,12 @@ whatever of you is there, and the only warning is its weapon going back.
 And now there is a second arm worth having: it holds still, it can carry a
 shield you steer with the other mouse button, and the sword can go on your
 back — the hand takes it there, over the shoulder — to leave a hand free for
-a potion, which you walk over, get down to and take. You can crouch under a
+a potion, which you walk over, get down to and take. The shield can go on
+your back too, by the other hand over its own shoulder, to free that hand
+instead. What you cut off an opponent — a head, an arm, a forearm with the
+axe still in its fist — is yours to take the same way, and it goes in an
+inventory with your potions, where you can drink one or put a piece of
+somebody down again. You can crouch under a
 cut, climb a ledge, and vault what is waist high. And a body is a body to the
 end: it walks at the hips and chest and breathes standing still, a fighter who
 loses a sword arm curls over the stump and holds it, and one that dies goes
@@ -31,7 +36,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 275 checks, no browser needed
+npm run smoke    # headless physics harness — 309 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -50,8 +55,11 @@ npm run build    # production bundle
 | **V** | vault whatever is in front of you, if it is waist high |
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand |
-| **F** | go and pick up what is nearby — sword on your back first; F again, or any key, calls it off |
+| **Z** | shield on your back, and back on your arm |
+| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent; sword on your back first; F again, or any key, calls it off |
 | **H** | drink a potion — takes a free hand |
+| **B** | open and close the inventory |
+| **1–9** | with the inventory open: use what is on that line — drink a potion, put a piece down |
 | **Tab** | tuning panel |
 | **R** | reset the fight |
 | **Esc** | release the mouse |
@@ -511,6 +519,34 @@ There are two. One hangs on a rack against the training room's east wall: take
 it down to practise with and hang it back to fight without, as often as you
 like. The other lies in the far corner of the hall, past the orc.
 
+### The shield on your back
+
+**Z** slings the shield on your back and takes it down again, and the other
+hand does it, the way the sword hand does the sword. Slinging it, the hand
+takes the shield up over its own shoulder, still strapped to the arm and
+under the arm's own clamped drive; there it lets go, and the shield swings
+round onto your back as the hand comes back down to hang in front of you.
+Taking it down, the hand goes up over the shoulder for its rim and brings it
+round onto the forearm, into the guard. A little under a second each way. The
+elbow goes up and forward for it and the hand may fold in nearer the shoulder
+than an aim ever lets it, as the sword hand's does going for its grip; only
+the shield between the hand and the back is placed, eased from where the hand
+let go of it to where it is going.
+
+On your back it lies across the shoulder blades, face out, low enough that
+the sword's hilt stands clear over its rim and far enough out to lie over the
+scabbard rather than through it. It is out of the world there, as the sword
+is: a mesh riding the chest, with no collider, so it stops nothing — a cut
+from behind is a cut. What it buys is the hand: with the shield on your back
+and the sword in your hand you can drink without putting the sword away.
+
+It is still the one shield. You cannot take another while it is on your back,
+and the rack takes it back from there as readily as from your arm. A ledge
+under your hands, a fall or a cut finishes a sling where it had got to: a
+shield still on the arm stays there, one on the back stays there, and one
+between the hand and either is where it was going. With no arm to take it
+down with, it stays on your back.
+
 ### The scabbard
 
 **X** puts the sword on your back, hilt over the sword shoulder and point toward
@@ -561,12 +597,45 @@ back first, and picking something up in a fight costs you your sword and a
 couple of seconds with your head down. The prompt at the bottom of the screen
 says what F would do.
 
-Potions go on your belt. **H** drinks one, and that takes a free hand: the sword
-hand with the sword away, or the other hand with no shield on it. A potion
-gives back two fifths of your health over two seconds rather than at once, so
-drinking in the middle of a fight is a bet on those two seconds. There is one
-by the rack, two in the hall — one behind the block — and one at the back of
-the cell.
+Potions go in your inventory. **H** drinks one, and that takes a free hand:
+the sword hand with the sword away, or the other hand with no shield on it —
+on your back will do. A potion gives back two fifths of your health over two
+seconds rather than at once, so drinking in the middle of a fight is a bet on
+those two seconds. There is one by the rack, two in the hall — one behind the
+block — and one at the back of the cell.
+
+### What you cut off
+
+Whatever you cut off an opponent can be taken like anything else lying about:
+a head, an off arm — whole, or an upper arm and a forearm if the elbow went
+first — and a sword arm or forearm, which keeps hold of its weapon, so the
+orc's forearm comes with its axe. The prompt names it — *F — take the orc's
+head* — and F goes and gets it, down to the floor for it, the hand on it.
+
+Unlike a potion these are physical. They fell where the cut threw them and
+lie where they came to rest, so where one is is asked of its bodies every
+step. Taken, a piece is the very bodies the fighter was made of taken out of
+the world — disabled and hidden, joints and all — and what comes up in your
+hand is a copy of it, so the body bowed over it does not kick it about. A
+reset finds every piece where it expects it, on the floor or in your pack,
+and puts it back on whoever lost it.
+
+Put down again, a piece comes back into the world in front of you at knee
+height and falls to the floor. It goes as far out as a pace, lying away from
+you, and short of any wall; where there is no room ahead for the length of it
+— an arm with an axe in it, facing a wall — it lies across your front instead,
+toward whichever side has more floor. A weapon that comes back into the world
+that way has its sweep forgotten, so it cuts nobody on the way. Only an
+opponent's parts: nobody goes back for their own arm.
+
+### The inventory
+
+**B** opens it and closes it: what you have on — where the sword is, where the
+shield is — and what you carry, numbered. Potions are one line, however many;
+each piece of somebody is a line of its own. With it open, the number beside a
+line uses it: a potion is drunk, by the same rules as **H**, and a piece is put
+down. The fight does not stop while it is open, and the mouse is still your
+arm: looking in your pack in the middle of a fight costs what it costs.
 
 ### Crouching
 
@@ -1609,7 +1678,12 @@ Some things look like bugs and are not:
   Between the mouth of the scabbard and the hand it is out of the world, and
   cuts nothing.
 - **H does nothing with a sword in one hand and a shield on the other arm.**
-  Drinking takes a free hand.
+  Drinking takes a free hand. Z puts the shield on your back, and the hand is
+  free.
+- **A shield on your back stops nothing.** It is out of the world there, as a
+  sword in its scabbard is. Z again to have it on your arm.
+- **The inventory does not pause the fight.** B opens it over whatever is
+  going on, and the mouse still moves your sword.
 - **Space puts you on top of a low wall instead of jumping.** Only when you
   are moving forward at something you can stand on; standing still it is a
   jump. Going over it is V's.
@@ -1650,10 +1724,15 @@ src/
                      curling round a lost arm
     ragdoll.ts       a body with nobody in it, or knocked flat: hips, legs and
                      waist let go -- braced going over, gathered to get up
-    offarm.ts        the other arm: a ghost hand of its own, and a shield on it
-    shield.ts        a round shield: what it weighs and how it is drawn
+    offarm.ts        the other arm: a ghost hand of its own, a shield on it, and
+                     slinging that shield onto the back and taking it down
+    shield.ts        a round shield: what it weighs, how it is drawn, and where
+                     it rides on the back
     drive.ts         an angular PD held inside what each axis's inertia can take
-    items.ts         potions, the shield and the rack, and taking them
+    items.ts         potions, the shield, the rack and what was cut off
+                     somebody, taking them, and putting remains back down
+    remains.ts       what comes off a body: its pieces, out of the world and back
+    inventory.ts     what a body carries: potions, and pieces of other people
     pickup.ts        F: walking over, getting down to it, and reaching for it
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
@@ -1670,12 +1749,12 @@ src/
     impacts.ts       contact events -> impact quality; gold sparks off stone, red off flesh
     targets.ts       collider -> name registry
     trail.ts         the swept arc
-  ui/                HUD and tuning panel
+  ui/                HUD, tuning panel, and the inventory
 tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 250 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 309 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1783,6 +1862,21 @@ climb the ledge, the crate and the crate then the ledge, with the hands on the
 edge, and not a wall or a pillar; and that V vaults the low wall and the block
 and does nothing at a pillar.
 
+And the new kit after that: that Z puts the shield on your back in under a
+second, the hand going up over the shoulder with it, and takes it down the
+same way; that on the back it rides the chest with no collider, the empty hand
+hangs at rest and drinks with the sword still drawn, and back on the arm it
+has a collider again and holds its guard; that on your back it is still the
+one shield, the rack takes it back from there, and an arm cut off going for it
+leaves it there with nothing to take it down; that a head and a forearm with
+its sword in it come off and lie on the floor; that F goes and takes the head
+into the pack, where nothing of it is drawn or touched and it is no longer
+offered; that put down it comes back in front of you and falls to the floor;
+that the forearm goes in the pack sword and all, comes out still gripping it,
+and cuts nobody on the way; that put down facing a wall it lies across your
+front and settles on the floor; that a reset puts every piece back on, even
+from the pack; and that Z, B and the numbers are where the HUD says.
+
 ## Stack
 
 TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
@@ -1793,7 +1887,8 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. Picking up what an
-opponent dropped — the orc's axe, taken off it with its arm. A shield for an
-opponent, and the second hand a spear actually wants. Blood that stays on the
+Rounds and a reason to be in the rooms. Friendly fire. Fighting with what an
+opponent dropped — the orc's axe, which you can carry off with its arm now but
+not swing. A shield for an opponent, and the second hand a spear actually
+wants. A shield on your back that stops a cut from behind. Blood that stays on the
 floor, and on the blade.

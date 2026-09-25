@@ -109,6 +109,31 @@
         text-shadow: 0 1px 3px rgba(0,0,0,0.95); opacity: 0; transition: opacity 150ms;
       }
       #prompt.shown { opacity: 1; }
+
+      /* The inventory, on B. In the middle, over the fight -- which goes on. */
+      #bag {
+        top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 15;
+        width: min(22rem, calc(100vw - 2rem)); padding: 0.9rem 1.1rem;
+        background: var(--panel); border: 1px solid var(--line);
+      }
+      #bag.hidden { display: none; }
+      #bag h2 {
+        font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--dim); font-weight: 500; margin: 0 0 0.5rem;
+      }
+      #bag dl { display: grid; grid-template-columns: auto 1fr; gap: 0 0.9rem; margin: 0 0 0.7rem; }
+      #bag dt { color: var(--dim); }
+      #bag dd { margin: 0; }
+      #bag ol { list-style: none; margin: 0; padding: 0.5rem 0 0; border-top: 1px solid var(--line); }
+      #bag li { display: flex; gap: 0.6rem; align-items: baseline; padding: 0.15rem 0; }
+      #bag li span { flex: 1; }
+      #bag li em { color: var(--dim); font-style: normal; }
+      #bag kbd {
+        display: inline-block; min-width: 1.3rem; text-align: center; font: inherit;
+        border: 1px solid var(--line); padding: 0 0.2rem;
+      }
+      #bag .empty { color: var(--dim); margin: 0; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+      #bag .note { color: var(--dim); margin: 0.7rem 0 0; }
       /* What the blow did to the body, and the weight that decided it. */
       #impact .knock { letter-spacing: 0.08em; text-transform: uppercase; color: var(--dim); }
       #impact .knock > span { text-transform: none; letter-spacing: 0; }
@@ -163,7 +188,7 @@
         <p>Move the mouse to move your sword arm. It is a physical limb, not an animation: it has weight, it lags, and it will bury itself in the walls.</p>
         <p><strong>W</strong> and <strong>S</strong> walk. <strong>A</strong> and <strong>D</strong> turn &mdash; the mouse is your arm, not the camera. <strong>Q</strong> and <strong>E</strong> sidestep, <strong>Space</strong> jumps.</p>
         <p>Hold the <strong>right button</strong> and move left or right to roll the cutting edge. Hold the <strong>left button</strong> to move your other arm instead &mdash; and the shield on it, once you have one.</p>
-        <p><strong>X</strong> puts your sword on your back and takes it out again; a sheathed sword leaves a hand free, and <strong>F</strong> goes and picks things up with it. <strong>H</strong> drinks a potion and <strong>C</strong> crouches. <strong>Space</strong> with <strong>W</strong> climbs a ledge; <strong>V</strong> vaults something waist high. A shield hangs on the rack by the wall.</p>
+        <p><strong>X</strong> puts your sword on your back and takes it out again; a sheathed sword leaves a hand free, and <strong>F</strong> goes and picks things up with it &mdash; potions, and whatever you cut off an opponent. <strong>Z</strong> slings your shield on your back and takes it down again. <strong>B</strong> opens your inventory, where the numbers drink a potion or put something down. <strong>H</strong> drinks a potion and <strong>C</strong> crouches. <strong>Space</strong> with <strong>W</strong> climbs a ledge; <strong>V</strong> vaults something waist high. A shield hangs on the rack by the wall.</p>
         <p>An orc with an axe and a goblin with a spear are across the room. Neither will tell you what it is about to do. Watch the weapon: every swing starts with it going back, and the heavier it is the longer that takes. Read it, then be somewhere else.</p>
         <div class="cue">Click to take the blade</div>
       </div>

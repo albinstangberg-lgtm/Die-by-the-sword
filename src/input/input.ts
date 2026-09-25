@@ -28,15 +28,26 @@ export interface Keys {
 
 /**
  * The things you do once rather than hold: put the sword up or take it out,
- * pick up what is in front of you, drink. They are not `Keys`, which say what
- * is held down each step; they are queued, and happen on the next step.
+ * sling the shield on your back or take it down, pick up what is in front of
+ * you, drink, open the pack -- and, with it open, use what is in it by the
+ * number beside it. They are not `Keys`, which say what is held down each
+ * step; they are queued, and happen on the next step.
  */
-export type Action = "sheathe" | "interact" | "drink";
+export type Action = "sheathe" | "sling" | "interact" | "drink" | "bag" | Use;
+
+/** A line of the pack, by the digit key beside it: 0 is the first. */
+export interface Use {
+  readonly use: number;
+}
 
 export const ACTION_MAP: Record<string, Action> = {
   KeyX: "sheathe",
+  KeyZ: "sling",
   KeyF: "interact",
   KeyH: "drink",
+  KeyB: "bag",
+  ...Object.fromEntries(
+    Array.from({ length: 9 }, (_, i) => [`Digit${i + 1}`, { use: i } as Use])),
 };
 
 /**
