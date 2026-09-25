@@ -191,6 +191,14 @@ const STOOP_SINK = 1.4;
 // they simply follow the hips. None of this is physical and none of it is on
 // the arm's side of anything: the feet can never hold the body back.
 
+/**
+ * What a cut leg takes off a body at its worst: this much of its walking pace,
+ * and of the height it jumps. Not all of either -- a body with a leg cut from
+ * under it still gets about, badly.
+ */
+const LAME_PACE = 0.45;
+const LAME_JUMP = 0.5;
+
 /** How far the hips may turn over a planted foot before it has to step. */
 const PLANT_SLACK = 0.18;
 /** Beyond this the foot slides rather than let the leg wind up any further. */
@@ -373,6 +381,8 @@ export class Fighter {
   /** Commanded ground speed and turn rate, for whether the feet are planted. */
   private gait = 0;
   private turning = 0;
+  /** Turning on its heel this step: see `Keys.pivot`. */
+  pivoting = false;
 
   private stridePhase = 0;
   /** How much of the stride the legs are showing: 0 standing, 1 walking. */
@@ -446,6 +456,12 @@ export class Fighter {
    * knows the arm is gone -- the Combatant -- each step.
    */
   hurt = 0;
+  /**
+   * How badly its legs are cut, 0..1: set by whatever keeps the count of what
+   * has landed on them -- the Combatant. A lamed body walks slower and jumps
+   * lower, whoever it is. See `LAME_PACE`.
+   */
+  lame = 0;
   private readonly downRay: RAPIER.Ray;
 
   /** On its feet, on the floor, or getting up off it. */
@@ -938,8 +954,13 @@ export class Fighter {
     let turn = 0;
     if (keys.turnLeft) turn += 1;
     if (keys.turnRight) turn -= 1;
-    this.yaw += turn * t.turnSpeed * dt;
-    this.turning = Math.abs(turn) * t.turnSpeed;
+    // On its heel: round fast. Only from the floor and on feet that are its
+    // own -- a pivot is a push off the ground, and a body reeling or in the
+    // air has nothing to push with. The feet can still step as it goes.
+    this.pivoting = keys.pivot && turn !== 0 && this.grounded && this.reel <= 0 && !this.traverse;
+    const rate = this.pivoting ? t.pivotSpeed / Math.sqrt(this.build.scale) : t.turnSpeed;
+    this.yaw += turn * rate * dt;
+    this.turning = Math.abs(turn) * rate;
     this.body.setRotation(
       { x: 0, y: Math.sin(this.yaw / 2), z: 0, w: Math.cos(this.yaw / 2) }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, false);
@@ -979,7 +1000,7 @@ export class Fighter {
       // Crouched, the steps are short.
       const low = Math.min(1, this.posture.pose.sink / (CROUCH_DROP * this.build.scale));
       v.set((ix * cos + iz * sin) / len, 0, (-ix * sin + iz * cos) / len)
-        .multiplyScalar(t.moveSpeed * this.build.scale * (1 - (1 - CROUCH_SPEED) * low));
+        .multiplyScalar(this.walkSpeed(t) * (1 - (1 - CROUCH_SPEED) * low));
     }
 
     const current = this.body.linvel();
@@ -1006,7 +1027,7 @@ export class Fighter {
         this.finishStep(drive, t, dt, 0);
         return;
       }
-      vy = Math.sqrt(2 * Math.abs(t.gravity) * t.jumpHeight * this.build.scale);
+      vy = Math.sqrt(2 * Math.abs(t.gravity) * this.jumpHeight(t));
       push = true;
     }
 
@@ -1018,7 +1039,7 @@ export class Fighter {
       // turning a step round -- in and straight back out -- takes twice as
       // long as starting one.
       const ease = t.stepEase;
-      const most = ease > 0 ? (t.moveSpeed * this.build.scale / ease) * dt : Infinity;
+      const most = ease > 0 ? (this.walkSpeed(t) / ease) * dt : Infinity;
       const dx = v.x - walk.x;
       const dz = v.z - walk.z;
       const change = Math.hypot(dx, dz);
@@ -1067,6 +1088,16 @@ export class Fighter {
     this.reel = Math.max(0, this.reel - dt);
 
     this.finishStep(drive, t, dt, crouch);
+  }
+
+  /** Walking pace, m/s: the move speed at this body's size, less what a cut leg takes off it. */
+  walkSpeed(t: Tuning): number {
+    return t.moveSpeed * this.build.scale * (1 - LAME_PACE * clamp(this.lame, 0, 1));
+  }
+
+  /** How high a standing jump clears, metres: the same, at this size, less a cut leg's share. */
+  jumpHeight(t: Tuning): number {
+    return t.jumpHeight * this.build.scale * (1 - LAME_JUMP * clamp(this.lame, 0, 1));
   }
 
   /** Where the feet are carrying the body, horizontal, world, m/s. Read only. */
@@ -1612,6 +1643,7 @@ export class Fighter {
     this.coyote = 0;
     this.gait = 0;
     this.turning = 0;
+    this.pivoting = false;
     this.tuck += (0 - this.tuck) * Math.min(1, TUCK_RATE * dt);
     this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
 
@@ -2467,6 +2499,7 @@ export class Fighter {
     this.unlimp = 0;
     this.yaw = 0;
     this.hurt = 0;
+    this.lame = 0;
     this.walking.set(0, 0, 0);
     this.stridePhase = 0;
     this.striding = 0;
@@ -2476,6 +2509,7 @@ export class Fighter {
     this.grounded = true;
     this.gait = 0;
     this.turning = 0;
+    this.pivoting = false;
     for (const leg of this.legs) {
       leg.foot = 0;
       leg.turn = leg.prevTurn = 0;

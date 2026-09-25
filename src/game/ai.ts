@@ -3,7 +3,7 @@ import { ARM_RANGE, type ArmInput } from "./arm";
 import type { Combatant } from "./combatant";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
-import type { Aim, Cut, Leap, Span, Species } from "./species";
+import type { Aim, Cut, Flow, Footwork, Leap, Span, Species } from "./species";
 
 /**
  * An opponent that fights the way you do.
@@ -61,6 +61,19 @@ import type { Aim, Cut, Leap, Span, Species } from "./species";
  * through a door -- and all it has is where you were and which way you were
  * going: it goes there, on a little the way you went, and looks round. Still
  * nothing, and it goes back to its post the way it came.
+ *
+ * And a fight flows. A swing that meets nothing runs into the one that starts
+ * where it ended, and one stopped on your guard into the same again (see
+ * `carryOn`); a swing that goes round and meets nothing can carry the whole
+ * body round after it on its heel (see `carryRound`). Between swings its
+ * guard is where the last one left it, shifting and swaying (see `guard`); it
+ * draws back on its way in, or while giving ground (see `Approach`); it meets
+ * a swing it sees drawn back with its own weapon (see `meet`), hops clear,
+ * lets go of a swing a cut hurts it out of (see `feel`), fights differently
+ * once badly hurt (see `Temper`), and shows you its weapon from out of its
+ * reach (see `taunt`). Every swing is still drawn back for, and far enough to
+ * see (see `gauge`): whatever else moves, a weapon going back means a swing is
+ * coming.
  */
 
 /** How fast the AI is allowed to move its hand, in pixels of mouse per second. */
@@ -246,6 +259,18 @@ const SWING = 5;
 /** How near a swinging blade must come to be its problem: metres past its hull. */
 const DANGER = 0.75;
 
+/**
+ * And how much further off than that it reads your weapon going back, metres:
+ * drawn back, a weapon is further away than it will be coming through.
+ */
+const WIND_SEEN = 0.5;
+
+/**
+ * Below this, m/s, your weapon moving fast is not coming at it: drawn back,
+ * or carried aside. See `threat`.
+ */
+const GOING_BACK = 1;
+
 /** Its reaction time, seconds: the quickest and the slowest. */
 const REACT = [0.12, 0.22] as const;
 
@@ -345,6 +370,14 @@ const STALLED = 1;
 const STALL_TIME = 0.08;
 
 /**
+ * The least a swing is drawn back by: radians of arm, or metres of reach. A
+ * swing that starts where the last one ended, or out of a parry, or from a
+ * guard held where it happens to begin, would otherwise start with no
+ * drawing back at all -- a cut nobody could read. See `gauge`.
+ */
+const DRAW = { angle: 0.35, reach: 0.1 } as const;
+
+/**
  * The furthest an edge comes round off your chest toward the part of you it
  * is after, radians.
  */
@@ -381,6 +414,164 @@ const CHASE = 1.5;
 /** How long after it leaves the floor before finding it again counts as landing, seconds. */
 const LIFT = 0.15;
 
+// --- one swing into the next --------------------------------------------------
+
+/**
+ * How near the end of one swing the start of another has to be for it to
+ * follow on from it, radians of arm yaw. A forehand's follow-through and a
+ * backhand's wind-up are the same place, give or take a tenth of a radian.
+ */
+const LINK = 0.45;
+
+/**
+ * How long it stands getting its breath with its guard up at the end of a run
+ * of swings, seconds for each swing in it past the first -- and, out of a
+ * spin, for having been round. Still in the swing, and so no more able to get
+ * out of the way of anything than it is while its guard comes back up: a run
+ * is paid for at the end of it.
+ */
+const WINDED = 0.15;
+const DIZZY = 0.2;
+
+/**
+ * The longest a spin may take to come round, seconds, and the furthest round
+ * it may carry the body, radians: bounds, for a weapon that never gets past
+ * you because something is in the way.
+ */
+const SPIN_TIME = 1.6;
+const SPIN_MOST = Math.PI * 2.6;
+
+/** How far along its weapon, hand to tip, the part that works is taken to be. */
+const WORKS = 0.8;
+
+/**
+ * Going round, how far inside and outside the circle its weapon is going round
+ * on you may be before it steps to put you back on it, metres.
+ */
+const RING: Span = [0.25, 0.1];
+
+/**
+ * How far off you may be for a spin to be worth it, as a multiple of the
+ * furthest it fights at: you stepped just out of the swing, not across the
+ * room.
+ */
+const SPIN_FAR = 1.3;
+
+/** Going round, how far off a step's line you may be before it takes a key for it: cos or sin of 67.5°. */
+const STEER = 0.38;
+
+/**
+ * How often, pressing in, it comes in drawing back rather than steps in to
+ * where it swings from and draws back there: rolled once each time it comes.
+ */
+const COME_IN = 0.55;
+
+/**
+ * Coming at you with the weapon going back: how far out of where it swings
+ * from it may start drawing back, in seconds of its walking pace, and the
+ * longest it keeps coming with the weapon back before it gives the swing up.
+ */
+const APPROACH = 0.35;
+const CARRY = 1.2;
+
+/** A lunge's first part, seconds: the step back as the weapon goes back. */
+const LUNGE_BACK = 0.24;
+
+// --- its guard ----------------------------------------------------------------
+
+/** The resting guard, off level: a little across, and a little up. */
+const GUARD_YAW = 0.3;
+const GUARD_LIFT = 0.15;
+
+/**
+ * The guards it moves between, off level -- across, and how high -- and how
+ * long it holds one before it shifts to another, seconds. A swing is drawn
+ * back from wherever the guard is, so where it holds its weapon changes
+ * nothing about what the drawing back says; it only makes a still weapon
+ * something other than a thing you can learn to stop watching.
+ *
+ * Never below the chest, and never far across it. It held its axe low in
+ * front of it after an overhead at first, where the overhead ends, and far
+ * over on its left after a swing round, and the next overhead's drawing back
+ * brought the head up through whoever was standing there, or across them:
+ * it met you on the way back eight times as often as from its old guard, did
+ * nothing, and came down late off a weapon that had been stopped. The orc's
+ * axe staggered you less than half as often as it had.
+ */
+const STANCE_YAW: Span = [-0.15, 0.4];
+const STANCE_LIFT: Span = [0.1, 0.5];
+const STANCE_HOLD: Span = [1.2, 3.2];
+
+/**
+ * How much of the way to where a swing ended its guard is held afterwards.
+ * It keeps its weapon where the swing left it rather than bringing it all
+ * the way back to the middle, and brings it back to the middle later.
+ */
+const HELD = 0.6;
+
+/**
+ * How long it takes to shift its guard, seconds: the time it takes to get
+ * most of the way. A guard shifted at the speed a swing goes is a swing, and
+ * a sword brought round a foot from you that fast cuts you.
+ */
+const SHIFT_TIME = 0.5;
+
+/**
+ * A guard is never quite still: how far it sways, radians of arm yaw and of
+ * pitch, and how long one sway takes, seconds at human size.
+ */
+const SWAY = { yaw: 0.05, pitch: 0.035, time: 2.4 } as const;
+
+// --- meeting your blade with its own -------------------------------------------
+
+/**
+ * How far ahead of your blade it puts its own, seconds of your blade's
+ * travel: where it will be, not where it was.
+ */
+const LEAD = 0.08;
+
+/** A parry's reach, 0..1 of its arm: out from the body, not at full stretch. */
+const PARRY_REACH = 0.55;
+
+/**
+ * How long a parry is held once your swing has come and gone, seconds, and the
+ * longest it waits for a swing that never comes.
+ */
+const PARRY_HOLD: Span = [0.15, 0.9];
+
+// --- hops -----------------------------------------------------------------------
+
+/** How far a hop is expected to carry it, in seconds of its walking pace: the room it asks for. */
+const HOP = 0.6;
+
+// --- being hurt -----------------------------------------------------------------
+
+/** The least a cut has to take off it, health, to count as one it feels. */
+const FELT = 1;
+
+// --- taunting -------------------------------------------------------------------
+
+/** How far out of its circle you have to be for it to taunt you, as a multiple of it. */
+const TAUNT_OUT = 1.1;
+
+/**
+ * And how far off you have to be, as a multiple of its circle, for it to stop
+ * and taunt you on its way to you.
+ */
+const TAUNT_FAR = 1.4;
+
+/** The least time between one taunt and the next, seconds. */
+const TAUNT_REST = 6;
+
+/**
+ * How its feet go while it draws back.
+ *
+ *   stand     it stands, and the swing goes once the weapon is back
+ *   approach  it comes in with the weapon going back, and swings as it arrives
+ *   lunge     it gives ground as the weapon goes back, then comes in behind it
+ */
+export type Approach = "stand" | "approach" | "lunge";
+
 /**
  * One swing, made up as it is thrown: the shape its arm makes, the part of you
  * it is aimed at, and the numbers drawn for this one.
@@ -393,11 +584,23 @@ export interface Swing {
   readonly roll: number;
   /** Brought down out of a jump: see `Leap`. */
   readonly leap: boolean;
+  /** What its feet do while it draws back. */
+  readonly move: Approach;
 }
 
 /** Somewhere in a span, any of it as likely as the rest. */
 function draw([lo, hi]: Span): number {
   return lo + Math.random() * (hi - lo);
+}
+
+/** The middle of a span. */
+function mid([lo, hi]: Span): number {
+  return (lo + hi) / 2;
+}
+
+/** Whether a shape is any use from this far off, in the creature's own reaches. */
+function fits(c: Cut, at: number): boolean {
+  return !c.at || (at >= (c.at.min ?? 0) && at <= (c.at.max ?? Infinity));
 }
 
 /** One of these, as often as its weight says. */
@@ -429,7 +632,7 @@ function copy(out: THREE.Vector3, p: { x: number; y: number; z: number }): THREE
 }
 
 type State =
-  | "close" | "circle" | "backoff" | "evade"
+  | "close" | "circle" | "backoff" | "evade" | "parry" | "taunt"
   | "windup" | "leap" | "strike" | "recover" | "free" | "beaten"
   | "waiting" | "reeling" | "down" | "hunt" | "return";
 
@@ -440,9 +643,17 @@ const ZERO = { x: 0, y: 0, z: 0 } as const;
 
 /**
  * The states in which it is loose on its feet -- committed to nothing -- and
- * so free to get out of the way of something.
+ * so free to get out of the way of something. Showing you its weapon is not
+ * being committed to anything.
  */
-const LOOSE: ReadonlySet<State> = new Set<State>(["close", "circle", "backoff"]);
+const LOOSE: ReadonlySet<State> = new Set<State>(["close", "circle", "backoff", "taunt"]);
+
+/** How a creature fights, which a bad enough wound can change. See `Temper`. */
+interface Mood {
+  readonly footwork: Footwork;
+  readonly flow: Flow;
+  readonly aggression: number;
+}
 
 /** One step of footwork: which way the feet go, relative to where it faces. */
 interface Step {
@@ -459,7 +670,7 @@ interface Step {
 export class Ai implements ArmInput {
   readonly keys: Keys = {
     forward: false, back: false, left: false, right: false,
-    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false,
+    turnLeft: false, turnRight: false, jump: false, vault: false, crouch: false, pivot: false,
   };
 
   private state: State = "waiting";
@@ -515,7 +726,16 @@ export class Ai implements ArmInput {
    * out (followed), steps into your reach to draw a swing, and misses of
    * yours it made you pay for. For the harness; nothing you are shown reads it.
    */
-  readonly tally = { rockIn: 0, rockOut: 0, gives: 0, meets: 0, follows: 0, baits: 0, punishes: 0 };
+  readonly tally = {
+    rockIn: 0, rockOut: 0, gives: 0, meets: 0, follows: 0, baits: 0, punishes: 0,
+    /**
+     * And what it has done with its weapon and its body besides swing: swings
+     * that followed on from the last one, spins, swings thrown coming in and
+     * from giving ground, parries, hops, swings let go of because a cut hurt,
+     * and taunts.
+     */
+    combos: 0, spins: 0, approaches: 0, lunges: 0, parries: 0, hops: 0, flinches: 0, taunts: 0,
+  };
 
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
 
@@ -540,6 +760,13 @@ export class Ai implements ArmInput {
   private readonly _was = new THREE.Vector3();
   /** The nearest your swinging blade came to it, flat: the side to step away from. */
   private readonly _near = new THREE.Vector3();
+  /** Where it puts its weapon to meet yours, and the arm angles that put it there. */
+  private readonly _meet = new THREE.Vector3();
+  private readonly _parry = { yaw: 0, pitch: 0 };
+  /** Coming for you, it draws back on the way in: see `comeOn`. */
+  private comingIn = false;
+  /** Coming for you, it stops to show you its weapon first: see `taunt`. */
+  private showOff = false;
   private snag = 0;
   /** Seconds its weapon has been all but still in this part of a swing. See `STALLED`. */
   private stall = 0;
@@ -593,7 +820,12 @@ export class Ai implements ArmInput {
   /** Was your blade a threat last step? A swing is weighed once, not every frame. */
   private threatened = false;
   /** Seconds until it answers the swing it has seen; negative if it is not going to. */
-  private flinch = -1;
+  private answerIn = -1;
+  /** Your weapon going back near it, this step and last: see `threat`. */
+  private readBack = false;
+  private wasBack = false;
+  /** Parrying, when your swing last came at it: negative if it has not yet. */
+  private cameAt = -1;
   /** Seconds before it will get out of the way of anything again. */
   private rest = 0;
   /**
@@ -636,10 +868,90 @@ export class Ai implements ArmInput {
    */
   private hpBefore = 0;
   private drawn = false;
+  /** Swings thrown in the run it is in, this one included. See `Flow`. */
+  private chain = 0;
+  /** Your health as the swing it is throwing went: whether it went through nothing. */
+  private yoursBefore = 0;
+  /**
+   * Carrying a swing on round with its whole body: which way, 1 to its left
+   * and -1 to its right, or 0 when it is not. See `Cut.spin`. And how far
+   * round it has come so far, radians, and its facing last step.
+   */
+  private whirl = 0;
+  private spun = 0;
+  private yawWas = 0;
+  /** Where its weapon was, from you, the way it is going round, last step. */
+  private bladeWas = 0;
+  /** The edge it goes round on: see `Cut.spin`. */
+  private whirlRoll = 0;
+  /**
+   * How much further back this swing is drawn than its shape says, so that it
+   * is drawn back at all -- and whether that has been settled yet. See `gauge`.
+   */
+  private readonly further = { yaw: 0, pitch: 0, reach: 0 };
+  private gauged = false;
+  /** Seconds it stands getting its breath once its guard is up: after a run of swings, or a spin. */
+  private winded = 0;
+  /** When, into getting its guard back up, it was up; negative until it is. */
+  private upAt = -1;
+  /**
+   * The guard it holds between swings, off level: where the last swing left
+   * its weapon, or wherever it has since chosen to hold it. See `guard`.
+   */
+  private readonly stance = { yaw: GUARD_YAW, lift: GUARD_LIFT };
+  /** Where its guard is on its way to `stance`: see SHIFT_TIME. */
+  private readonly held = { yaw: GUARD_YAW, lift: GUARD_LIFT };
+  /** Seconds before it shifts its guard of its own accord. */
+  private shift = 0;
+  /** How far through its sway the guard is, radians. */
+  private sway = Math.random() * Math.PI * 2;
+  /** How it will answer the swing it has seen: with its weapon, or its feet. */
+  private answerWith: "parry" | "dodge" = "dodge";
+  /** Off the floor on a hop of its own, and for how long. */
+  private hopping = false;
+  private hopClock = 0;
+  /** Its health last step: whether something has just cut it. */
+  private hpWas = 0;
+  /** It let go of the swing because the cut hurt, and gives ground as its guard comes back. */
+  private flinched = false;
+  /** Seconds before it will taunt you again. */
+  private tauntRest = 0;
+  /** Badly hurt, and fighting like it: see `Temper`. */
+  private wounded = false;
+  /** How it fights: as it always does, and as it does once badly hurt. */
+  private readonly calm: Mood;
+  private readonly hurt: Mood;
 
   constructor(readonly species: Species) {
     const [lo, hi] = species.cuts[0].roll;
     this.refRoll = (lo + hi) / 2;
+    this.calm = { footwork: species.footwork, flow: species.flow, aggression: species.aggression };
+    const temper = species.temper;
+    this.hurt = temper === undefined ? this.calm : {
+      footwork: { ...species.footwork, ...temper.footwork },
+      flow: { ...species.flow, ...temper.flow },
+      aggression: temper.aggression ?? species.aggression,
+    };
+  }
+
+  /** How it fights just now. */
+  private get mood(): Mood {
+    return this.wounded ? this.hurt : this.calm;
+  }
+
+  /** Badly hurt, and fighting like it. For the harness. */
+  get temper(): "calm" | "wounded" {
+    return this.wounded ? "wounded" : "calm";
+  }
+
+  /** How many swings into a run it is: see `Flow`. For the harness. */
+  get run(): number {
+    return this.chain;
+  }
+
+  /** Carrying a swing on round with its body: see `Cut.spin`. For the harness. */
+  get spinning(): boolean {
+    return this.whirl !== 0;
   }
 
   /** What it is up to, state by state: for the harness and for debugging. */
@@ -683,7 +995,7 @@ export class Ai implements ArmInput {
       self.fighter.focus = null;
       self.position(this._was);
       this.snag = 0;
-      this.flinch = -1;
+      this.answerIn = -1;
       return;
     }
     if (this.state === "down") this.resume();
@@ -694,10 +1006,19 @@ export class Ai implements ArmInput {
       this.trail.push(this._self.clone());
       this.postYaw = self.fighter.yaw;
     }
-    this.pace = t.moveSpeed * this.species.build.scale;
+    this.pace = self.fighter.walkSpeed(t);
     this.timer -= dt;
     this.clock += dt;
     this.keys.jump = false;
+    this.keys.pivot = false;
+    this.tauntRest = Math.max(0, this.tauntRest - dt);
+    // Back on the floor from a hop of its own. Not for the first moment of it:
+    // the ground probe goes on finding the floor for two steps after the feet
+    // have left it.
+    if (this.hopping) {
+      this.hopClock += dt;
+      if (this.hopClock > LIFT && self.fighter.grounded) this.hopping = false;
+    }
 
     // An animal that cannot see you does not come for you.
     //
@@ -722,7 +1043,7 @@ export class Ai implements ArmInput {
       // and it keeps its weapon where a waiting animal keeps it.
       this.want = { yaw: 0.3, pitch: -0.12, reach: 0.55, roll: 0 };
       this.sinceNear = Infinity;
-      this.checkSnag(t, dt);
+      this.checkSnag(dt);
       if (this.state === "free") this.getFree();
       else this.goHome(self);
       this.steerArm(self, t, dt);
@@ -764,8 +1085,32 @@ export class Ai implements ArmInput {
     // up behind a weak arm is your opening.
     this.knocked = self.arm.jarred > KNOCKED;
     if (this.knocked && (this.state === "windup" || this.state === "strike")) {
+      this.winded = 0;
       this.begin("recover", 0);
     }
+
+    // Badly hurt, it fights like it: see `Temper`.
+    const temper = this.species.temper;
+    this.wounded = temper !== undefined && self.health < temper.below * self.maxHealth;
+    // Something has just cut it.
+    const felt = this.hpWas - self.health;
+    this.hpWas = self.health;
+    if (felt >= FELT) this.feel(self);
+
+    // How far round it has turned since last step, for a spin.
+    const turned = wrapPi(self.fighter.yaw - this.yawWas);
+    this.yawWas = self.fighter.yaw;
+    if (this.whirl !== 0) this.spun += turned * this.whirl;
+    // Your health for as long as it is not in the middle of a swing, so that
+    // while it is, this is what you had as it went: see `carryOn`.
+    if (this.state !== "strike") this.yoursBefore = foe.health;
+    // Its guard: swaying, and now and then held somewhere else, taken there
+    // at a guard's pace rather than a swing's.
+    this.sway += (dt * Math.PI * 2) / (SWAY.time * Math.sqrt(this.species.build.scale));
+    this.shift -= dt;
+    const ease = Math.min(1, dt / SHIFT_TIME);
+    this.held.yaw += (this.stance.yaw - this.held.yaw) * ease;
+    this.held.lift += (this.stance.lift - this.held.lift) * ease;
     const close = this.strikeReach * this.species.range.close;
     const strike = this.strikeReach * this.species.range.strike;
     const far = this.strikeReach * this.species.range.far;
@@ -790,7 +1135,7 @@ export class Ai implements ArmInput {
 
     this.readYou(foe, dt);
 
-    this.checkSnag(t, dt);
+    this.checkSnag(dt);
     this.crowd = range < close ? this.crowd + dt : 0;
     this.watch(self, foe, dt);
 
@@ -807,6 +1152,12 @@ export class Ai implements ArmInput {
         if (this.lashOut(self, range, close)) break;
         if (this.leapAt(self, range)) break;
         if (this.punish(range, close, inner, outer)) break;
+        // Coming for you from well out of reach, and in no hurry, it may stop
+        // and show you its weapon first -- decided once, as it sets off.
+        if (this.patience > 0 && this.showOff && range > outer * TAUNT_FAR) {
+          this.showOff = false;
+          if (this.taunt(range, outer, false, 1)) break;
+        }
         // Coming in to go round you, it answers your feet too. Pressing, it
         // has nothing to answer with but the swing it is already bringing.
         if (this.patience > 0 && range <= outer * 1.2 && this.answer(range, close, inner)) break;
@@ -816,9 +1167,16 @@ export class Ai implements ArmInput {
         }
         if (this.patience <= 0 && this.canSwing(range, close, inner)) {
           this.hold(0, 0);
-          this.commit(range);
+          this.commit(range, null, this.lungeFrom(self) ? "lunge" : "stand");
           break;
         }
+        // Nearly there, and pressing: it draws back on its way in, and swings
+        // as it arrives. See `comeOn`.
+        if (this.patience <= 0 && this.comingIn && this.onTheWay(self, range, inner)) {
+          this.commit(range, null, "approach");
+          break;
+        }
+        this.restance();
         const fwd = range > strike ? 1 : range < close ? -1 : 0;
         // From further off than it can reach, it comes in on a slant when there
         // is floor for one. The slant is checked every step, not once, so it
@@ -835,12 +1193,17 @@ export class Ai implements ArmInput {
         // reach, a pause between each, and in and out across that edge --
         // answering your feet, and now and then offering you a target.
         this.guard();
+        // You are on the floor: now and then it stands off and shows you its
+        // weapon rather than come and finish it.
+        if (foe.fighter.down && this.taunt(range, outer, true)) break;
         if (this.lashOut(self, range, close)) break;
         if (this.leapAt(self, range)) break;
         if (this.punish(range, close, inner, outer)) break;
         if (range > outer * 1.4) {
-          // You have backed out of its circle. It comes after you, and carries
-          // on waiting once it has you again.
+          // You have backed out of its circle. It shows you what it thinks of
+          // that, now and then -- or comes after you, and carries on waiting
+          // once it has you again.
+          if (this.taunt(range, outer)) break;
           this.patience = Math.max(this.timer, 0.01);
           this.begin("close", 0);
           this.hold(1, 0);
@@ -855,31 +1218,62 @@ export class Ai implements ArmInput {
           // steps in to where it does, and swings from there.
           this.patience = 0;
           this.hold(0, 0);
-          if (this.canSwing(range, close, inner)) this.commit(range);
-          else this.begin("close", 0);
+          if (this.canSwing(range, close, inner)) {
+            this.commit(range, null, this.lungeFrom(self) ? "lunge" : "stand");
+          } else {
+            this.begin("close", 0);
+          }
           break;
         }
         if (this.answer(range, close, inner)) break;
+        this.restance();
         if (this.walk(dt)) this.nextStep(self, range, inner, outer);
         break;
 
       case "backoff":
         // Giving ground: a step or two back, usually on a slant, until it is
         // out past its own reach. Then it goes round.
-        this.guard(0.25);
+        this.guard(0.1);
         if (this.punish(range, close, inner, outer)) break;
-        if (this.walk(dt)) {
+        // Off the floor, it is going where the hop sends it until it lands.
+        if (this.walk(dt) && !this.hopping) {
           if (range >= outer || this.timer <= 0) this.circle(this.rollPatience());
           else this.retreat(self);
         }
         break;
 
       case "evade":
-        // Out of the way of your blade: one quick step back and aside. It is
-        // not a parry and it is not armour -- a cut that was already on it
-        // lands on something moving away, and that is all the step buys.
-        this.guard(0.25);
-        if (this.walk(dt)) this.circle(Math.random() * RIPOSTE);
+        // Out of the way of your blade: one quick step back and aside, or a
+        // hop. It is not armour -- a cut that was already on it lands on
+        // something moving away, and that is all the step buys.
+        this.guard(0.1);
+        if (this.walk(dt) && !this.hopping) this.circle(Math.random() * RIPOSTE);
+        break;
+
+      case "parry":
+        // Its weapon across the line yours is coming on, meeting it. What
+        // comes of that is the weapons' business (see `Impacts.clash`), and
+        // your weapon knocked aside is an opening it takes.
+        if (this.punish(range, close, inner, outer)) break;
+        this.meet(self, foe, t);
+        this.hold(0, 0);
+        if (this.threatened) this.cameAt = this.clock;
+        if (this.clock >= PARRY_HOLD[1]
+          || (this.cameAt >= 0 && !this.threatened && this.clock - this.cameAt >= PARRY_HOLD[0])) {
+          this.circle(Math.random() * RIPOSTE);
+        }
+        break;
+
+      case "taunt":
+        // Showing you its weapon, with you out of its reach. Come back in, and
+        // it is done showing you.
+        this.display();
+        this.hold(0, 0);
+        if (this.leapAt(self, range)) break;
+        if (this.timer <= 0 || this.yourMove > 0 || (range < outer && !foe.fighter.down)) {
+          this.patience = this.rollPatience();
+          this.begin("close", 0);
+        }
         break;
 
       case "windup": {
@@ -895,18 +1289,29 @@ export class Ai implements ArmInput {
         // there is to move. The longest only bounds a weapon caught on
         // something, which never gets there at all.
         const s = this.swing!;
+        if (!this.gauged) this.gauge(self, s);
         this.want = {
-          yaw: this.aimFrom.yaw + s.from.yaw,
-          pitch: this.aimFrom.pitch + s.from.pitch,
-          reach: s.from.reach,
+          yaw: this.aimFrom.yaw + s.from.yaw + this.further.yaw,
+          pitch: this.aimFrom.pitch + s.from.pitch + this.further.pitch,
+          reach: s.from.reach + this.further.reach,
           roll: s.roll,
         };
         if (s.leap) {
           this.charge(self, foe, range, t);
           break;
         }
-        this.hold(0, 0);
-        if (this.done(self, WINDUP, THERE.windup)) this.begin("strike", 0);
+        switch (s.move) {
+          case "approach":
+            this.comeOn(self, range, strike, inner, t);
+            break;
+          case "lunge":
+            this.lungeIn(self, range, strike, inner, t);
+            break;
+          case "stand":
+            this.hold(0, 0);
+            if (this.done(self, WINDUP, THERE.windup)) this.begin("strike", 0);
+            break;
+        }
         break;
       }
 
@@ -929,10 +1334,14 @@ export class Ai implements ArmInput {
       }
 
       case "strike": {
+        const s = this.swing!;
+        if (this.whirl !== 0) {
+          this.carryRound(self, s, range, t);
+          break;
+        }
         // Aim THROUGH the target, not at it. Sweeping to a point short of the
         // foe decelerates into the hit and lands a shove; the whole damage
         // model is built on speed at contact.
-        const s = this.swing!;
         this.want = {
           yaw: this.aimTo.yaw + s.to.yaw,
           pitch: this.aimTo.pitch + s.to.pitch,
@@ -943,14 +1352,23 @@ export class Ai implements ArmInput {
         // swing that walks all the way in ends up sweeping its arc past the
         // target and connecting with whatever is left -- which for an axe
         // meant landing every single blow on a shin.
+        //
+        // A swing drawn back on the way in, or from giving ground, comes in
+        // behind itself whatever its shape: that is what it was for.
+        const stepIn = s.cut.step > 0 || s.move === "approach" || s.move === "lunge";
         this.hold(
-          s.cut.step > 0 && range > strike ? 1
+          stepIn && range > strike ? 1
             : s.cut.step < 0 && this.roomFor(self, -1, 0, 0.3) ? -1 : 0,
           0);
         // Over when the weapon is through -- or when it has been stopped, on
         // you or on anything else, because then the rest of it is not coming.
+        // Through nothing at all, it may not stop: see `spinOn`. And another
+        // may follow on from it: see `carryOn`.
         if (this.stopped(STRIKE) || this.done(self, STRIKE, THERE.strike)) {
-          this.begin("recover", 0);
+          const landed = foe.health < this.yoursBefore;
+          const through = !landed && this.arrived(self, THERE.strike);
+          if (through && this.spinOn(range, far)) break;
+          if (landed || !this.carryOn(foe, range, close, through)) this.recover(self);
         }
         break;
       }
@@ -958,9 +1376,16 @@ export class Ai implements ArmInput {
       case "recover":
         // Open, for as long as its guard takes to come back up: hardly any
         // time behind a sword, long enough to make an axe pay for itself.
+        //
+        // And then a moment more at the end of a run, or out of a spin: see
+        // WINDED. Having let go of a swing because it hurt, it gives ground.
         this.guard();
-        this.hold(range < close && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
-        if (this.stopped(RECOVER) || this.done(self, RECOVER, THERE.recover)) {
+        this.hold((range < close || this.flinched) && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
+        if (this.upAt < 0 && (this.stopped(RECOVER) || this.done(self, RECOVER, THERE.recover))) {
+          this.upAt = this.clock;
+        }
+        if (this.upAt >= 0 && this.clock - this.upAt >= this.winded) {
+          this.flinched = false;
           this.afterSwing(self);
         }
         break;
@@ -1024,7 +1449,7 @@ export class Ai implements ArmInput {
    * steps, and a pause must not wipe out what a run of failed steps has added
    * up to -- that is how a weapon snagged while it circles is noticed at all.
    */
-  private checkSnag(t: Tuning, dt: number): void {
+  private checkSnag(dt: number): void {
     const moved = this._self.distanceTo(this._was);
     this._was.copy(this._self);
     if (this.state === "free" || this.state === "beaten"
@@ -1032,7 +1457,7 @@ export class Ai implements ArmInput {
 
     const k = this.keys;
     const trying = k.forward || k.back || k.left || k.right;
-    const expected = t.moveSpeed * this.species.build.scale * dt;
+    const expected = this.pace * dt;
     if (trying) this.snag = moved < expected * 0.3 ? this.snag + dt : 0;
 
     if (this.snag > SNAG_TIME) {
@@ -1054,9 +1479,12 @@ export class Ai implements ArmInput {
    * it goes (see `measure`). A leap brings down its own shape, whatever the
    * distance says.
    */
-  private commit(range: number, leap: Leap | null = null): void {
-    this.swing = this.makeUp(range / this.strikeReach, leap);
-    this.flinch = -1;
+  private commit(range: number, leap: Leap | null = null, move: Approach = "stand"): void {
+    this.swing = this.makeUp(range / this.strikeReach, leap, move);
+    this.chain = 1;
+    this.answerIn = -1;
+    if (move === "approach") this.tally.approaches++;
+    if (move === "lunge") this.tally.lunges++;
     this.begin("windup", 0);
   }
 
@@ -1070,15 +1498,22 @@ export class Ai implements ArmInput {
     return this.makeUp(at, null);
   }
 
-  /** The swing itself: see `commit`. `at` is the distance in its own reaches. */
-  private makeUp(at: number, leap: Leap | null): Swing {
+  /**
+   * The swing itself: see `commit`. `at` is the distance in its own reaches.
+   * `among` is the shapes it may be, when something other than the distance
+   * has already decided that: the run it is part of (see `carryOn`).
+   */
+  private makeUp(
+    at: number, leap: Leap | null, move: Approach = "stand", among?: readonly Cut[],
+  ): Swing {
     const all = this.species.cuts;
     let cuts: Cut[];
     if (leap !== null) {
       cuts = all.filter((c) => c.name === leap.cut);
+    } else if (among !== undefined) {
+      cuts = [...among];
     } else {
-      cuts = all.filter((c) =>
-        !c.at || (at >= (c.at.min ?? 0) && at <= (c.at.max ?? Infinity)));
+      cuts = all.filter((c) => fits(c, at));
       if (cuts.length === 0) cuts = [...all];
       const pinned = all.filter((c) => c.name === this.cutOverride);
       if (pinned.length > 0) cuts = pinned;
@@ -1099,6 +1534,7 @@ export class Ai implements ArmInput {
       to: { yaw: draw(cut.to.yaw), pitch: draw(cut.to.pitch), reach: draw(cut.to.reach) },
       roll: draw(cut.roll),
       leap: leap !== null,
+      move,
     };
   }
 
@@ -1153,7 +1589,7 @@ export class Ai implements ArmInput {
       if (up) this.begin("strike", 0);
       return;
     }
-    const apex = Math.sqrt(2 * t.jumpHeight * this.species.build.scale / Math.abs(t.gravity));
+    const apex = Math.sqrt(2 * self.fighter.jumpHeight(t) / Math.abs(t.gravity));
     const takeoff = this.strikeReach * LEAP_LAND + run * (CHOP + apex);
     // Still getting the weapon up, it stops where it will jump from -- short
     // of it by as far as its feet carry it once they stop, or it coasts in
@@ -1266,20 +1702,276 @@ export class Ai implements ArmInput {
    * unlike another. The orc mostly presses. The goblin mostly gets out of there.
    */
   private afterSwing(self: Combatant): void {
-    const fw = this.species.footwork;
+    const fw = this.mood.footwork;
     // Which way it goes from here is decided afresh after every exchange --
     // otherwise something that circles only briefly between swings, like the
     // orc, went round you the same way all fight.
     this.side = Math.random() < OFF_HAND ? 1 : -1;
+    // Out of a run of swings, the first step back may be a hop.
+    const run = this.chain > 1;
+    this.chain = 0;
     const roll = Math.random();
     if (roll < fw.retreat) {
       this.begin("backoff", RETREAT);
-      this.retreat(self);
-    } else if (roll < fw.retreat + PRESS * this.species.aggression) {
+      this.retreat(self, run && Math.random() < fw.hop);
+    } else if (roll < fw.retreat + PRESS * this.mood.aggression) {
       this.patience = 0;
       this.begin("close", 0);
     } else {
       this.circle(this.rollPatience() * 0.5);
+    }
+  }
+
+  /**
+   * However a swing began -- out of the end of another, out of a parry, from
+   * wherever its guard happened to be -- its weapon goes back for it, and far
+   * enough to see: see DRAW. Where the arm is already nearly where the swing
+   * starts, it goes back further: round further, the way the swing is not
+   * going, for a swing that goes across; for a thrust, drawn all the way in,
+   * or if it is already, raised.
+   */
+  private gauge(self: Combatant, s: Swing): void {
+    this.gauged = true;
+    const f = this.further;
+    f.yaw = f.pitch = f.reach = 0;
+    const a = self.arm.aim;
+    const angle = Math.hypot(
+      this.aimFrom.yaw + s.from.yaw - a.yaw, this.aimFrom.pitch + s.from.pitch - a.pitch);
+    const reach = Math.abs(self.arm.reachAt(s.from.reach) - a.reach);
+    if (angle >= DRAW.angle || reach >= DRAW.reach) return;
+    const short = DRAW.angle - angle;
+    const across = s.from.yaw - s.to.yaw;
+    const [least, most] = self.arm.reachLimits;
+    if (Math.abs(across) > 0.3) f.yaw = Math.sign(across) * short;
+    else if (s.from.reach * (most - least) >= 2 * DRAW.reach) f.reach = -s.from.reach;
+    else f.pitch = short;
+  }
+
+  /**
+   * A swing has gone through nothing, round: does it stop? A swing that goes
+   * round, and a creature near enough to you for going on round to be worth
+   * it, and it may not -- the weapon held out where the swing ended, the
+   * whole body carried on round after it on its heel, and the same edge
+   * coming round at you again. See `Cut.spin`.
+   */
+  private spinOn(range: number, far: number): boolean {
+    const s = this.swing!;
+    const spin = s.cut.spin;
+    if (spin === undefined || s.leap || range > far * SPIN_FAR || !this.sighted || this.knocked) {
+      return false;
+    }
+    if (Math.random() >= spin.chance) return false;
+    this.whirl = Math.sign(s.to.yaw - s.from.yaw);
+    this.whirlRoll = draw(spin.roll);
+    this.spun = 0;
+    // The swing has just gone past you.
+    this.bladeWas = 1;
+    this.tally.spins++;
+    this.begin("strike", 0);
+    return true;
+  }
+
+  /**
+   * The swing carrying on round: the weapon out at full stretch where the
+   * swing ended, at the height of your middle, the edge rolled over to lead
+   * the way it is now going (see `Cut.spin`), and the body going round under
+   * it on its heel. Whatever is in the way on the way round is met at the
+   * speed a body turning carries it. Its back is to you for the middle of it:
+   * that is the moment to go in.
+   *
+   * Its feet keep the part of the weapon that works on the circle you are
+   * standing on -- in if the weapon comes round short of you, back if you
+   * are inside it, where all that would reach you is the haft. And it is over
+   * once the weapon has come round past you, not once the body has: a heavy
+   * head trails a body turning that fast by the better part of a quarter
+   * turn. Or once the weapon is stopped on something.
+   */
+  private carryRound(self: Combatant, s: Swing, range: number, t: Tuning): void {
+    const yaw = this.aimTo.yaw + s.to.yaw;
+    // The pitch that puts your middle's height under the weapon with the arm
+    // held out to the side as it is: the same pitch that crosses your chest
+    // with the arm in front of it goes over your head with it out there.
+    this.want = {
+      yaw,
+      pitch: self.arm.solvePitchForHeight(this._mark.y, yaw, 1, this.whirlRoll, t),
+      reach: 1,
+      roll: this.whirlRoll,
+    };
+    this.pivot(this.whirl);
+    const p = this._meet.copy(self.arm.handPosition).lerp(self.arm.tipPosition, WORKS);
+    const dx = p.x - this._self.x;
+    const dz = p.z - this._self.z;
+    const round = Math.hypot(dx, dz);
+    this.toward(self, range > round + RING[1] ? 1 : range < round - RING[0] ? -1 : 0);
+    // Where the weapon is, from you, the way it is going round: behind you
+    // until it is past.
+    const b = wrapPi(Math.atan2(-dx, -dz)
+      - Math.atan2(-(this._foe.x - this._self.x), -(this._foe.z - this._self.z))) * this.whirl;
+    const past = this.spun > Math.PI && this.bladeWas < 0 && b >= 0;
+    this.bladeWas = b;
+    if (past || this.spun >= SPIN_MOST || this.stopped(STRIKE) || this.clock >= SPIN_TIME) {
+      this.recover(self);
+    }
+  }
+
+  /**
+   * A swing is over. Does another follow on from it?
+   *
+   * Through nothing at all, now and then it throws whichever of its shapes
+   * starts where this one ended (see `Flow`).
+   *
+   * Stopped on something -- your guard, your weapon, the stone -- the weapon
+   * has nothing left to carry on with, and what can follow is the same
+   * again: a shape drawn back the way this one came, hacking at the same
+   * place.
+   *
+   * Never off a swing that drew blood: a run is how it gets past you, not
+   * how it finishes you, and a player who stands and takes a cut should be
+   * no worse off than before any of this. Never off a leap, never past the
+   * most it throws in one run, and never at something it cannot see or that
+   * is already on the floor.
+   */
+  private carryOn(
+    foe: Combatant, range: number, close: number, through: boolean,
+  ): boolean {
+    const s = this.swing!;
+    const flow = this.mood.flow;
+    if (s.leap || this.chain >= flow.chain || !this.sighted || this.knocked) return false;
+    if (foe.dead || foe.fighter.down || range < close) return false;
+    const at = range / this.strikeReach;
+    if (Math.random() >= flow.combo) return false;
+    // Where the next has to start: where this one ended, or where it began.
+    const start = through ? s.to.yaw : s.from.yaw;
+    const next = this.species.cuts.filter((c) => Math.abs(mid(c.from.yaw) - start) < LINK
+      && fits(c, at) && (this.cutOverride === null || c.name === this.cutOverride));
+    if (next.length === 0) return false;
+    this.swing = this.makeUp(at, null, "stand", next);
+    this.chain++;
+    this.tally.combos++;
+    this.begin("windup", 0);
+    return true;
+  }
+
+  /**
+   * The swing is over, and its guard comes back up -- to where the swing
+   * left the weapon, most of the way, rather than all the way back to the
+   * middle: a forehand ends on its left and it keeps its guard over on its
+   * left, a backhand on its right. Never below the chest, or far across it
+   * (see STANCE_YAW). The next swing is drawn back from there, so where one
+   * ends is where the next one is quickest from. It shifts its guard again
+   * in its own time.
+   */
+  private recover(self: Combatant): void {
+    const aim = self.arm.aim;
+    this.stance.yaw = within(
+      (aim.yaw - this.level.yaw) * HELD + GUARD_YAW * (1 - HELD), STANCE_YAW);
+    this.stance.lift = within(
+      (aim.pitch - this.level.pitch) * HELD + GUARD_LIFT * (1 - HELD), STANCE_LIFT);
+    this.held.yaw = this.stance.yaw;
+    this.held.lift = this.stance.lift;
+    this.shift = draw(STANCE_HOLD);
+    this.winded = WINDED * Math.max(0, this.chain - 1) + (this.whirl !== 0 ? DIZZY : 0);
+    this.whirl = 0;
+    this.begin("recover", 0);
+  }
+
+  /**
+   * Drawing back on its way in: it keeps coming with the weapon going back,
+   * and the swing goes once the weapon is back and you are where it swings
+   * from. What you see is a weapon going back on something still walking at
+   * you -- and if you get away, it gives the swing up, as a leap does.
+   */
+  private comeOn(self: Combatant, range: number, strike: number, inner: number, t: Tuning): void {
+    this.detour(self, range > strike ? 1 : 0, 0);
+    if (this.clock >= WINDUP[0] && range <= inner && this.raised(self, t)) {
+      this.begin("strike", 0);
+    } else if (this.clock > CARRY) {
+      this.begin("close", 0);
+    }
+  }
+
+  /**
+   * Drawing back from giving ground: a step back as the weapon goes back,
+   * then in again behind it, and the swing goes as it gets to where its
+   * weapon works. Follow it as it gives ground and you walk onto it.
+   */
+  private lungeIn(self: Combatant, range: number, strike: number, inner: number, t: Tuning): void {
+    if (this.clock < LUNGE_BACK) {
+      this.hold(this.roomFor(self, -1, 0, this.pace * 0.1) ? -1 : 0, 0);
+      return;
+    }
+    this.detour(self, range > strike ? 1 : 0, 0);
+    if (range <= inner && this.raised(self, t)) {
+      this.begin("strike", 0);
+    } else if (this.clock > LUNGE_BACK + CARRY) {
+      this.begin("close", 0);
+    }
+  }
+
+  /**
+   * Step toward you (1) or away from you (-1), whichever way it happens to be
+   * facing: the keys that go nearest that way from where it is turned. For a
+   * body going round.
+   */
+  private toward(self: Combatant, go: number): void {
+    if (go === 0) {
+      this.hold(0, 0);
+      return;
+    }
+    const rel = wrapPi(
+      Math.atan2(-(this._foe.x - this._self.x), -(this._foe.z - this._self.z)) - self.fighter.yaw);
+    const c = Math.cos(rel);
+    const s = Math.sin(rel);
+    // Off to its left is a positive bearing, and a step to its left is -1.
+    this.hold(
+      (c > STEER ? 1 : c < -STEER ? -1 : 0) * go,
+      (s > STEER ? -1 : s < -STEER ? 1 : 0) * go);
+  }
+
+  /** Turn on its heel, on the same keys you would: Shift, and a turn. */
+  private pivot(turn: number): void {
+    this.keys.turnLeft = turn > 0;
+    this.keys.turnRight = turn < 0;
+    this.keys.pivot = true;
+  }
+
+  /**
+   * Nearly where its weapon works, walking in, and able to swing at you:
+   * near enough to start drawing back now and arrive as the weapon does.
+   */
+  private onTheWay(self: Combatant, range: number, inner: number): boolean {
+    if (range <= inner || range > inner + this.pace * APPROACH) return false;
+    if (!this.squared || !this.sighted || this.knocked) return false;
+    return this.roomFor(self, 1, 0, range - inner);
+  }
+
+  /** Will the swing it is about to throw from where it stands be thrown from giving ground? */
+  private lungeFrom(self: Combatant): boolean {
+    return Math.random() < this.mood.footwork.lunge
+      && this.roomFor(self, -1, 0, this.pace * LUNGE_BACK * 1.5);
+  }
+
+  /**
+   * Something has just cut it. Drawing back, it may let go of the swing --
+   * pain, not balance, and the orc does not (see `Footwork.flinch`). Going
+   * round you, it may give ground, as readily as it does after a swing of
+   * its own.
+   */
+  private feel(self: Combatant): void {
+    const fw = this.mood.footwork;
+    const s = this.swing;
+    if (this.state === "windup" && s !== null && !s.leap && Math.random() < fw.flinch) {
+      this.tally.flinches++;
+      this.flinched = true;
+      this.winded = 0;
+      this.begin("recover", 0);
+      return;
+    }
+    if ((this.state === "close" || this.state === "circle" || this.state === "taunt")
+      && Math.random() < fw.retreat && this.roomFor(self, -1, 0, this.pace * STRIDE[0])) {
+      this.stand();
+      this.begin("backoff", RETREAT);
+      this.retreat(self);
     }
   }
 
@@ -1514,7 +2206,7 @@ export class Ai implements ArmInput {
     }
 
     this.baiting = false;
-    const fw = this.species.footwork;
+    const fw = this.mood.footwork;
     const settle = fw.settle * (0.5 + Math.random());
 
     // Answering your feet (see `answer`): back as you come, after you as you go.
@@ -1586,16 +2278,28 @@ export class Ai implements ArmInput {
    * One step of giving ground: back, usually on a slant. With no floor behind
    * it, it goes round instead.
    */
-  private retreat(self: Combatant): void {
+  private retreat(self: Combatant, hop = false): void {
     const time = this.stride();
     const slant = Math.random() < 0.6 ? this.side : 0;
-    const move = this.findRoom(self, -1, slant, this.pace * time);
+    // A hop goes further than a step, and asks the stone for all of it.
+    const far = hop && self.fighter.grounded
+      && this.findRoom(self, -1, slant, this.pace * HOP)?.fwd === -1;
+    const move = this.findRoom(self, -1, slant, this.pace * (far ? HOP : time));
     if (move === null || move.fwd >= 0) {
       this.circle(this.rollPatience());
       return;
     }
     if (move.side !== 0) this.side = move.side;
     this.step = { fwd: move.fwd, side: move.side, time, settle: 0.05 };
+    if (far) this.hop();
+  }
+
+  /** Off the floor, on the jump key: see `Footwork.hop`. */
+  private hop(): void {
+    this.keys.jump = true;
+    this.hopping = true;
+    this.hopClock = 0;
+    this.tally.hops++;
   }
 
   /**
@@ -1611,32 +2315,53 @@ export class Ai implements ArmInput {
   private watch(self: Combatant, foe: Combatant, dt: number): void {
     this.rest = Math.max(0, this.rest - dt);
     const threat = this.threat(self, foe);
+    // Your weapon going back, near it: it may put its own in the way of the
+    // swing that is coming, a reaction time later -- not when it arrives,
+    // which is too late for a weapon, but as it is drawn back, which is what
+    // anyone watching an arm reads. Not while it stands in your reach to
+    // draw a swing: what it is there for then is to get out of the way.
+    if (this.readBack && !this.wasBack && this.rest <= 0 && this.answerIn < 0 && !this.baiting
+      && LOOSE.has(this.state) && Math.random() < this.mood.footwork.parry) {
+      this.answerWith = "parry";
+      this.answerIn = draw(REACT);
+    }
+    this.wasBack = this.readBack;
     // Standing in your reach to draw a swing, it is ready for the swing.
     const wary = this.baiting
-      ? Math.max(BAIT_WARY, this.species.footwork.wariness) : this.species.footwork.wariness;
+      ? Math.max(BAIT_WARY, this.mood.footwork.wariness) : this.mood.footwork.wariness;
     if (threat && !this.threatened) {
       this.hpBefore = self.health;
       this.drawn = this.baiting;
-      if (this.rest <= 0 && this.flinch < 0 && LOOSE.has(this.state) && Math.random() < wary) {
-        this.flinch = REACT[0] + Math.random() * (REACT[1] - REACT[0]);
+      if (this.rest <= 0 && this.answerIn < 0 && LOOSE.has(this.state) && Math.random() < wary) {
+        this.answerWith = "dodge";
+        this.answerIn = draw(REACT);
       }
     }
     // A swing of yours has come at it and gone by, and it is none the worse:
     // your weapon is on its way back, and you are open -- if it takes it.
     // Having stood in your reach to draw that swing, it always does.
     if (!threat && this.threatened && self.health >= this.hpBefore && !self.fighter.reeling
-      && (this.drawn || Math.random() < this.species.footwork.counter)) {
+      && (this.drawn || Math.random() < this.mood.footwork.counter)) {
       this.opening = OPENING;
     }
     this.threatened = threat;
 
-    if (this.flinch < 0) return;
-    this.flinch -= dt;
-    if (this.flinch < 0 && LOOSE.has(this.state)) this.evade(self);
+    if (this.answerIn < 0) return;
+    this.answerIn -= dt;
+    if (this.answerIn < 0 && LOOSE.has(this.state)) {
+      if (this.answerWith === "parry") this.parry(); else this.evade(self);
+    }
   }
 
-  /** Is a swing coming its way: your blade near it, and coming at it? */
+  /**
+   * Is a swing coming its way: your blade near it, and coming at it? Leaves
+   * in `readBack` whether your weapon is instead going back -- near it, moving
+   * as fast as a swing does, and not at it: what a swing of yours starts with,
+   * as a swing of its own does, and what it can read off your arm as you can
+   * read its.
+   */
   private threat(self: Combatant, foe: Combatant): boolean {
+    this.readBack = false;
     // Nothing in the hand is nothing to get out of the way of.
     if (foe.dead || foe.fighter.down || !foe.arm.wielding) return false;
     const arm = foe.arm;
@@ -1652,7 +2377,8 @@ export class Ai implements ArmInput {
     const nearX = hand.x + ax * u;
     const nearZ = hand.z + az * u;
     const gap = Math.hypot(nearX - this._self.x, nearZ - this._self.z);
-    if (gap >= self.fighter.build.hull.radius + DANGER) return false;
+    const hull = self.fighter.build.hull.radius;
+    if (gap >= hull + DANGER + WIND_SEEN) return false;
 
     // And how fast the point is coming at its middle. See SWING.
     const v = arm.tipVelocity;
@@ -1663,7 +2389,9 @@ export class Ai implements ArmInput {
     const d = Math.hypot(dx, dy, dz);
     const closing = d < 1e-6 ? SWING + 1
       : ((v.x - carried.x) * dx + (v.y - carried.y) * dy + (v.z - carried.z) * dz) / d;
-    if (closing <= SWING) return false;
+    const speed = Math.hypot(v.x - carried.x, v.y - carried.y, v.z - carried.z);
+    this.readBack = speed > SWING && closing < GOING_BACK;
+    if (gap >= hull + DANGER || closing <= SWING) return false;
     this._near.set(nearX, 0, nearZ);
     return true;
   }
@@ -1674,13 +2402,57 @@ export class Ai implements ArmInput {
     const yaw = self.fighter.yaw;
     const across = (this._near.x - this._self.x) * Math.cos(yaw)
       - (this._near.z - this._self.z) * Math.sin(yaw);
-    const move = this.findRoom(self, -1, across > 0 ? -1 : 1, this.pace * DODGE);
+    const away = across > 0 ? -1 : 1;
+    // A hop, if it is a creature for them and there is floor for one: back
+    // and away, off the floor, further than a step goes.
+    const hop = self.fighter.grounded && Math.random() < this.mood.footwork.hop
+      && this.findRoom(self, -1, away, this.pace * HOP) !== null;
+    const move = this.findRoom(self, -1, away, this.pace * (hop ? HOP : DODGE));
     // Nowhere to go, it stands and takes it.
     if (move === null) return;
     this.stand();
     this.step = { fwd: move.fwd, side: move.side, time: DODGE, settle: 0.06 };
     this.hold(move.fwd, move.side);
     this.begin("evade", 0);
+    if (hop) this.hop();
+  }
+
+  /**
+   * Meet your swing with its weapon: see `Footwork.parry`. It holds its feet
+   * and puts its blade where yours is going.
+   */
+  private parry(): void {
+    this.rest = DODGE_REST;
+    this.stand();
+    this.hold(0, 0);
+    this.tally.parries++;
+    this.cameAt = -1;
+    this.begin("parry", 0);
+  }
+
+  /**
+   * Where its weapon goes to meet yours: the part of it that does the work
+   * put where the part of yours that does is going -- a moment ahead of it,
+   * along the way it is travelling -- at a guard's reach, the edge square to
+   * it. It is the same probe it aims a chop with, asking where its own
+   * weapon would be, and nothing about yours it could not see.
+   */
+  private meet(self: Combatant, foe: Combatant, t: Tuning): void {
+    const arm = foe.arm;
+    if (!arm.wielding) {
+      this.guard();
+      return;
+    }
+    const v = arm.tipVelocity;
+    this._meet.copy(arm.handPosition).lerp(arm.tipPosition, 0.7)
+      .addScaledVector(v, LEAD * 0.7);
+    self.arm.aimCutAt(this._meet, PARRY_REACH, 0, t, this._parry);
+    this.want = {
+      yaw: within(this._parry.yaw, [-1.3, 1.3]),
+      pitch: this._parry.pitch,
+      reach: PARRY_REACH,
+      roll: 0,
+    };
   }
 
   /**
@@ -1804,7 +2576,7 @@ export class Ai implements ArmInput {
     if (this.yourMove < 0) {
       this.following = true;
       this.tally.follows++;
-    } else if (Math.random() < this.species.footwork.give) {
+    } else if (Math.random() < this.mood.footwork.give) {
       this.giving = true;
       this.tally.gives++;
     } else {
@@ -1827,17 +2599,24 @@ export class Ai implements ArmInput {
    * floor to come back out on.
    */
   private bait(self: Combatant, range: number): boolean {
-    if (this.yourReach <= 0 || Math.random() >= this.species.footwork.bait) return false;
+    if (this.yourReach <= 0 || Math.random() >= this.mood.footwork.bait) return false;
     const inBy = range - this.yourReach * BAIT_DEPTH;
     if (inBy < 0.1 * this.species.build.scale || inBy > this.pace * 0.5) return false;
     if (!this.roomFor(self, 1, 0, inBy) || !this.roomFor(self, -1, 0, inBy)) return false;
     // A step at pace covers pace x time, easing and all: what it loses
-    // getting going it makes up coasting to a stop.
-    const time = inBy / this.pace;
+    // getting going it makes up coasting to a stop. Already on its way in,
+    // it loses nothing getting going, and coasts as far again: one baited
+    // from a step in went half again as deep, inside its own guard, stood
+    // there long enough to be crowded, and swung.
+    const dx = this._foe.x - this._self.x;
+    const dz = this._foe.z - this._self.z;
+    const d = Math.hypot(dx, dz);
+    const going = d > 1e-6 ? 2 * self.fighter.coast(dx / d, dz / d) : 0;
+    const time = Math.max(inBy - going, 0.1 * this.species.build.scale) / this.pace;
     this.baiting = true;
     this.tally.baits++;
     this.step = { fwd: 1, side: 0, time, settle: draw(BAIT_HOLD) };
-    this.queue.push({ fwd: -1, side: 0, time: time * 1.2, settle: this.species.footwork.settle });
+    this.queue.push({ fwd: -1, side: 0, time: time * 1.2, settle: this.mood.footwork.settle });
     return true;
   }
 
@@ -1868,7 +2647,7 @@ export class Ai implements ArmInput {
   }
 
   private rollPatience(): number {
-    const [lo, hi] = this.species.footwork.patience;
+    const [lo, hi] = this.mood.footwork.patience;
     return lo + Math.random() * (hi - lo);
   }
 
@@ -2005,13 +2784,72 @@ export class Ai implements ArmInput {
     return Math.atan2(-(p.x - this._shoulder.x), -(p.z - this._shoulder.z));
   }
 
-  /** The resting guard: weapon up, a little across, level with the chest. */
-  private guard(lift = 0.15): void {
+  /**
+   * Its guard: weapon up, level with the chest, wherever across and however
+   * high it is holding it just now (see `recover` and `restance`), and never
+   * quite still. `raise` lifts it further: giving ground, it keeps it high.
+   */
+  private guard(raise = 0): void {
     this.want = {
-      yaw: this.level.yaw + 0.3,
-      pitch: this.level.pitch + lift,
+      yaw: this.level.yaw + this.held.yaw + SWAY.yaw * Math.sin(this.sway),
+      pitch: this.level.pitch + this.held.lift + raise
+        + SWAY.pitch * Math.sin(2 * this.sway + 1),
       reach: 0.55,
       roll: 0,
+    };
+  }
+
+  /**
+   * Shift its guard, in its own time: to another of the guards it holds --
+   * higher, further across or less -- or back to the middle. Only while it is
+   * on its feet and going round you: it is something a weapon does while
+   * nothing else is asked of it.
+   */
+  private restance(): void {
+    if (this.shift > 0) return;
+    this.shift = draw(STANCE_HOLD);
+    if (Math.random() < 0.35) {
+      this.stance.yaw = GUARD_YAW;
+      this.stance.lift = GUARD_LIFT;
+    } else {
+      this.stance.yaw = draw(STANCE_YAW);
+      this.stance.lift = draw(STANCE_LIFT);
+    }
+  }
+
+  /**
+   * You are out of its reach and not coming -- or on the floor -- and now and
+   * then it shows you its weapon (see `Display`), and not again for a while.
+   */
+  private taunt(
+    range: number, outer: number, standingOver = false, chance = this.mood.footwork.taunt,
+  ): boolean {
+    const d = this.species.display;
+    if (this.tauntRest > 0 || !this.sighted || this.yourMove > 0) return false;
+    if (!standingOver && range < outer * TAUNT_OUT) return false;
+    // You have only just got out of its reach: for something that leaps,
+    // that is what a leap is for. Taunting then, it came after you with its
+    // axe still coming up off the floor, and the chop came down late.
+    const leap = this.species.leap;
+    if (!standingOver && leap !== undefined && this.sinceNear <= leap.memory) return false;
+    if (Math.random() >= chance) return false;
+    this.stand();
+    this.hold(0, 0);
+    this.tauntRest = TAUNT_REST;
+    this.tally.taunts++;
+    this.begin("taunt", d.beats * d.beat);
+    return true;
+  }
+
+  /** Its weapon, a beat at each of the two poses it taunts you with. */
+  private display(): void {
+    const d = this.species.display;
+    const p = (this.clock % d.beat) < d.beat / 2 ? d.a : d.b;
+    this.want = {
+      yaw: this.level.yaw + p.yaw,
+      pitch: this.level.pitch + p.pitch,
+      reach: p.reach,
+      roll: p.roll,
     };
   }
 
@@ -2020,6 +2858,16 @@ export class Ai implements ArmInput {
     this.timer = seconds;
     this.clock = 0;
     this.stall = 0;
+    this.upAt = -1;
+    this.gauged = false;
+    // Carrying a swing round is part of the swing, and stops with it.
+    if (state !== "strike") this.whirl = 0;
+    // Coming for you, it decides once whether it will draw back on the way
+    // in, and whether it will stop and show you its weapon first.
+    if (state === "close") {
+      this.comingIn = Math.random() < COME_IN * Math.min(1, this.mood.aggression);
+      this.showOff = Math.random() < this.mood.footwork.taunt;
+    }
   }
 
   private idle(): void {
@@ -2030,6 +2878,7 @@ export class Ai implements ArmInput {
     this.keys.turnLeft = false;
     this.keys.turnRight = false;
     this.keys.jump = false;
+    this.keys.pivot = false;
   }
 
   /** Turn toward the foe. */
@@ -2117,7 +2966,7 @@ export class Ai implements ArmInput {
     this.squared = false;
     this.sighted = false;
     this.threatened = false;
-    this.flinch = -1;
+    this.answerIn = -1;
     this.rest = 0;
     this.sinceNear = Infinity;
     this.leapRest = 0;
@@ -2136,6 +2985,29 @@ export class Ai implements ArmInput {
     this.drawn = false;
     this.yoursKnocked = false;
     this.knocked = false;
+    this.chain = 0;
+    this.yoursBefore = 0;
+    this.whirl = 0;
+    this.spun = 0;
+    this.yawWas = 0;
+    this.winded = 0;
+    this.stance.yaw = GUARD_YAW;
+    this.stance.lift = GUARD_LIFT;
+    this.held.yaw = GUARD_YAW;
+    this.held.lift = GUARD_LIFT;
+    this.shift = 0;
+    this.answerWith = "dodge";
+    this.readBack = false;
+    this.wasBack = false;
+    this.cameAt = -1;
+    this.hopping = false;
+    this.hopClock = 0;
+    this.hpWas = 0;
+    this.flinched = false;
+    this.tauntRest = 0;
+    this.wounded = false;
+    this.comingIn = false;
+    this.showOff = false;
     this.idle();
   }
 }
