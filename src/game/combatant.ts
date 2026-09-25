@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
 import { Arm, type ArmInput } from "./arm";
 import { Fighter } from "./fighter";
@@ -12,6 +13,7 @@ import type { Targets } from "./targets";
 import type { Tuning } from "../tuning";
 import type { Keys } from "../input/input";
 import { POTION_HEAL, POTION_TIME, type Outcome } from "./items";
+import { Inventory } from "./inventory";
 
 /**
  * A fighter, their sword arm, and what happens when someone cuts them.
@@ -85,8 +87,8 @@ export class Combatant {
 
   health: number;
   dead = false;
-  /** Potions on the belt. */
-  potions = 0;
+  /** What it carries: potions, and anything it has cut off someone and taken. */
+  readonly inventory = new Inventory();
   /** Health still to come back from the one being drunk, and how fast. */
   private healLeft = 0;
   private healRate = 0;
@@ -196,6 +198,7 @@ export class Combatant {
       this.arm.drive(tuning);          // limp: snapshots motion, applies nothing
       this.offArm.limp = true;
       this.offArm.drive(tuning, dt);
+      this.nameShield();
       return;
     }
     if (this.fighter.down) {
@@ -212,6 +215,7 @@ export class Combatant {
       }
       this.arm.drive(tuning);
       this.offArm.drive(tuning, dt);
+      this.nameShield();
       return;
     }
     this.arm.readInput(input, tuning, dt);
@@ -224,6 +228,7 @@ export class Combatant {
     this.tendWound(off.active);
     this.arm.drive(tuning);
     this.offArm.drive(tuning, dt);
+    this.nameShield();
   }
 
   /**
@@ -236,6 +241,8 @@ export class Combatant {
   private holdOn(): void {
     const hold = this.fighter.handhold;
     if (hold) {
+      // A shield on its way to the back or off it goes where it was going.
+      this.offArm.stopSling();
       this.offArm.guide(hold.left, hold.weight);
       if (this.arm.sheathed && !this.arm.stowing) this.arm.guide(hold.right, hold.weight);
       else if (this.arm.wielding && this.fighter.climbing) {
@@ -261,14 +268,14 @@ export class Combatant {
   /**
    * A sword arm cut off: the other hand goes to the wound and holds it, while
    * the body curls round it (see `Fighter.hurt`). Not while that hand is on a
-   * ledge, has a shield on its arm, or is being steered by a player -- and
-   * only while it has a hand, and an arm to bring it.
+   * ledge, has a shield on its arm or is busy with one, or is being steered
+   * by a player -- and only while it has a hand, and an arm to bring it.
    */
   private tendWound(steered: boolean): void {
     const cut = this.arm.severedAt;
     const l = this.fighter.offLimb;
     const free = cut !== null && !this.holding && !steered && !this.offArm.hasShield
-      && l.shoulderOn && l.elbowOn;
+      && !this.offArm.slinging && l.shoulderOn && l.elbowOn;
     if (free) {
       const f = this.fighter;
       // The socket, or most of the way down the stump of the upper arm -- or
@@ -344,14 +351,23 @@ export class Combatant {
 
   // --- potions -----------------------------------------------------------------
 
+  /** Potions carried: the inventory's. */
+  get potions(): number {
+    return this.inventory.potions;
+  }
+  set potions(n: number) {
+    this.inventory.potions = n;
+  }
+
   /**
    * A hand with nothing in it: the sword hand with the sword away, or the
-   * other hand with no shield on its arm. Drinking takes one.
+   * other hand with no shield on its arm -- on the back will do -- and not
+   * busy putting one there. Drinking takes one.
    */
   get freeHand(): boolean {
     const sword = this.arm.severedAt === null && this.arm.sheathed && !this.arm.stowing;
     const l = this.fighter.offLimb;
-    const other = l.shoulderOn && l.elbowOn && !this.offArm.hasShield;
+    const other = l.shoulderOn && l.elbowOn && !this.offArm.hasShield && !this.offArm.slinging;
     return sword || other;
   }
 
@@ -394,30 +410,82 @@ export class Combatant {
 
   // --- the shield ------------------------------------------------------------
 
+  /** A shield on the off arm. */
   get hasShield(): boolean {
     return this.offArm.hasShield;
   }
 
+  /** A shield slung on the back. */
+  get shieldOnBack(): boolean {
+    return this.offArm.slung;
+  }
+
+  /** A shield at all: on the arm, on the back, or on its way between them. */
+  get carriesShield(): boolean {
+    return this.offArm.hasShield || this.offArm.slung;
+  }
+
   /**
    * Strap a shield to the off forearm. False if there is no forearm to strap
-   * it to, or a shield is already there.
+   * it to, or a shield is already there or on the back.
    */
   equipShield(): boolean {
-    if (this.dead || !this.offArm.equipShield(this.tuning)) return false;
-    const c = this.offArm.shieldCollider;
-    if (c) this.targets.register(c.handle, `${this.possessive} shield`);
+    if (this.dead || this.carriesShield || !this.offArm.equipShield(this.tuning)) return false;
+    this.nameShield();
     return true;
   }
 
-  /** Take it off again. */
+  /** Take it off again, wherever it is. */
   unequipShield(): void {
-    const c = this.offArm.shieldCollider;
-    if (c) this.targets.forget(c.handle);
     this.offArm.dropShield();
+    this.nameShield();
   }
 
   /**
-   * A blade has met this fighter's shield. True if it did.
+   * Z: the shield onto the back, or off it onto the arm -- by the other hand,
+   * over its own shoulder (see `OffArm.slingShield`). On the back it guards
+   * what is behind you, and the hand is free.
+   */
+  sling(): Outcome {
+    if (this.dead || this.fighter.down) return { ok: false, text: "" };
+    const off = this.offArm;
+    if (off.slinging) return { ok: false, text: "" };
+    if (!this.carriesShield) return { ok: false, text: "no shield" };
+    const l = this.fighter.offLimb;
+    if (!l.shoulderOn || !l.elbowOn) {
+      return { ok: false, text: off.slung ? "no arm to take it down with" : "" };
+    }
+    // Both hands are on the stone.
+    if (this.fighter.handhold) return { ok: false, text: "" };
+    if (off.slung) {
+      return off.unslingShield()
+        ? { ok: true, text: "shield off your back" } : { ok: false, text: "" };
+    }
+    return off.slingShield()
+      ? { ok: true, text: "shield onto your back" } : { ok: false, text: "" };
+  }
+
+  /**
+   * The shield's colliders, on the arm and on the back, as the impact readout
+   * names them, as they come and go.
+   */
+  private nameShield(): void {
+    const now = [this.offArm.shieldCollider, this.offArm.slungCollider];
+    for (let i = 0; i < now.length; i++) {
+      const handle = now[i]?.handle ?? null;
+      const was = this.shieldHandles[i];
+      if (handle === was) continue;
+      if (was !== null) this.targets.forget(was);
+      if (handle !== null) this.targets.register(handle, `${this.possessive} shield`);
+      this.shieldHandles[i] = handle;
+    }
+  }
+
+  private readonly shieldHandles: (number | null)[] = [null, null];
+
+  /**
+   * A blade has met this fighter's shield -- on the arm, or on the back.
+   * True if it did.
    *
    * The solver has already stopped it -- a shield meets blades the way another
    * blade does -- so there is no cut to weigh. But a blow that fails to cut
@@ -425,8 +493,10 @@ export class Combatant {
    * a shield still staggers you, it just leaves you whole.
    */
   block(impact: Impact): boolean {
-    const shield = this.offArm.shieldCollider;
-    if (!shield || impact.colliderHandle !== shield.handle) return false;
+    const hit = (c: { handle: number } | null) => c !== null && c.handle === impact.colliderHandle;
+    const back = this.offArm.slungCollider;
+    const onBack = back !== null && hit(back) && !fromInside(impact, back);
+    if (!hit(this.offArm.shieldCollider) && !onBack) return false;
     if (!this.dead) this.lastBlow = this.fighter.takeBlow(impact, this.mass, this.tuning);
     return true;
   }
@@ -464,11 +534,12 @@ export class Combatant {
 
   /**
    * Everything still attached to this body, kg: what a blow has to move.
-   * The hull with its chest and hips, the head and off arm while they are on,
-   * and the sword arm and weapon for as much of them as is left.
+   * The hull with its chest and hips, the head and off arm while they are on
+   * -- with a shield, if one is strapped there -- the sword arm and weapon for
+   * as much of them as is left, and a shield on the back.
    */
   get mass(): number {
-    let m = this.fighter.body.mass();
+    let m = this.fighter.body.mass() + this.offArm.slungMass;
     for (const part of this.fighter.parts) {
       if (part.body !== undefined && part.severed !== true) m += part.body.mass();
     }
@@ -517,7 +588,7 @@ export class Combatant {
     this.joints.elbow = JOINT_INTEGRITY.elbow * this.jointScale;
     this.bodyDamage.clear();
     this.lastBlow = null;
-    this.potions = 0;
+    this.inventory.clear();
     this.healLeft = 0;
     this.healRate = 0;
     // Puts the rotation locks back on, too: a body that died or was knocked
@@ -538,6 +609,26 @@ export class Combatant {
     this.fighter.applyPose(alpha);
     this.arm.syncMeshes(showGhost);
   }
+}
+
+const _faceOut = new THREE.Vector3();
+const _faceQ = new THREE.Quaternion();
+
+/**
+ * A blade touching a shield on the back from between it and the back: the
+ * point of a cut to the front, reaching round the hips after it and clipping
+ * the inside of the rim. The solver stops it there as anywhere, but that is a
+ * blade tangled behind a body, not a blow the shield caught -- a slung shield
+ * guards what comes at its face. Which side of the boards the contact is on
+ * says which it was; the way the blow drove does not, since at the rim the
+ * normal runs across the corner.
+ */
+function fromInside(impact: Impact, shield: RAPIER.Collider): boolean {
+  const r = shield.rotation();
+  const c = shield.translation();
+  _faceOut.set(0, 1, 0).applyQuaternion(_faceQ.set(r.x, r.y, r.z, r.w));
+  return (impact.at.x - c.x) * _faceOut.x + (impact.at.y - c.y) * _faceOut.y
+    + (impact.at.z - c.z) * _faceOut.z < 0;
 }
 
 /** A cut, as the blood system wants it. */

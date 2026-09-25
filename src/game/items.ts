@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { Combatant } from "./combatant";
 import { buildShieldMesh, SHIELD } from "./shield";
+import { Piece, piecesOf } from "./remains";
 
 /**
  * Things lying about that a hand can take.
@@ -12,23 +13,29 @@ import { buildShieldMesh, SHIELD } from "./shield";
  * rule, and it is the point: picking something up in the middle of a fight
  * costs you your sword for as long as it takes.
  *
- *   a potion     goes on your belt; drinking one takes a free hand (see
- *                `Combatant.drink`) and gives health back over a couple of
- *                seconds rather than all at once
+ *   a potion     goes in your pack (see inventory.ts); drinking one takes a
+ *                free hand (see `Combatant.drink`) and gives health back over
+ *                a couple of seconds rather than all at once
  *   a shield     straps onto the off forearm (see offarm.ts). One lies in the
  *                hall, past the orc: it is earned
  *   the rack     in the training room, with a shield on it. Take it down to
  *                practise with, hang it back to fight without: a toggle, and
  *                the one place a shield comes free
+ *   remains      whatever you have cut off an opponent: a head, an arm, a
+ *                forearm with the axe still in it (see remains.ts). Unlike
+ *                the rest these are physical -- they fell there, and they lie
+ *                where they came to rest -- so where one is is asked of its
+ *                bodies each step. Into the pack, and out again in front of
+ *                you, with `drop`
  */
 
-export type ItemKind = "potion" | "shield" | "rack";
+export type ItemKind = "potion" | "shield" | "rack" | "remains";
 
 export interface Item {
   readonly kind: ItemKind;
   /** What the prompt calls it. */
   readonly name: string;
-  /** Where it lies, world, on the floor. */
+  /** Where it lies, world, on the floor. Kept up to date for remains, which move. */
   readonly at: THREE.Vector3;
   readonly mesh: THREE.Object3D;
   /** Where on it a hand takes hold, world. */
@@ -40,9 +47,11 @@ export interface Item {
   readonly face: number | null;
   /**
    * Gone from where it lay -- until a reset puts it back. For the rack: its
-   * shield is off it.
+   * shield is off it. For remains: in someone's pack.
    */
   taken: boolean;
+  /** For remains: the bodies it is made of, and whose they were. */
+  readonly piece?: Piece;
 }
 
 /** How far from the middle of a body a hand can take something off the floor, metres at human scale. */
@@ -74,8 +83,15 @@ export class Items {
   private readonly homes = new Map<THREE.Object3D, {
     parent: THREE.Object3D; position: THREE.Vector3; quaternion: THREE.Quaternion;
   }>();
-  /** In a hand right now: the mesh, and how far it is still to go to the palm. */
-  private carried: { mesh: THREE.Object3D; from: THREE.Vector3 } | null = null;
+  /**
+   * In a hand right now: the mesh, and how far it is still to go to the palm
+   * -- and, for remains, which, since what is in the hand is only a copy.
+   */
+  private carried: { mesh: THREE.Object3D; from: THREE.Vector3; piece: Piece | null } | null = null;
+  /** Whose severed parts become things to pick up. */
+  private owners: readonly Combatant[] = [];
+  /** And the remains found so far, by owner and cut. */
+  private readonly known = new Map<string, Item>();
 
   constructor(scene: THREE.Scene, layout: ItemLayout) {
     for (const at of layout.potions) {
@@ -134,10 +150,19 @@ export class Items {
    */
   lift(item: Item, palm: THREE.Object3D): void {
     this.putBack();
-    const mesh = item.kind === "rack" ? this.rackShield : item.mesh;
-    mesh.visible = true;
+    const piece = item.piece ?? null;
+    let mesh: THREE.Object3D;
+    if (piece) {
+      // Out of the world while it is in the hand, or the body bowed over it
+      // kicks it about: a copy goes up in its place.
+      mesh = piece.standIn(item.grip);
+      piece.setPresent(false);
+    } else {
+      mesh = item.kind === "rack" ? this.rackShield : item.mesh;
+      mesh.visible = true;
+    }
     palm.attach(mesh);
-    this.carried = { mesh, from: mesh.position.clone() };
+    this.carried = { mesh, from: mesh.position.clone(), piece };
   }
 
   /** A step of whatever is in a hand settling into it, `k` of the way from where it was picked up. */
@@ -151,11 +176,94 @@ export class Items {
     const c = this.carried;
     if (!c) return;
     this.carried = null;
-    const home = this.homes.get(c.mesh)!;
-    home.parent.add(c.mesh);
-    c.mesh.position.copy(home.position);
-    c.mesh.quaternion.copy(home.quaternion);
+    if (c.piece) {
+      // Only a copy: the piece itself never left the floor.
+      c.mesh.removeFromParent();
+    } else {
+      const home = this.homes.get(c.mesh)!;
+      home.parent.add(c.mesh);
+      c.mesh.position.copy(home.position);
+      c.mesh.quaternion.copy(home.quaternion);
+    }
     for (const item of this.items) this.setTaken(item, item.taken);
+  }
+
+  /**
+   * Watch these bodies: whatever is cut off them from now on is something to
+   * pick up. Not your own -- nobody goes back for their own arm.
+   */
+  watch(owners: readonly Combatant[]): void {
+    this.owners = owners;
+  }
+
+  /**
+   * Once a step, after the world has: remains newly cut off join the things
+   * lying about, and everything already lying about is found where its
+   * bodies have got to.
+   */
+  update(): void {
+    this.owners.forEach((who, i) => {
+      for (const p of piecesOf(who)) {
+        const key = `${i}:${p.key}`;
+        if (this.known.has(key)) continue;
+        const piece = new Piece(p.name, who, p.bits);
+        const at = new THREE.Vector3();
+        const grip = new THREE.Vector3();
+        piece.locate(at, grip);
+        const item: Item = {
+          kind: "remains", name: p.name, at, mesh: p.bits[0].mesh, grip, face: null,
+          taken: false, piece,
+        };
+        this.known.set(key, item);
+        this.items.push(item);
+      }
+    });
+    for (const item of this.items) {
+      if (item.piece && !item.taken && this.carried?.piece !== item.piece) {
+        item.piece.locate(item.at, item.grip);
+      }
+    }
+  }
+
+  /**
+   * Put a piece from `who`'s pack back into the world: in front of them, at
+   * knee height and short of any wall, lying away from them, to fall to the
+   * floor. What goes back in is the bodies themselves, so anything that was
+   * following one -- a weapon's sweep, most of all -- has to be told it moved:
+   * see `Impacts.resetSweeps`.
+   */
+  drop(who: Combatant, item: Item): Outcome {
+    const piece = item.piece;
+    if (!piece || !item.taken || !who.inventory.remains.includes(item)) return { ok: false, text: "" };
+    if (who.dead) return { ok: false, text: "" };
+    const f = who.fighter;
+    const s = f.build.scale;
+    const sin = Math.sin(f.yaw);
+    const cos = Math.cos(f.yaw);
+    // As far out as it will go, up to a pace, with room past it for the rest
+    // of it and a little more. Where there is not -- a wall in front, and an
+    // arm with an axe in it -- it lies across the front instead, toward
+    // whichever side has more floor.
+    const reach = piece.reach;
+    const margin = DROP_CLEAR * s;
+    const want = DROP_AHEAD * s;
+    const clear = f.clearAlong(-sin, -cos, want + reach + margin);
+    let ahead = clear - reach - margin;
+    let lie = f.yaw;
+    if (ahead < DROP_NEAR * s) {
+      ahead = clear - margin;
+      const right = f.clearAlong(cos, -sin, reach + margin);
+      const left = f.clearAlong(-cos, sin, reach + margin);
+      lie = right >= left ? f.yaw - Math.PI / 2 : f.yaw + Math.PI / 2;
+    }
+    ahead = Math.max(DROP_NEAR * s, Math.min(want, ahead));
+    const p = f.body.translation();
+    const at = _drop.set(p.x - sin * ahead, p.y - f.build.hullCentreY + DROP_UP * s, p.z - cos * ahead);
+    piece.place(at, lie);
+    who.inventory.unstow(item);
+    this.setTaken(item, false);
+    piece.locate(item.at, item.grip);
+    return { ok: true, text: `dropped ${item.name}` };
   }
 
   /** The nearest thing a body standing at `p` could reach, or null. */
@@ -174,20 +282,44 @@ export class Items {
     return best;
   }
 
-  /** Mark something taken, or -- for the rack -- whether its shield is on it. */
+  /**
+   * Mark something taken, or -- for the rack -- whether its shield is on it.
+   * Remains taken leave the world; put down, they come back into it.
+   */
   setTaken(item: Item, taken: boolean): void {
     item.taken = taken;
-    if (item.kind === "rack") this.rackShield.visible = !taken;
+    if (item.piece) {
+      if (this.carried?.piece !== item.piece) item.piece.setPresent(!taken);
+    } else if (item.kind === "rack") this.rackShield.visible = !taken;
     else item.mesh.visible = !taken;
   }
 
-  /** Everything back where it was. */
+  /**
+   * Everything back where it was. Remains go back into the world, wherever
+   * they are, for the reset that follows to put back on whoever lost them --
+   * so this goes first -- and are not lying about any more.
+   */
   reset(): void {
     for (const item of this.items) item.taken = false;
     this.putBack();
     for (const item of this.items) this.setTaken(item, false);
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      if (this.items[i].piece) this.items.splice(i, 1);
+    }
+    this.known.clear();
   }
 }
+
+/**
+ * Where a piece put down goes, metres at human scale: this far ahead of the
+ * middle of the body putting it down, no nearer than this whatever is in the
+ * way, this far short of a wall, and from this high.
+ */
+const DROP_AHEAD = 0.6;
+const DROP_NEAR = 0.3;
+const DROP_CLEAR = 0.12;
+const DROP_UP = 0.45;
+const _drop = new THREE.Vector3();
 
 /** What trying to take something did, in words the HUD can show. */
 export interface Outcome {
@@ -207,22 +339,24 @@ export function refusal(who: Combatant, item: Item): string | null {
   const arm = l.shoulderOn && l.elbowOn;
   switch (item.kind) {
     case "potion":
+    case "remains":
       return null;
     case "shield":
-      if (who.hasShield) return "you already carry a shield";
+      if (who.carriesShield) return "you already carry a shield";
       return arm ? null : "no arm to strap it to";
     case "rack":
       if (!item.taken) {
-        if (who.hasShield) return "you already carry a shield";
+        if (who.carriesShield) return "you already carry a shield";
         return arm ? null : "no arm to strap it to";
       }
-      return who.hasShield ? null : "the rack is empty";
+      return who.carriesShield ? null : "the rack is empty";
   }
 }
 
 /**
- * What taking it does, once a hand has it: a potion on the belt, a shield on
- * the arm, a shield off the arm and back on the rack.
+ * What taking it does, once a hand has it: a potion or a piece of somebody in
+ * the pack, a shield on the arm, a shield off the arm -- or the back -- and
+ * back on the rack.
  */
 export function take(who: Combatant, items: Items, item: Item): Outcome {
   const no = refusal(who, item);
@@ -231,6 +365,10 @@ export function take(who: Combatant, items: Items, item: Item): Outcome {
     case "potion":
       items.setTaken(item, true);
       who.potions++;
+      return { ok: true, text: `took ${item.name}` };
+    case "remains":
+      items.setTaken(item, true);
+      who.inventory.stow(item);
       return { ok: true, text: `took ${item.name}` };
     case "shield":
       if (!who.equipShield()) return { ok: false, text: "no arm to strap it to" };
@@ -286,9 +424,9 @@ export function promptFor(who: Combatant, items: Items): string | null {
 function canHold(who: Combatant, item: Item): boolean {
   const l = who.fighter.offLimb;
   const arm = l.shoulderOn && l.elbowOn;
-  if (item.kind === "potion") return true;
-  if (item.kind === "rack" && item.taken) return who.hasShield;
-  return arm && !who.hasShield;
+  if (item.kind === "potion" || item.kind === "remains") return true;
+  if (item.kind === "rack" && item.taken) return who.carriesShield;
+  return arm && !who.carriesShield;
 }
 
 const _p = new THREE.Vector3();

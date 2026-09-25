@@ -4,9 +4,9 @@ import type { PhysicsWorld, Side } from "../core/physics";
 import type { Tuning } from "../tuning";
 import type { Build } from "./anatomy";
 import type { Fighter } from "./fighter";
-import { clamp, Tracker } from "./motion";
+import { clamp, smoothstep, Tracker } from "./motion";
 import { pushOut, repulsion } from "./clearance";
-import { buildShieldMesh, SHIELD } from "./shield";
+import { buildShieldMesh, SHIELD, SLUNG, SLUNG_TURN } from "./shield";
 import { stablePD } from "./drive";
 
 /**
@@ -33,6 +33,14 @@ import { stablePD } from "./drive";
  * when the body turns and settles back. With a shield it takes the whole
  * budget, holds a guard across the chest, and a player can steer it with the
  * mouse while the left button is held, as the right button rolls the sword.
+ *
+ * And the shield can go on the back and come off it again, as the sword can,
+ * by the hand: up over its own shoulder with the shield still on the arm, and
+ * there it lets go and the shield swings round onto the back as the hand
+ * comes down; the other way, the hand goes up over the shoulder for its rim
+ * and brings it round onto the forearm. Only the shield between the hand and
+ * the back is placed -- eased from where it was to where it is going -- and
+ * the arm never is. On the back it still stops blades: from behind.
  */
 
 /**
@@ -85,6 +93,41 @@ const SHIELD_SHARE = 1;
 /** As the sword arm: the shoulder's drive runs softer than the forearm's. */
 const UPPER_SCALE = 0.7;
 
+/**
+ * Slinging the shield onto the back and taking it off again, a phase at a
+ * time: seconds at human scale, and longer for a bigger body.
+ *
+ *   lift    the hand takes the shield up over its shoulder, still on the arm
+ *   hang    it lets go, and the shield swings round onto the back as the
+ *           hand comes back down
+ *   reach   taking it off: the hand goes up over the shoulder to its rim
+ *   bring   and brings it round onto the forearm, into the guard
+ */
+const SLING_TIME = { lift: 0.4, hang: 0.35, reach: 0.4, bring: 0.35 } as const;
+type SlingPhase = keyof typeof SLING_TIME;
+/** How much longer than its time a phase waits for a hand still on its way. */
+const SLING_GRACE = 2;
+/** Near enough to where the hand was sent, metres at human scale. */
+const SLING_THERE = 0.08;
+/**
+ * Where the hand goes for it, chest frame, metres at human scale: up over the
+ * off shoulder and a little behind it, where a hand reaching back over its
+ * own shoulder finds the rim of a shield slung there.
+ */
+const OVER_SHOULDER = new THREE.Vector3(-0.25, 0.66, 0.1);
+/**
+ * The elbow goes up, out and forward for it, as the sword arm's does going
+ * for its grip: hung down and back as it is for an aim, it would have to go
+ * through the shoulder.
+ */
+const OVER_POLE = { back: -0.5, down: -0.8, out: 0.7 };
+/**
+ * And the hand may fold in nearer the shoulder than an aim ever lets it, as a
+ * fraction of the arm: the sword arm's allowance for a hand at its own back.
+ */
+const OVER_MIN_REACH = 0.36;
+const IDENTITY = new THREE.Quaternion();
+
 /** What the off arm reads from its input, once a step. */
 export interface OffArmInput {
   /**
@@ -102,6 +145,24 @@ export class OffArm {
 
   /** The shield on the forearm, if one is strapped there. */
   private shieldPart: { collider: RAPIER.Collider; mesh: THREE.Object3D } | null = null;
+  /** The shield on the back instead: its mesh, riding the chest. */
+  private slungMesh: THREE.Object3D | null = null;
+  /**
+   * And its collider there: on the hull, placed where the posture has the
+   * chest each step, as the torso's own collider is. See `hangOnBack`.
+   */
+  private slungPart: RAPIER.Collider | null = null;
+  /** The shield going onto the back or coming off it: which, what part of it, how long in. */
+  private sling: { on: boolean; phase: SlingPhase; time: number } | null = null;
+  /**
+   * A shield's mesh easing from where the hand let go of it to where it is
+   * going, in its new parent's frame: the chest, or the forearm.
+   */
+  private easing: THREE.Object3D | null = null;
+  private readonly easeP0 = new THREE.Vector3();
+  private readonly easeQ0 = new THREE.Quaternion();
+  private readonly easeP1 = new THREE.Vector3();
+  private readonly easeQ1 = new THREE.Quaternion();
 
   private readonly build: Build;
   private readonly upperLen: number;
@@ -125,6 +186,8 @@ export class OffArm {
    */
   private readonly guideAt = new THREE.Vector3();
   private guideWeight = 0;
+  /** The guide is taking the hand up over its own shoulder: see `OVER_POLE`. */
+  private over = false;
 
   /** Last step's targets, for the speed they are moving at. */
   private primed = false;
@@ -150,6 +213,8 @@ export class OffArm {
   private readonly _a = new THREE.Vector3();
   private readonly _b = new THREE.Vector3();
   private readonly _c = new THREE.Vector3();
+  private readonly _pole = new THREE.Vector3();
+  private readonly _over = new THREE.Vector3();
   private readonly _e = new THREE.Vector3();
   private readonly _w = new THREE.Vector3();
   private readonly _t = new THREE.Vector3();
@@ -212,6 +277,7 @@ export class OffArm {
    * `ON_BODY_GIVE`.
    */
   guide(at: THREE.Vector3 | null, weight = 1, onBody = false): void {
+    this.over = false;
     if (!at) {
       this.guideWeight = 0;
       this.onBody = false;
@@ -260,14 +326,19 @@ export class OffArm {
     let reach = this.minReach + (this.maxReach - this.minReach) * clamp(reachFraction, 0, 1);
     this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
 
-    // A hand going to a hold goes there instead, as far as the arm reaches.
+    // A hand going to a hold goes there instead, as far as the arm reaches --
+    // and one going up over its own shoulder may fold further in to get there.
     const w = guided ? this.guideWeight : 0;
+    const over = w > 0 && this.over;
     const hi = this.maxReach
       + (this.build.armLength - GUIDE_MARGIN * this.build.scale - this.maxReach) * w;
+    const lo = over
+      ? this.minReach + (OVER_MIN_REACH * this.build.armLength - this.minReach) * w
+      : this.minReach;
     if (w > 0) {
       this._ghost.lerp(this.guideAt, w);
       dir.copy(this._ghost).sub(this._shoulder);
-      reach = clamp(dir.length(), this.minReach, hi);
+      reach = clamp(dir.length(), lo, hi);
       dir.normalize();
       this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
     }
@@ -277,7 +348,7 @@ export class OffArm {
     if (margin > 0
       && pushOut(this._ghost, this.handRadius, f.trunkCapsules(f.posture.pose), margin)) {
       dir.copy(this._ghost).sub(this._shoulder);
-      reach = clamp(dir.length(), this.minReach, hi);
+      reach = clamp(dir.length(), lo, hi);
       dir.normalize();
       this._ghost.copy(this._shoulder).addScaledVector(dir, reach);
     }
@@ -291,10 +362,17 @@ export class OffArm {
     const hang = shielded ? SHIELD_POLE : POLE;
     const right = this._a.set(Math.cos(frame), 0, -Math.sin(frame));
     const back = this._b.set(Math.sin(frame), 0, Math.cos(frame));
-    const pole = this._c.set(0, -hang.down, 0)
+    const pole = this._pole.set(0, -hang.down, 0)
       .addScaledVector(right, -hang.out)
       .addScaledVector(back, hang.back)
       .normalize();
+    if (over) {
+      const own = this._c.set(0, -OVER_POLE.down, 0)
+        .addScaledVector(right, -OVER_POLE.out)
+        .addScaledVector(back, OVER_POLE.back)
+        .normalize();
+      pole.lerp(own, w).normalize();
+    }
     const axis = this._a.crossVectors(dir, pole);
     if (axis.lengthSq() < 1e-8) axis.set(1, 0, 0); else axis.normalize();
     const elbowDir = this._elbowDir.copy(dir).applyQuaternion(this._q.setFromAxisAngle(axis, angle));
@@ -342,6 +420,14 @@ export class OffArm {
   /** Once per fixed step, after the body has been placed and before the world steps. */
   drive(t: Tuning, dt: number): void {
     const l = this.fighter.offLimb;
+    // A shield going onto the back or coming off it is finished where it is
+    // by anything that takes the arm away; otherwise it goes on a step,
+    // before the ghost it guides.
+    if (this.sling && (this.limp || !l.shoulderOn || !l.elbowOn)) this.stopSling();
+    if (this.sling) this.stepSling(t, dt);
+    // A shield on the back rides the chest, whatever the arm is doing -- a
+    // body on the floor, an arm cut off -- so this goes before anything returns.
+    if (this.slungPart) this.placeSlung();
     // Nothing must drive a limb that is off, or a body that is down -- and
     // Rapier keeps a force until it is cleared, so not driving it is not
     // enough: the last push would go on forever.
@@ -483,8 +569,24 @@ export class OffArm {
   // The shield
   // ---------------------------------------------------------------------------
 
+  /** On the forearm: strapped there, with a collider that stops blades. */
   get hasShield(): boolean {
     return this.shieldPart !== null;
+  }
+
+  /** On the back, riding the chest: out of the world, and out of the hand. */
+  get slung(): boolean {
+    return this.slungMesh !== null;
+  }
+
+  /** Going onto the back or coming off it: the hand is busy with it. */
+  get slinging(): boolean {
+    return this.sling !== null;
+  }
+
+  /** And it is going onto the back. */
+  get slingingOn(): boolean {
+    return this.sling?.on === true;
   }
 
   /** The shield's collider, for telling a blocked blow from a landed one. */
@@ -492,9 +594,33 @@ export class OffArm {
     return this.shieldPart?.collider ?? null;
   }
 
+  /** And the one on the back, while it is there. */
+  get slungCollider(): RAPIER.Collider | null {
+    return this.slungPart;
+  }
+
+  /**
+   * What a shield on the back weighs, kg: the body carries it, but its
+   * collider does not -- see `hangOnBack` -- so whoever weighs the body has
+   * to be told.
+   */
+  get slungMass(): number {
+    return this.slungPart ? SHIELD.mass * this.build.scale * this.build.scale : 0;
+  }
+
   /**
    * Strap a shield to the forearm. False if there is no forearm to strap it
-   * to, or one is already there.
+   * to, or one is already there -- or on the back.
+   */
+  equipShield(t: Tuning): boolean {
+    if (this.shieldPart || this.slungMesh || this.sling || !this.attached) return false;
+    this.strap(t, buildShieldMesh(this.build.scale), false);
+    return true;
+  }
+
+  /**
+   * A shield onto the forearm: this mesh, laid in place or -- `ease` -- taken
+   * from wherever it is and eased there over the phase that follows.
    *
    * It is a collider on the forearm's own body, so it goes wherever the
    * forearm goes -- including onto the floor, if the forearm is cut off. It is
@@ -502,8 +628,7 @@ export class OffArm {
    * the guard's own solved pose rather than declared, so it stays true for a
    * body of any size.
    */
-  equipShield(t: Tuning): boolean {
-    if (this.shieldPart || !this.attached) return false;
+  private strap(t: Tuning, mesh: THREE.Object3D, ease: boolean): void {
     const { rapier, world } = this.phys;
     const l = this.fighter.offLimb;
     const s = this.build.scale;
@@ -536,29 +661,199 @@ export class OffArm {
     // A shield swung fast into a thin blade should not tunnel through it.
     l.fore.enableCcd(true);
 
-    const mesh = buildShieldMesh(s);
-    mesh.position.copy(at);
-    mesh.quaternion.copy(turn);
-    this.fighter.offForeMesh.add(mesh);
+    if (ease) {
+      this.fighter.offForeMesh.attach(mesh);
+      this.easeTo(mesh, at, turn);
+    } else {
+      mesh.position.copy(at);
+      mesh.quaternion.copy(turn);
+      this.fighter.offForeMesh.add(mesh);
+    }
 
     this.shieldPart = { collider, mesh };
     Object.assign(this.aim, OFF_GUARD);
     this.primed = false;
+  }
+
+  /**
+   * Start putting the shield on the back. False if there is none on the
+   * arm, the arm cannot -- cut off, or a body on the floor -- or it is
+   * already on its way somewhere.
+   */
+  slingShield(): boolean {
+    if (!this.shieldPart || this.sling || this.limp || !this.attached) return false;
+    this.sling = { on: true, phase: "lift", time: 0 };
     return true;
   }
 
-  /** Take the shield off the arm, wherever the arm is. */
-  dropShield(): void {
-    const part = this.shieldPart;
-    if (!part) return;
-    this.phys.world.removeCollider(part.collider, true);
-    part.mesh.removeFromParent();
-    part.mesh.traverse((o) => {
-      const m = o as THREE.Mesh;
-      m.geometry?.dispose();
-      (m.material as THREE.Material | undefined)?.dispose();
-    });
+  /** Start taking it off the back and onto the arm. False as `slingShield`, the other way. */
+  unslingShield(): boolean {
+    if (!this.slungMesh || this.shieldPart || this.sling || this.limp || !this.attached) return false;
+    this.sling = { on: false, phase: "reach", time: 0 };
+    return true;
+  }
+
+  /**
+   * Finish a sling where it stands: a shield still on the arm stays there,
+   * one still on the back stays there, and one on its way from the hand to
+   * either is where it was going. For anything that wants the arm back --
+   * a ledge, a cut, a fall.
+   */
+  stopSling(): void {
+    if (!this.sling) return;
+    this.easeStep(1);
+    this.sling = null;
+    this.guideWeight = 0;
+    this.over = false;
+  }
+
+  /** A step of the shield going onto the back or coming off it. */
+  private stepSling(t: Tuning, dt: number): void {
+    const st = this.sling!;
+    st.time += dt;
+    const span = SLING_TIME[st.phase] * Math.sqrt(this.build.scale);
+    const u = Math.min(1, st.time / span);
+    const k = smoothstep(0, 1, u);
+    // A hand still on its way when its time is up gets a little longer to
+    // arrive -- not forever: a hand that cannot get there, can't.
+    const late = this.trackingError > SLING_THERE * this.build.scale && st.time < span * SLING_GRACE;
+    const next = (phase: SlingPhase) => {
+      st.phase = phase;
+      st.time = 0;
+    };
+
+    switch (st.phase) {
+      case "lift":
+        this.overShoulder(k);
+        if (u < 1 || late) break;
+        this.hangOnBack();
+        next("hang");
+        break;
+      case "reach":
+        this.overShoulder(k);
+        if (u < 1 || late) break;
+        this.strap(t, this.takeOffBack(), true);
+        next("bring");
+        break;
+      case "hang":
+      case "bring":
+        this.overShoulder(1 - k);
+        this.easeStep(k);
+        if (u >= 1) this.stopSling();
+        break;
+    }
+  }
+
+  /** The hand toward the top of its own shoulder, `weight` of the way, elbow up and over. */
+  private overShoulder(weight: number): void {
+    const thick = this.build.scale * this.build.girth;
+    this._over.set(OVER_SHOULDER.x * thick, OVER_SHOULDER.y * this.build.scale, OVER_SHOULDER.z * thick);
+    this.fighter.chestFrameWorld(this._over, IDENTITY, this.guideAt, this._q);
+    this.guideWeight = weight;
+    this.onBody = false;
+    this.over = true;
+  }
+
+  /**
+   * The hand lets go of it over the shoulder: off the arm and onto the chest.
+   *
+   * On the back it is a collider on the hull, the body that carries the
+   * chest, placed each step where the posture has the chest -- as the
+   * torso's own collider is -- so it covers the back through every lean,
+   * turn and crouch, and lies with it on the floor. It meets other blades
+   * and nothing else: a cut from behind stops on it like a parry, and it
+   * never catches on a door frame. It carries no mass there: the hull was
+   * tuned without it, and the weight is counted where a blow is weighed
+   * instead (see `slungMass`).
+   */
+  private hangOnBack(): void {
+    const part = this.shieldPart!;
+    const { rapier, world } = this.phys;
+    const s = this.build.scale;
+    world.removeCollider(part.collider, true);
     this.shieldPart = null;
+    this.fighter.chest.attach(part.mesh);
+    this.slungMesh = part.mesh;
+    this.slungPart = world.createCollider(
+      rapier.ColliderDesc.cylinder((SHIELD.thick * s) / 2, SHIELD.radius * s)
+        .setMass(0)
+        .setFriction(0.4)
+        .setRestitution(0.1)
+        .setCollisionGroups(this.side.backShieldFilter),
+      this.fighter.body,
+    );
+    this.placeSlung();
+    this.easeTo(part.mesh, this.slungAt(this._over), SLUNG_TURN);
+    Object.assign(this.aim, OFF_REST);
+  }
+
+  /** Where a shield on the back sits, in the chest's own frame, for this body. */
+  private slungAt(out: THREE.Vector3): THREE.Vector3 {
+    const thick = this.build.scale * this.build.girth;
+    return out.set(SLUNG.x * thick, SLUNG.y * this.build.scale, SLUNG.z * thick);
+  }
+
+  /** The back's collider to where the posture has the chest this step. */
+  private placeSlung(): void {
+    const posture = this.fighter.posture;
+    const at = posture.chestPoint(posture.pose, this.slungAt(this._over), this._over);
+    const q = posture.chestQuat(posture.pose, this._q).multiply(SLUNG_TURN);
+    this.slungPart!.setTranslationWrtParent({ x: at.x, y: at.y, z: at.z });
+    this.slungPart!.setRotationWrtParent({ x: q.x, y: q.y, z: q.z, w: q.w });
+  }
+
+  /** The hand has the rim: the shield's mesh, off the back, and nothing left there to stop a blade. */
+  private takeOffBack(): THREE.Object3D {
+    const mesh = this.slungMesh!;
+    this.slungMesh = null;
+    this.unhang();
+    return mesh;
+  }
+
+  private unhang(): void {
+    if (!this.slungPart) return;
+    this.phys.world.removeCollider(this.slungPart, true);
+    this.slungPart = null;
+  }
+
+  /** Ease this mesh from where it is in its parent to there, over what follows. */
+  private easeTo(mesh: THREE.Object3D, p: THREE.Vector3, q: THREE.Quaternion): void {
+    this.easing = mesh;
+    this.easeP0.copy(mesh.position);
+    this.easeQ0.copy(mesh.quaternion);
+    this.easeP1.copy(p);
+    this.easeQ1.copy(q);
+  }
+
+  /** `k` of the way there; all the way, and it is done. */
+  private easeStep(k: number): void {
+    const m = this.easing;
+    if (!m) return;
+    const u = clamp(k, 0, 1);
+    m.position.lerpVectors(this.easeP0, this.easeP1, u);
+    m.quaternion.slerpQuaternions(this.easeQ0, this.easeQ1, u);
+    if (u >= 1) this.easing = null;
+  }
+
+  /** Take the shield off, wherever it is: the arm, the back, or between the two. */
+  dropShield(): void {
+    this.stopSling();
+    this.easing = null;
+    const part = this.shieldPart;
+    if (part) this.phys.world.removeCollider(part.collider, true);
+    this.unhang();
+    for (const mesh of [part?.mesh, this.slungMesh]) {
+      if (!mesh) continue;
+      mesh.removeFromParent();
+      mesh.traverse((o) => {
+        const m = o as THREE.Mesh;
+        m.geometry?.dispose();
+        (m.material as THREE.Material | undefined)?.dispose();
+      });
+    }
+    if (!part && !this.slungMesh) return;
+    this.shieldPart = null;
+    this.slungMesh = null;
     Object.assign(this.aim, OFF_REST);
     this.primed = false;
   }
@@ -568,6 +863,7 @@ export class OffArm {
     this.limp = false;
     this.guideWeight = 0;
     this.onBody = false;
+    this.over = false;
     this.primed = false;
     this.track.snap([this.aim.yaw, this.aim.pitch]);
   }
@@ -579,6 +875,7 @@ export class OffArm {
     this.steered = false;
     this.guideWeight = 0;
     this.onBody = false;
+    this.over = false;
     Object.assign(this.aim, OFF_REST);
     this.settle(t);
   }

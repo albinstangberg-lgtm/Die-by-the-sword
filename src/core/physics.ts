@@ -69,6 +69,12 @@ export interface Side {
    */
   readonly shieldFilter: number;
   /**
+   * For a shield slung on the back: a shield's membership, meeting other
+   * blades and nothing else. It rides the walking hull, and a shield that met
+   * the world would catch on every door frame the body walks through.
+   */
+  readonly backShieldFilter: number;
+  /**
    * For a weapon nobody is swinging: in a limp hand, or on an arm that has
    * been cut off. It lies on the floor and meets other blades, but no body.
    * Staying out of bodies is also staying out of the way of the legs, which
@@ -145,6 +151,7 @@ export function makeSides(teams: readonly number[]): Side[] {
       bladeFilter: groups(mine.blade, GROUP.WORLD | GROUP.PROP | otherBlades | foeBodies),
       cuttableFilter: groups(mine.blade, GROUP.PROP | foeBodies),
       shieldFilter: groups(mine.blade, GROUP.WORLD | otherBlades),
+      backShieldFilter: groups(mine.blade, otherBlades),
       inertBladeFilter: groups(mine.blade, GROUP.WORLD | GROUP.PROP | otherBlades),
       hullFilter: groups(mine.hull, GROUP.WORLD | GROUP.PROP | otherHulls),
       hitOnlyFilter: groups(mine.body, foeBlades),
