@@ -148,7 +148,7 @@ export class Hud {
           <dt>X</dt><dd>sheathe / draw / wield</dd>
           <dt>Z</dt><dd>shield on back / arm</dd>
           <dt>F</dt><dd>pick up &middot; into bag</dd>
-          <dt>G</dt><dd>let go</dd>
+          <dt>G</dt><dd>let go &middot; mid-swing, throw</dd>
           <dt>H</dt><dd>drink a potion</dd>
           <dt>B</dt><dd>inventory</dd>
           <dt>Tab</dt><dd>tuning panel</dd>

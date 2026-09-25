@@ -111,6 +111,8 @@ async function main(): Promise<void> {
     for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
   };
   registerBodies();
+  // A piece let go of starts from the hand, wherever it last lay.
+  items.placed = (body) => interp.jump(body);
 
   const hud = new Hud(hudEl, impactEl);
   const bag = new Bag();

@@ -7,7 +7,8 @@ import type { Combatant } from "./combatant";
  * that is cut off, or dead, still has hold of. Lying on the floor it is only
  * more rigid bodies, jointed to each other where the cut did not part them;
  * picked up, it is held in the hand, and from there it goes in the bag (see
- * inventory.ts) or is let go of, in front of whoever had it, to fall to the
+ * inventory.ts) or is let go of -- out of the hand as the hand has it, and
+ * thrown, if the hand was swinging (see `Items.letGo`) -- to fall to the
  * floor like anything else.
  *
  * Nothing about a piece is copied or rebuilt to do this. It is the bodies the

@@ -36,7 +36,7 @@ limp where it stands and comes down in a heap.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 333 checks, no browser needed
+npm run smoke    # headless physics harness — 341 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -57,7 +57,7 @@ npm run build    # production bundle
 | **X** | sword on your back, and back in your hand — or, holding an opponent's weapon, take it up and fight with it, and put it up again |
 | **Z** | shield on your back, and back on your arm |
 | **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
-| **G** | let go of what is in your hand |
+| **G** | let go of what is in your hand — in the middle of a swing, throw it |
 | **H** | drink a potion — takes a free hand |
 | **B** | open and close the inventory |
 | **1–9** | with the inventory open: use what is on that line — drink a potion, take a piece or a weapon out into your hand |
@@ -634,7 +634,8 @@ the hand on it.
 
 And you keep it in your hand. A potion goes straight into your bag, being for
 using; a head or an axe is held, with the sword on your back, until **F**
-again puts it in the bag or **G** lets go of it. Held, it takes the hand: F
+again puts it in the bag or **G** lets go of it — or throws it, if your arm
+is swinging. Held, it takes the hand: F
 picks up nothing else — it offers to bag what you hold instead — and it is
 not a hand to drink with. **X** lets go of it to draw your sword, and so does
 anything else that takes the hand away: a blow that puts you down, a cut.
@@ -663,9 +664,10 @@ while the arm has it.
 
 **X** again puts it up — held in your hand again, your sword on your back as
 it was, with the weight the panel gives it. **G** lets go of it where it is in
-the hand, turned as it is and moving as it is, to fall; **F** puts it straight
-in the bag. Put down, it is a weapon nobody is swinging again, and cuts
-nobody. A knockdown keeps it in your hand, as it would your sword; a cut
+the hand, turned as it is and moving as it is — in the middle of a swing, that
+is a throw; **F** puts it straight in the bag. Put down, it is a weapon nobody
+is swinging again, and cuts nobody. A knockdown keeps it in your hand, as it
+would your sword; a cut
 takes it with the arm. A reset puts your sword back in your hand and the axe
 back in the orc's.
 
@@ -677,14 +679,46 @@ of it, so the body bowed over it does not kick it about. A reset finds every
 piece where it expects it, on the floor, in your hand or in your bag, puts it
 back on whoever lost it, and the weapon back in the fist.
 
-Let go of, a piece comes back into the world in front of you from your
-hand's height and falls to the floor. It goes as far out as a pace, lying
-away from you, and short of any wall; where there is no room ahead for the
-length of it — a spear, facing a wall — it lies across your front instead,
-toward whichever side has more floor. A weapon nobody is swinging cuts
-nobody — one in a hand that has been cut off, one let go of, one falling —
-so the axe you drop does not take your foot off. Only an opponent's parts:
-nobody goes back for their own arm.
+A weapon nobody is swinging cuts nobody — one in a hand that has been cut
+off, one let go of, one falling — so the axe you drop does not take your foot
+off. Only an opponent's parts: nobody goes back for their own arm.
+
+### Throwing what you hold
+
+Let go of, a piece leaves your hand as it is in your hand: where the copy in
+the hand is, turned as it is, and moving as the hand is. So **G** from a still
+hand drops it at your feet, and **G** in the middle of a swing throws it — the
+way your hand was going, as fast, and turning as your forearm was. Swing
+overhand and let go as the arm comes over, and a head goes four or five metres;
+sweep across and let go, and it goes across; an underhand swing lobs it. Your
+arm at full pelt puts five to seven metres a second into the hand, and that is
+all a throw gets: nothing is added, so a throw is exactly as good as the swing
+behind it. The HUD says *threw* when it left
+your hand at more than two and a half metres a second, *let go of* when it
+only dropped.
+
+The whole piece takes the palm's speed, and spins about its own middle with
+the forearm's spin. A rigid thing on the end of the forearm would really have
+the speed the forearm has where its middle is, which is not the palm's — but
+what is in your hand is held however it lay on the floor, and a sword lying
+back along your arm would fly backwards off a swing forwards. So it goes where
+the hand goes. A whole arm goes as one, its elbow holding in the air.
+
+It starts inside your hand, so for the moment it takes to leave it passes
+through you — your arm, your body, your shield — and once it is clear of you
+it meets you like anything else. It meets everything else from the start, and
+a wall stops it: thrown at the stone a pace off, it bounces back into the
+room. A head or a limb knocks into whoever it hits, as the weight it is; a
+weapon, being one nobody is swinging, meets only the floor, the walls and
+other blades, and goes through a body as if it were not there.
+
+The copy in your hand is not in the world, though, and goes through walls and
+the floor with your hand; the bodies cannot. Where letting go of it where it
+is would put any of it in the stone, it is put down in front of you instead:
+from your hand's height, as far out as a pace, lying away from you and short
+of any wall — or, with no room ahead for the length of it, a spear facing a
+wall, across your front toward whichever side has more floor — to fall to the
+floor.
 
 ### The inventory
 
@@ -1736,6 +1770,17 @@ Some things look like bugs and are not:
   something in your hand, that is what F does. Press it again for the next.
 - **Your sword comes out and the head you were holding hits the floor.** The
   hand lets go of it to take the sword. F first, to keep it.
+- **G throws what you hold across the room.** Your arm was moving: what
+  leaves your hand leaves it moving as your hand was. Hold the mouse still
+  to put it down.
+- **A thrown head hurts nobody.** It knocks into bodies as the weight it is,
+  but a blow is something a weapon in a hand does.
+- **A thrown axe goes straight through the orc.** A weapon nobody is swinging
+  meets only the floor, the walls and other blades — the same rule that keeps
+  the one you drop from taking your foot off.
+- **Something you let go of turns up in front of you rather than in your
+  hand.** Your hand had it in a wall, or in the floor, and it cannot be let go
+  of there.
 - **The orc's axe in your hand cuts nothing.** You are holding it, not
   wielding it: it is out of the world until you take it up with X.
 - **The orc's axe is slow in your hand.** It weighs what it weighs, and your
@@ -1803,6 +1848,7 @@ src/
     drive.ts         an angular PD held inside what each axis's inertia can take
     items.ts         potions, the shield, the rack, what was cut off somebody
                      and their weapon: taking them, holding them, letting go
+                     of them and throwing them
     remains.ts       what comes off a body, and the weapon a dead hand lets go of
     inventory.ts     the bag: potions, and pieces of other people put in it
     pickup.ts        F: walking over, getting down to it, and reaching for it
@@ -1826,7 +1872,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 333 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 341 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -1948,15 +1994,27 @@ leaves it there with nothing to take it down; that a head and a forearm with
 its sword in it come off and lie on the floor as three things to take; that F
 goes for the head and keeps it in the hand, where nothing of it is drawn or
 touched, the hand takes nothing else and F offers to bag it; that F again puts
-it in the bag, and out of the bag it comes back into the hand; that G lets go
-of it, and it comes back in front of you from your hand's height and falls to
-the floor; that F takes the sword out of the dead fist, leaving the fist on
+it in the bag, and out of the bag it comes back into the hand; that G from a
+still hand lets go of it exactly where the copy in the hand was, and it drops
+to the floor; that F takes the sword out of the dead fist, leaving the fist on
 the forearm and the forearm lying there for the next F; that drawing your own
 sword lets go of it, and it falls without cutting you; that let go of facing a
-wall it lies across your front and settles with no more speed than its fall
+wall it stays out of the stone and settles with no more speed than its fall
 gave it; that a reset puts every piece back on, from the hand and the bag, and
 the sword back in the fist; and that Z, B, G and the numbers are where the
 HUD says.
+
+And that what you hold can be thrown: that let go of at the fastest of an
+overhand swing the head leaves at exactly the palm's speed and the forearm's
+spin, and flies more than two and a half metres within a few degrees of the
+way the hand was going; that it passes through the hand that threw it for the
+steps it takes to clear it, and meets you as it did before after that; that
+a whole arm thrown underhand leaves as one, its halves moving together and
+the elbow holding, and lands ahead; that a sword thrown the same way lands
+ahead and hurts nobody; that thrown at a wall a pace off, the head stops at
+the stone and falls back into the room; that where the copy in the hand is in
+the floor, it is put down in front of you instead, still; and that a reset
+while one is still leaving the hand gives it back what it meets.
 
 And that the orc's axe, taken off it dead, is a weapon in your hand: that X
 takes it up with the axe's weight and shape, jointed in your hand, your sword
@@ -1984,7 +2042,8 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. A scabbard or a belt
+Rounds and a reason to be in the rooms. Friendly fire. A thrown axe that
+cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually
 wants. Blood that stays on the
