@@ -77,7 +77,7 @@ knee up onto it.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 431 checks, no browser needed
+npm run smoke    # headless physics harness — 435 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -2559,7 +2559,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 431 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 435 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
