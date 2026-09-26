@@ -41,3 +41,8 @@ the smoke suite between them:
    seeds, misses no more often with your change than without it (the
    smoke-tester weighs that for you). If code changed after the last report,
    launch one final run and wait for it.
+7. CI (`.github/workflows/smoke.yml`) runs on every pull request, on the
+   branch as it would be merged, and on every push to the default branch:
+   typecheck, the default seed (a tendency that misses there is weighed on
+   seeds 1–10 against the base), and every group on seeds 1–8 against the
+   base. A red CI counts the same as a FAIL here.
