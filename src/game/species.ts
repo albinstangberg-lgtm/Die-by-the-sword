@@ -290,6 +290,30 @@ export interface Footwork {
   readonly dart: number;
 }
 
+/**
+ * Who it fights beside. Everything of one faction is on one side, against
+ * every other faction and against you: the orcs, the goblins and the ogre are
+ * greenskins, and the kobolds hate the lot of them. Anything new that is its
+ * own kind of thing -- fish people, wildlife -- is a faction of its own: a
+ * name here and in `FACTIONS`.
+ *
+ * Nothing about what a blade meets: a blade cuts whoever it lands on (see
+ * `makeSides`). Only who it goes for, and who it keeps out of the way of.
+ */
+export type Faction = "people" | "greenskins" | "kobolds";
+
+/** Every faction, in the order their sides are numbered after yours. */
+export const FACTIONS: readonly Faction[] = ["people", "greenskins", "kobolds"];
+
+/**
+ * The side a faction fights on, for `makeSides`. You are side 0, on your own,
+ * whatever you are: a swordsman that is not you is one of the people, and
+ * yours no more than anything else in the rooms is.
+ */
+export function sideOf(faction: Faction): number {
+  return FACTIONS.indexOf(faction) + 1;
+}
+
 export interface Species {
   readonly key: string;
   /** How the fight panel names it. */
@@ -297,6 +321,8 @@ export interface Species {
   /** How an impact readout refers to its parts: "the orc's leg". */
   readonly possessive: string;
   readonly note: string;
+  /** Whose side it is on. */
+  readonly faction: Faction;
   readonly build: Build;
   readonly weapon: Weapon;
   readonly palette: Palette;
@@ -379,6 +405,7 @@ export const SWORDSMAN: Species = {
   name: "the swordsman",
   possessive: "his",
   note: "your own build, your own sword — an even fight",
+  faction: "people",
   build: HUMAN_BUILD,
   weapon: SWORD,
   palette: { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f },
@@ -475,6 +502,7 @@ export const ORC: Species = {
   name: "the orc",
   possessive: "the orc's",
   note: "slow, enormous, and committed to everything it starts",
+  faction: "greenskins",
   build: ORC_BUILD,
   weapon: AXE,
   palette: { cloth: 0x4a4230, skin: 0x6f8355, mark: 0xb5432c },
@@ -595,6 +623,7 @@ export const GOBLIN: Species = {
   name: "the goblin",
   possessive: "the goblin's",
   note: "outreaches you and does nothing else well",
+  faction: "greenskins",
   build: GOBLIN_BUILD,
   weapon: SPEAR,
   palette: { cloth: 0x5c4a2f, skin: 0x8a9a53, mark: 0xd8b64a },
@@ -688,6 +717,7 @@ export const KOBOLD: Species = {
   name: "the kobold",
   possessive: "the kobold's",
   note: "small, quick, and always at your shins",
+  faction: "kobolds",
   build: KOBOLD_BUILD,
   weapon: HATCHET,
   palette: { cloth: 0x6b5a3e, skin: 0xa0552c, mark: 0xe0c060 },
@@ -789,6 +819,7 @@ export const OGRE: Species = {
   name: "the ogre",
   possessive: "the ogre's",
   note: "huge and slow, and its club sends you flying",
+  faction: "greenskins",
   build: OGRE_BUILD,
   weapon: CLUB,
   palette: { cloth: 0x5a4632, skin: 0x8d8a6a, mark: 0x9c3a26 },

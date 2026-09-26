@@ -428,6 +428,30 @@ const FOLLOW_THROUGH = 0.3;
 /** How long it goes round you for, seconds, before it tries the swing again. */
 const HOLD_BACK = [0.3, 0.7] as const;
 
+// --- whom it fights ---------------------------------------------------------------
+//
+// You, most of the time. But anything of another side will do (see
+// `Faction`), and kobolds let out into the hall with greenskins about go for
+// them as readily as for you.
+
+/**
+ * How much nearer than whom it is fighting someone else of another side has
+ * to be, as a share of the distance, for it to turn on them instead: an orc
+ * with a kobold at its elbow does not leave it hacking at its legs while it
+ * goes after you across the room.
+ */
+const TURN_ON = 0.5;
+
+/**
+ * How long, seconds, it stays on whoever has just landed a blow on it,
+ * however much nearer something else of another side comes and whatever else
+ * lands one: an orc that you cut off the back of a kobold turns on you, and
+ * does not turn straight back because the kobold is still at its elbow, or
+ * has hacked at it again. Turning on each blow as it came, it spent the fight
+ * turning, and fought neither of you.
+ */
+export const GRUDGE = 3;
+
 /**
  * The furthest an edge comes round off your chest toward the part of you it
  * is after, radians.
@@ -711,6 +735,13 @@ const ZERO = { x: 0, y: 0, z: 0 } as const;
  */
 const LOOSE: ReadonlySet<State> = new Set<State>(["close", "circle", "backoff", "taunt"]);
 
+/**
+ * The states in which it may take on someone else: loose on its feet, looking
+ * for whoever it lost, or not in a fight at all. A swing drawn back at one of
+ * you goes at that one.
+ */
+const CHOOSING: ReadonlySet<State> = new Set<State>([...LOOSE, "hunt", "waiting", "return"]);
+
 /** How a creature fights, which a bad enough wound can change. See `Temper`. */
 interface Mood {
   readonly footwork: Footwork;
@@ -828,8 +859,15 @@ export class Ai implements ArmInput {
    * until whoever sets up the fight says otherwise.
    */
   company: readonly Combatant[] = [];
+  /** Whom it is fighting, or went for last: null until it has gone for anybody. See `choose`. */
+  private foeNow: Combatant | null = null;
+  /** Whoever last landed a blow on it, until it has turned on them: see `struckBy`. */
+  private provoker: Combatant | null = null;
+  /** Seconds it has left of staying on whoever it turned on for a blow: see `GRUDGE`. */
+  private grudge = 0;
   private readonly _along = new THREE.Vector3();
   private readonly _friend = new THREE.Vector3();
+  private readonly _other = new THREE.Vector3();
 
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
 
@@ -1086,6 +1124,14 @@ export class Ai implements ArmInput {
   }
 
   /**
+   * Whom it is fighting, or went for last -- you, or something of another
+   * side -- or null if it has gone for nobody yet: for the fight panel.
+   */
+  get fighting(): Combatant | null {
+    return this.foeNow;
+  }
+
+  /**
    * The swing it is drawing back for or throwing, or null. For the harness:
    * nothing you are shown reads it.
    */
@@ -1094,7 +1140,12 @@ export class Ai implements ArmInput {
     return s === "windup" || s === "leap" || s === "strike" ? this.swing : null;
   }
 
-  /** Run once per fixed step, before the arm reads its input. */
+  /**
+   * Run once per fixed step, before the arm reads its input. `foe` is whom it
+   * fights when it has nobody else to choose from: you, in the game, and in
+   * a fight set up without `company` the only one there is. With company,
+   * it goes for whichever of another side it sees first (see `choose`).
+   */
   think(self: Combatant, foe: Combatant, t: Tuning, dt: number): void {
     if (self.dead) {
       this.state = "beaten";
@@ -1146,6 +1197,10 @@ export class Ai implements ArmInput {
     // same one either of them could cast, and it is also what makes a doorway
     // worth something: step into the light and the thing in the next room
     // starts moving. From here on `_foe` is where it believes you are.
+    //
+    // "You" being whoever it is fighting: see `choose`.
+    this.grudge = Math.max(0, this.grudge - dt);
+    foe = this.choose(self, foe);
     this.look(self, foe, dt);
     const toFoe = this._foe.clone().sub(this._self);
     const range = Math.hypot(toFoe.x, toFoe.z);
@@ -2217,6 +2272,107 @@ export class Ai implements ArmInput {
     this.begin("close", 0);
   }
 
+  /**
+   * Whom it fights this step, out of `company`, or `given` without any.
+   *
+   * Whoever it is fighting, while they live and it has them in sight --
+   * unless something else of another side it can see is a good deal nearer
+   * (see `TURN_ON`), and they have not just landed a blow on it (`GRUDGE`). Having lost them for longer than a pillar hides anyone,
+   * or having none, the nearest of another side it can see, near enough to
+   * notice; and if it can see nobody, whoever it was after, to look for.
+   * Only in the middle of nothing (see `CHOOSING`) -- but whoever lands a
+   * blow on it, it turns on as soon as it is free to (see `struckBy`).
+   */
+  private choose(self: Combatant, given: Combatant): Combatant {
+    if (this.company.length === 0) return given;
+    const now = this.foeNow;
+    const holding = now !== null && this.hostile(self, now);
+    // Something of another side has landed a blow on it: it turns on them,
+    // as soon as it is free to.
+    const provoker = this.provoker;
+    if (provoker !== null && (provoker === now || !this.hostile(self, provoker)
+      || (holding && this.grudge > 0))) {
+      this.provoker = null;
+    } else if (provoker !== null && (!holding || CHOOSING.has(this.state))) {
+      this.provoker = null;
+      this.retarget(provoker);
+      this.grudge = GRUDGE;
+      return provoker;
+    }
+    if (holding && !CHOOSING.has(this.state)) return now;
+    let seen: Combatant | null = null;
+    let nearest = NOTICE;
+    for (const c of this.company) {
+      if (!this.hostile(self, c)) continue;
+      const d = this.distanceTo(c);
+      if (d >= nearest || !self.sees(c)) continue;
+      seen = c;
+      nearest = d;
+    }
+    if (holding && (seen === null || seen === now || (this.lost < GLIMPSE
+      && (this.grudge > 0 || nearest >= TURN_ON * this.distanceTo(now))))) {
+      return now;
+    }
+    if (seen !== null) {
+      if (seen !== now) this.retarget(seen);
+      return seen;
+    }
+    // Nobody in sight, and whoever it was fighting dead: it has won, and goes
+    // home -- and whoever it was given is whom it notices next, as it would
+    // have with nobody else about.
+    if (now !== null) {
+      this.retarget(null);
+      if (this.engaged) this.giveUp();
+    }
+    if (this.hostile(self, given)) this.retarget(given);
+    return given;
+  }
+
+  /** Whether it would fight someone: alive, and of another side. */
+  private hostile(self: Combatant, c: Combatant): boolean {
+    return c !== self && !c.dead && c.fighter.side.team !== self.fighter.side.team;
+  }
+
+  /** How far off someone is, metres, across the floor. */
+  private distanceTo(c: Combatant): number {
+    const at = c.position(this._other);
+    return Math.hypot(at.x - this._self.x, at.z - this._self.z);
+  }
+
+  /**
+   * Turned on someone else, or on nobody: what it had read of the last one --
+   * their feet, their weapon, the opening their miss gave it -- is nothing to
+   * go on. What it sees of the next it reads from there, as it did of the
+   * last.
+   */
+  private retarget(to: Combatant | null): void {
+    const first = this.foeNow === null;
+    this.foeNow = to;
+    this.grudge = 0;
+    if (first) return;
+    this.threatened = false;
+    this.answerIn = -1;
+    this.readBack = false;
+    this.wasBack = false;
+    this.cameAt = -1;
+    this.sinceNear = Infinity;
+    this.closing = 0;
+    this.coming = 0;
+    this.yourMove = 0;
+    this.moveFor = 0;
+    this.answered = false;
+    this.giving = false;
+    this.meeting = false;
+    this.following = false;
+    this.baiting = false;
+    this.yourReach = 0;
+    this.opening = 0;
+    this.yoursKnocked = false;
+    this.drawn = false;
+    this.crowd = 0;
+    this.lost = Infinity;
+  }
+
   /** Its friends: everyone on its own side still on their feet or down, but not dead. */
   private friendsOf(self: Combatant): Combatant[] {
     if (this.company.length === 0) return [];
@@ -2495,6 +2651,20 @@ export class Ai implements ArmInput {
    * held to the distance at which it would notice you -- and if it does not
    * find you, it gives up and goes home the way it came.
    */
+  /**
+   * Someone has landed a blow on it. One of another side it turns on, as soon
+   * as it is free to, whoever it was fighting -- unless it turned on someone
+   * else for a blow a moment ago (see `GRUDGE`): an orc hacking at you with a
+   * kobold at its back turns round to the kobold, and one busy with a kobold
+   * turns on you if you come up behind it and cut it. A friend's blade it
+   * forgives. Only with `company`: see `choose`.
+   */
+  struckBy(who: Combatant): void {
+    // A blow from whoever it is fighting already changes nothing -- least of
+    // all whom it means to turn on once it has finished its swing.
+    if (who !== this.foeNow) this.provoker = who;
+  }
+
   hear(at: THREE.Vector3, on: THREE.Vector3): void {
     if (this.engaged || (this.state !== "waiting" && this.state !== "return")) return;
     // Not at its post yet: it would have nowhere to go home to.
@@ -3472,6 +3642,10 @@ export class Ai implements ArmInput {
     this.comingIn = false;
     this.showOff = false;
     this.darting = false;
+    // Whom it was after, and whoever it bore a grudge against, are nobody now.
+    this.foeNow = null;
+    this.provoker = null;
+    this.grudge = 0;
     this.idle();
   }
 }

@@ -397,8 +397,8 @@ export class Hud {
     };
 
     /**
-     * After each opponent's name, whether it has noticed you, and nothing
-     * more.
+     * After each opponent's name, whether it has noticed you -- or, fighting
+     * something of another side, what -- and nothing more.
      *
      * This used to be a line of its own naming the attack being wound up and
      * saying how to beat it, with a bar filling toward the moment it landed.
@@ -406,8 +406,13 @@ export class Hud {
      * on the same line as its health, so that eight of them fit down the side
      * of the screen.
      */
+    const outlook = (ai: Ai) => {
+      const them = ai.fighting;
+      return ai.outlook === "fighting" && them !== null && them !== this.player
+        ? `fighting ${them.name}` : ai.outlook;
+    };
     this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}`
-      + this.foes.map((f) => row(f.combatant, f.ai.outlook)).join("");
+      + this.foes.map((f) => row(f.combatant, outlook(f.ai))).join("");
   }
 
   /** Integrity bars for every joint still holding. */

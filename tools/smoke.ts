@@ -31,12 +31,13 @@ import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
-  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, type Cut, type Species,
+  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, sideOf, type Cut,
+  type Species,
 } from "../src/game/species";
 import {
   AXE, CLUB, HATCHET, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon,
 } from "../src/game/weapons";
-import { Ai, FELT, type Swing } from "../src/game/ai";
+import { Ai, FELT, GRUDGE, type Swing } from "../src/game/ai";
 import { emptyBlow, judgeBlow, judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -2167,8 +2168,8 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
 
 /**
  * The whole line-up, as the game has it -- you and everything behind the four
- * gates (see roster.ts) -- in one arena, and a step that drives them all as
- * the game's does. Or another line-up, on the same side as each other.
+ * gates (see roster.ts) -- in one arena, each on its faction's side, and a
+ * step that drives them all as the game's does. Or another line-up.
  */
 async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROSTER) {
   const tuning: Tuning = { ...DEFAULTS };
@@ -2176,7 +2177,7 @@ async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROS
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   const arena = buildArena(phys, scene, targets);
-  const sides = makeSides([0, ...line.map(() => 1)]);
+  const sides = makeSides([0, ...line.map((o) => sideOf(o.species.faction))]);
   const you = new Combatant(phys, scene, youAt, sides[0], tuning, targets, SWORDSMAN, "you", "your");
   const foes = line.map((o, i) => {
     const combatant = new Combatant(phys, scene, spawnOf(o), sides[i + 1],
@@ -2189,12 +2190,13 @@ async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROS
   const impacts = new Impacts(phys, scene, targets, tuning);
   let cutsOnYou = 0;
   let hurtYou = 0;
-  // A blade cuts whoever it lands on, and one of them caught by another's is
+  // A blade cuts whoever it lands on, and one of them caught by a friend's is
   // cut like anyone else: a cut is a blow it would feel (`FELT`), and a weapon
   // at its guard brushing a friend's arm as they go through a doorway side by
-  // side is only a touch.
+  // side is only a touch. One of another side it goes for, as it goes for you.
   let cutsAmongThem = 0;
   let touchesAmongThem = 0;
+  let cutsAcross = 0;
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
       const yours = you.health;
@@ -2202,7 +2204,15 @@ async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROS
       for (const o of foes) {
         const was = o.combatant.health;
         if (!o.combatant.receive(i)) continue;
-        if (was - o.combatant.health >= FELT) cutsAmongThem++; else touchesAmongThem++;
+        o.ai.struckBy(f.combatant);
+        const cut = was - o.combatant.health >= FELT;
+        if (o.combatant.fighter.side.team !== f.combatant.fighter.side.team) {
+          if (cut) cutsAcross++;
+        } else if (cut) {
+          cutsAmongThem++;
+        } else {
+          touchesAmongThem++;
+        }
         return;
       }
     });
@@ -2218,8 +2228,11 @@ async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROS
     get cutsOnYou() { return cutsOnYou; },
     /** Health taken off you, all told. */
     get hurtYou() { return hurtYou; },
+    /** Cuts, and touches, by one of them on a friend. */
     get cutsAmongThem() { return cutsAmongThem; },
     get touchesAmongThem() { return touchesAmongThem; },
+    /** Cuts by one of them on one of another side. */
+    get cutsAcross() { return cutsAcross; },
     step(n = 1) {
       for (let k = 0; k < n; k++) {
         you.act(still, NO_KEYS, tuning, STEP);
@@ -2389,6 +2402,122 @@ async function friendsComeAtYouFromTwoSides(): Promise<void> {
   tendency("and two of them come at you from two sides, not shoulder to shoulder",
     middle >= 1.0,
     `${deg(middle)} apart round you, at the median`);
+}
+
+/**
+ * Sides (see `Faction`): the greenskins -- orcs, goblins and the ogre -- and
+ * the kobolds, each against the other and both against you. Each goes for
+ * whichever of another side it sees first, and never for its own, and turns
+ * on whatever lands a blow on it (see `Ai.choose`, `Ai.struckBy`).
+ *
+ * Two kobolds and two greenskins, an orc and a goblin, let loose on each
+ * other out in the hall's east half, with you at the far end of the entrance,
+ * further off than any of them notices anything: they fight each other, and
+ * nobody comes for you. Then an orc in front of you, and a kobold behind it:
+ * each goes for the nearest thing it would fight -- the orc for you, the
+ * kobold for the orc -- and the orc, hacked at from behind, turns round.
+ */
+async function factionsGoForEachOther(): Promise<void> {
+  console.log("\nfactions: greenskins and kobolds, against each other and against you");
+  const put = (species: Species, x: number, z: number, facing: number, name: string): Occupant =>
+    ({ species, room: "pen", at: new THREE.Vector3(x, 0, z), facing, name });
+  // Facing east, and facing west: forward is -Z at yaw zero, and +X is right.
+  const eastward = -Math.PI / 2;
+  const westward = Math.PI / 2;
+  const kind = (c: Combatant) => c.fighter.side.team;
+
+  const brawl = await buildRoster(new THREE.Vector3(4.5, HOME.y, 21), [
+    put(KOBOLD, 6.5, 4.9, eastward, "the kobold"),
+    put(KOBOLD, 6.5, 6.1, eastward, "the second kobold"),
+    put(ORC, 11.5, 4.8, westward, "the orc"),
+    put(GOBLIN, 11.5, 6.2, westward, "the goblin"),
+  ]);
+  const seconds = 20;
+  const wentFor = brawl.foes.map(() => new Set<Combatant>());
+  for (let i = 0; i < 60 * seconds; i++) {
+    brawl.step(1);
+    brawl.foes.forEach((f, k) => {
+      const them = f.ai.fighting;
+      if (them !== null && f.ai.outlook === "fighting") wentFor[k].add(them);
+    });
+  }
+  const own = brawl.foes.flatMap((f, k) =>
+    [...wentFor[k]].filter((c) => c !== brawl.you && kind(c) === kind(f.combatant))
+      .map((c) => `${f.combatant.name} went for ${c.name}`));
+  const each = brawl.foes.every((f, k) =>
+    [...wentFor[k]].some((c) => c !== brawl.you && kind(c) !== kind(f.combatant)));
+  const dead = brawl.foes.filter((f) => f.combatant.dead).map((f) => f.combatant.name);
+  check("kobolds and greenskins go for each other, and not one for its own",
+    each && own.length === 0,
+    own.length > 0 ? own.join("; ")
+      : brawl.foes.map((f, k) => `${f.combatant.name}: ${[...wentFor[k]].map((c) => c.name).join(", ")}`)
+        .join("; "));
+  check("and nobody comes for you, further off than they notice anything",
+    wentFor.every((w) => !w.has(brawl.you)) && brawl.cutsOnYou === 0,
+    `${brawl.cutsOnYou} blows on you`);
+  tendency("they cut each other",
+    brawl.cutsAcross >= 1,
+    `${brawl.cutsAcross} cuts across the sides in ${seconds}s, ` +
+    `${brawl.cutsAmongThem} among friends; ${dead.length > 0 ? `${dead.join(" and ")} dead` : "nobody dead"}`);
+
+  // An orc in front of you and a kobold behind it.
+  const you = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const three = await buildRoster(you, [
+    put(ORC, 10.5, 5.5, westward, "the orc"),
+    put(KOBOLD, 14, 5.5, westward, "the kobold"),
+  ]);
+  three.you.fighter.yaw = eastward;
+  const [orc, kobold] = three.foes;
+  let chose = -1;
+  for (let i = 0; i < 60 * 3 && chose < 0; i++) {
+    three.step(1);
+    if (orc.ai.outlook === "fighting" && kobold.ai.outlook === "fighting") chose = i;
+  }
+  check("each goes for the nearest thing it would fight: the orc for you, the kobold for the orc",
+    chose >= 0 && orc.ai.fighting === three.you && kobold.ai.fighting === orc.combatant,
+    `after ${(chose / 60).toFixed(1)}s the orc is after ${orc.ai.fighting?.name ?? "nobody"}, ` +
+    `the kobold after ${kobold.ai.fighting?.name ?? "nobody"}`);
+  // Come to its elbow, it is a good deal nearer than you are, and once it
+  // lands a blow it is the one that did: either way the orc turns round.
+  let turned = -1;
+  let near = Infinity;
+  for (let i = 0; i < 60 * 15 && turned < 0; i++) {
+    three.step(1);
+    if (orc.ai.fighting === kobold.combatant) turned = i;
+    const o = orc.combatant.position(new THREE.Vector3());
+    const k = kobold.combatant.position(new THREE.Vector3());
+    near = Math.min(near, Math.hypot(o.x - k.x, o.z - k.z));
+  }
+  const hurt = orc.combatant.maxHealth - orc.combatant.health;
+  check("and the orc, the kobold at its back, turns round on it",
+    turned >= 0,
+    turned < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} after 15s, the kobold ` +
+      `as near as ${near.toFixed(2)} m`
+      : `after ${(turned / 60).toFixed(1)}s, the kobold ${near.toFixed(2)} m off at the nearest ` +
+        `and ${hurt > 0 ? `${hurt.toFixed(1)} health off it` : "not a blow landed"}`);
+
+  // Busy with the kobold, and you land a blow on it -- as the game reports
+  // yours: the harness's still sword swings at nothing. Once it has been on
+  // the kobold long enough to have got over whatever blow of the kobold's
+  // turned it round (see GRUDGE), it turns on you as soon as it is free to,
+  // not in the middle of a swing at the kobold; and it stays on you, with the
+  // kobold still at its elbow, for a second and a half at least.
+  three.step(Math.ceil(60 * GRUDGE) + 1);
+  orc.ai.struckBy(three.you);
+  // And the kobold's blows go on landing.
+  const midSwing = orc.ai.committed !== null;
+  let back = -1;
+  let held = 0;
+  for (let i = 0; back < 0 ? i < 60 * 3 : i - back < 90; i++) {
+    three.step(1);
+    if (back < 0 && orc.ai.fighting === three.you) back = i;
+    if (back >= 0 && orc.ai.fighting === three.you) held++;
+  }
+  check("and turns on you when you land a blow on it, once it has finished any swing, and stays on you",
+    turned >= 0 && back >= 0 && held >= 90,
+    back < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} 3s later`
+      : `${(back / 60).toFixed(2)}s later${midSwing ? ", having finished the swing it was in" : ""}, ` +
+        `and on you for ${(held / 60).toFixed(2)}s of the next 1.5`);
 }
 
 async function severingBleeds(): Promise<void> {
@@ -7088,6 +7217,7 @@ const GROUPS: (() => Promise<void>)[] = [
   anOpponentLooksWhereItLastSawYou,
   thePenOpensOnTwoOrcs,
   friendsComeAtYouFromTwoSides,
+  factionsGoForEachOther,
   severingBleeds,
 
   theArmKeepsOutOfItsOwnChest,

@@ -1582,7 +1582,28 @@ So it is rare, and it happens: two orcs, or three goblins, that fight you for
 a while cut each other now and then. And a friend in the way is a swing that
 is not thrown: put one of them between you and the other.
 
-## Seventy-six things the physics taught us
+### Sides
+
+Everything in the rooms is on a side (`Faction`, in
+[`species.ts`](src/game/species.ts)): the orcs, the goblins and the ogre are
+greenskins, and the kobolds are on their own, against the greenskins as much as
+against you. Each goes for whichever of another side it sees first, you or one
+of them, and then:
+
+- **It keeps on whoever it is fighting** while it has them in sight, unless
+  something else of another side comes a good deal nearer — half the distance
+  — when it turns on that instead.
+- **It turns on whoever lands a blow on it**, as soon as it has finished the
+  swing it is in, and stays on them for three seconds whatever else lands on
+  it. Cut an orc that is busy with a kobold and you have its attention.
+- **Having killed whatever it was fighting**, with nothing else in sight, it
+  goes home.
+
+Let the kobolds out while the orcs are loose in the hall and they go for each
+other. The fight panel says whom one is fighting when it is not you. Fish
+people and wildlife, when they come, are a side each.
+
+## Seventy-seven things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2352,6 +2373,14 @@ seconds pulling at it, and its friend, fighting you alone, made the pair look
 shoulder to shoulder in two runs of forty. The fights with friends in them are
 out in the middle of the floor.
 
+**Turning on whoever hit it last fought nobody.** An orc with you on one side
+and a kobold on the other turned on each blow as it landed, and spent the
+fight turning round. It stays on whoever turned it round for three seconds
+now, whatever else lands on it. And a blow from whoever it is fighting already
+changes nothing: the kobold's next blow, landing while the orc finished a
+swing at it, used to cancel the turn round to you that your blow had asked
+for.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -2434,6 +2463,9 @@ Some things look like bugs and are not:
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **Kobolds and greenskins fight each other.** Each goes for whichever of
+  another side it sees first, and you are one more of those (see
+  [sides](#sides)).
 - **An opponent that loses you goes to look, then goes home.** It walks to
   where it last saw you, a little further the way you were going, and looks
   round. It does not know where you went, only where you were. If it finds
@@ -2602,7 +2634,7 @@ src/
                      bites -- or, for a club, how far it comes back off you --
                      and inertia
     species.ts       the bestiary — a size, a weapon, the shapes of swing it
-                     knows, and what it looks like
+                     knows, what it looks like, and whose side it is on
     look.ts          faces, clothes, harness, helm, tail and claws: what a
                      creature wears over its shells, and the woven, grained,
                      mottled and scaled surfaces they are made of
