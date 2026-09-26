@@ -3146,7 +3146,10 @@ let blowClock = 1e6;
  * A blow with real weight behind it -- your own sword and arm, as the solver
  * has them -- driving along -Z into a fighter's chest collider at a given
  * fraction of its height. On the flat unless a test says otherwise, so it
- * pushes without cutting: what these measure is the push.
+ * pushes without cutting: what these measure is the push. The speeds are a
+ * blade's about its centre of mass, as the game measures them (see
+ * `Arm.velocityAt`): two thirds of the 6 to 12 m/s these were written at,
+ * when it was measured about the grip.
  */
 function blowOn(rig: Rig, target: Combatant, closing: number, height: number,
   over: Partial<Impact> = {}): Impact {
@@ -3187,7 +3190,7 @@ async function oneBlowThreeBodies(): Promise<void> {
     const rig = await buildRig({}, species, foeSpawn(species));
     rig.hold(60);
     const start = rig.foe.position(new THREE.Vector3());
-    rig.foe.receive(blowOn(rig, rig.foe, 8, 0.75));
+    rig.foe.receive(blowOn(rig, rig.foe, 5.3, 0.75));
     const { effect, speed, mass } = rig.foe.lastBlow!;
     let moved = 0;
     let tilt = 0;
@@ -3230,7 +3233,7 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
   rig.fight(20);
   const standing = rig.foe.position(new THREE.Vector3()).y;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   const head = rig.foe.fighter.parts.find((p) => p.name === "head")!.body!;
   let tilt = 0;
@@ -3315,7 +3318,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
     return legParts.map((l) => l.mesh.getWorldPosition(new THREE.Vector3()));
   };
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   let limp = true;
   let simulated = true;
@@ -3367,14 +3370,14 @@ async function aKnockdownGoesLimp(): Promise<void> {
 
   // Floored again halfway up: limp again, from however far up it had got.
   rig.hold(30);
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   let rising = false;
   for (let i = 0; i < 60 * 4 && !rising; i++) {
     rig.hold(1);
     rising = f.down && !f.limp;
   }
   rig.hold(10);
-  rig.foe.receive(blowOn(rig, rig.foe, 12, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 8, 0.8));
   const again = rig.foe.lastBlow!.effect === "down" && f.limp;
   for (let i = 0; i < 60 * 5 && f.down; i++) rig.hold(1);
   rig.hold(60);
@@ -3384,7 +3387,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
       + `down ${f.down}, ${census()}, tilt ${tiltOf(f.body).toFixed(1)}deg`);
 
   // And killed on the floor: it stays down, and a reset still takes it all away.
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   rig.hold(20);
   const torso = f.collider.handle;
   for (let i = 0; i < 60 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
@@ -3414,7 +3417,7 @@ async function aStaggerTakesTheSwingOffIt(): Promise<void> {
   rig.fight(2);
   const winding = rig.ai.intent === "windup" && rig.ai.committed !== null;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 6, 0.6));
+  rig.foe.receive(blowOn(rig, rig.foe, 4, 0.6));
   const effect = rig.foe.lastBlow!.effect;
   rig.fight(1);
   const after = { intent: rig.ai.intent, committed: rig.ai.committed };
@@ -3444,10 +3447,10 @@ async function realBlowsAreWeighed(): Promise<void> {
     });
     // Forty seconds of it, however many lives that takes: the AI makes its
     // swings up at random, and an orc that happens to take your head in the
-    // first few blows would leave too few to count. Eighty for the orc: with
-    // its axe's speed taken about its centre of mass it rocks you about four
-    // times in forty seconds, not seven, and on one seed in twenty it never
-    // did.
+    // first few blows would leave too few to count. Eighty for the orc: its
+    // axe rocks you about seven times in forty seconds, but that is a count
+    // of what one random fight throws at you, and forty seconds of it has
+    // given one.
     const seconds = species === ORC ? 80 : 40;
     for (let i = 0; i < 60 * seconds; i++) {
       rig.fight(1);
@@ -3551,7 +3554,7 @@ async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   let floored = 0;
   let finite = true;
   for (let round = 0; round < 3; round++) {
-    rig.foe.receive(blowOn(rig, rig.foe, 11, 0.8));
+    rig.foe.receive(blowOn(rig, rig.foe, 7.3, 0.8));
     if (rig.foe.fighter.down) floored++;
     for (let i = 0; i < 60 * 4 && rig.foe.fighter.down; i++) {
       rig.hold(1);
@@ -3580,7 +3583,7 @@ async function oneSwingIsOneBlow(): Promise<void> {
   const rig = await buildRig({}, SWORDSMAN, foeSpawn(SWORDSMAN));
   rig.hold(60);
   const offArm = rig.foe.fighter.parts.find((p) => p.name === "offShoulder")!;
-  const first = blowOn(rig, rig.foe, 12, 0.6);
+  const first = blowOn(rig, rig.foe, 8, 0.6);
   rig.foe.receive(first);
   const once = rig.foe.fighter.knock.length();
   // The same swing, a tenth of a second on, through the arm as well.

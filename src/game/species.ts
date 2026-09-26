@@ -798,10 +798,11 @@ export const OGRE: Species = {
     leather: 0x6a5238, belly: 0.95,
   },
   power: sizedPower(OGRE_BUILD),
-  // A quarter of itself behind the club. A tenth lifted you as high when the
-  // club's speed was measured about its grip, which made it half again as
-  // fast as it goes (see `Arm.velocityAt`).
-  heave: 0.25,
+  // A tenth of itself behind the club, which lifts you as high as it ever
+  // did now that a blow is judged at `REACTION` times its speed (see
+  // balance.ts). A quarter made up for that while it was not, and came down
+  // on you two fifths more often than the ogre was made to.
+  heave: 0.1,
   aggression: 1.2,
   // It lumbers: a long plant between steps, little waiting once it is close,
   // nothing it gets out of the way of, no quick steps and no hops. It will

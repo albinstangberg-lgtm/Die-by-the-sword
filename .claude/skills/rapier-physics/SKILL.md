@@ -182,9 +182,10 @@ brackets.
     weapon's origin is its grip and its centre of mass is 0.54 m up a sword,
     0.79 m up an axe, so measuring from the origin once added about 11 m/s at
     20 rad/s to every blow. Every speed threshold in the game (cut thresholds,
-    `DAMAGE_PER_MS`, balance, clash knocks, how the AI reads a swing, the
-    ogre's `heave`) is tuned against the honest speeds; don't reintroduce the
-    old measurement.
+    `DAMAGE_PER_MS`, clash knocks, how the AI reads a swing) is tuned against
+    the honest speeds, and the balance model judges a blow at `REACTION`
+    times its speed (`balance.ts`), the units its footing, balance and the
+    ogre's `heave` were set in; don't reintroduce the old measurement.
     [A body's velocity is its centre of mass's]
 
 ## Collision groups

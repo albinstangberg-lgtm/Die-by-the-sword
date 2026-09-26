@@ -1082,7 +1082,7 @@ that short and landed too slowly to bite. A wiry thing that is strong for its
 size is both the obvious answer and the true one.
 
 And one creature declares `heave`: how much of its own body it throws in
-behind a blow after its arm. Only the ogre does, a quarter of itself.
+behind a blow after its arm. Only the ogre does, a tenth of itself.
 
 ### What they look like
 
@@ -2276,13 +2276,17 @@ thousand looks at a blade coming: each weapon's threshold and bite, so that as
 many of its blows get past the one and it does as much in all (a spear, whose
 point barely turns in a thrust, lost least, and now draws blood more often and
 less each time); when a weapon is knocked aside, and how hard; when an opponent
-reads a swing, stops one or leads it; and how much of itself the ogre puts
-behind its club, a quarter where it was a tenth, so that its upswing still
-lifts you as high. Balance came only part of the way back. Planted feet soak up
-the same speed of every blow, a bigger share of a slower one, and a Froude
-number any lower than 0.26, two thirds of what it was, has the harness's
-middling blow floor a goblin it should only stagger: an orc's axe rocks you
-about half as often as it did. A throw had it right all along: it leaves at the
+reads a swing, stops one or leads it. Balance was put back the way damage was,
+with one number: a body takes a blow at one and a half times the speed its
+momentum hands it (`REACTION` in [`balance.ts`](src/game/balance.ts)), the
+speed everything in the balance model was set against — what planted feet soak
+up, what budges a body, how far a shove carries it, when it staggers or goes
+down, and what a club throws it up with. Fitting the Froude number alone, as
+was tried first, left the feet soaking up the same speed of every blow, a
+bigger share of a slower one: an orc's axe rocked you about half as often as
+it had, a swordsman's hardly ever, and the ogre, given a quarter of itself
+behind its club where it had a tenth so that its upswing still lifted you as
+high, put you down two fifths more often. A throw had it right all along: it leaves at the
 palm's speed about the forearm's centre of mass. The blade speeds quoted
 elsewhere in this document were measured about the grip, and most are half as
 high again as the blade was really going.
