@@ -9,8 +9,8 @@ lag, its refusal to go where you asked — comes out of the physics.
 good. Stage 3 gave the swing consequences. Stage 4 put someone in the room who
 swings back. Stage 5 gave you something to fight that is not a copy of you: an
 orc with an axe and a goblin with a spear, both bound by the same physics.
-Stage 6 stops them sharing a room — there are three now, with doors between
-them — and makes a cut look like one. Since then the body has learned to get
+Stage 6 stops them sharing a room — there are six rooms now, and gates
+between them — and makes a cut look like one. Since then the body has learned to get
 out of its own arm's way: the chest turns ahead of a swing, the shoulder slides
 round the ribs, the head watches the blade, the feet step under a turn, the arm
 no longer goes straight through the chest to get across it, the forearm twists
@@ -51,19 +51,21 @@ its weapon goes back, straight in or on a slant round your side, goes straight
 back out after swinging, and gets out of the way of your swing with one. The
 goblin is never still; the orc hardly ever bothers.
 
-And at the far end of the orc's hall there is a gate, with a lever on the wall
-beside it. F goes to the lever as it goes to anything, and the hand takes hold
+And everything that wants to kill you is behind a gate now. The rooms open off
+one hall, and each has a gate in the wall between, with a lever on the hall's
+side of it. F goes to a lever as it goes to anything, and the hand takes hold
 of the handle and pulls it down — jointed to the bar, the arm's own clamped
 drive against the lever's spring — until it catches. The gate grinds up into
-the gatehouse over it, and the two orcs in the pen behind it hear it go and
-come out to see why.
+the gatehouse over it, and whatever is behind it hears it go and comes out to
+see why: two orcs from the pen, two kobolds from the warren, three goblins
+from the cell, or the ogre from the den. Which, and when, is up to you (see
+[The testing area](#the-testing-area)). The hall between them has the dummy
+in it, and things to jump, vault and climb.
 
-And there are two more things to fight, with no room of their own yet: a
-kobold, a little over a metre of scaly, skittish thing with a hatchet, and an
-ogre, two and a half metres of it with an iron-bound oak club that cuts
-nothing at all. It hits you and you go flying. Put `?spawn=kobold,ogre` on the
-address, or either one alone, and they wait for you at the north end of the
-training room (see [The bestiary](#the-bestiary)). Everyone has a face now, too, and something
+The kobold is a little over a metre of scaly, skittish thing with a hatchet,
+and the ogre is two and a half metres of it with an iron-bound oak club that
+cuts nothing at all. It hits you and you go flying (see
+[The bestiary](#the-bestiary)). Everyone has a face now, too, and something
 on: your tunic, bracers and boots, the orc's harness and tusks, the goblin's
 rags, the kobold's horns and tail, the ogre's hide — none of it ever hit by
 anything, and all of it fading with the body when the camera is backed into a
@@ -97,7 +99,7 @@ npm run build    # production bundle
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand — or, holding an opponent's weapon, take it up and fight with it, and put it up again |
 | **Z** | shield on your back, and back on your arm |
-| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon — or pull the lever beside the pen's gate; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
+| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon — or pull the lever beside a gate; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
 | **G** | let go of what is in your hand — in the middle of a swing, throw it |
 | **H** | drink a potion — takes a free hand |
 | **B** | open and close the inventory |
@@ -609,9 +611,9 @@ there, it takes six to nine blows a bout; in the harness a dozen level
 forehands at a chest behind it do a fiftieth of the damage they do without it.
 Where it goes is up to you.
 
-There are two. One hangs on a rack against the training room's east wall: take
-it down to practise with and hang it back to fight without, as often as you
-like. The other lies in the far corner of the hall, past the orc.
+There are two. One hangs on a rack against the entrance's east wall: take it
+down to practise with and hang it back to fight without, as often as you like.
+The other lies in the far corner of the pen, past its two orcs.
 
 ### The shield on your back
 
@@ -709,8 +711,8 @@ Potions go in your inventory. **H** drinks one, and that takes a free hand:
 the sword hand with the sword away, or the other hand with no shield on it —
 on your back will do. A potion gives back two fifths of your health over two
 seconds rather than at once, so drinking in the middle of a fight is a bet on
-those two seconds. There is one by the rack, two in the hall — one behind the
-block — and one at the back of the cell.
+those two seconds. There is one by the rack, and one at the back of the
+warren, the cell and the den.
 
 ### What you cut off, and their weapons
 
@@ -826,7 +828,7 @@ of a fight costs what it costs.
 
 ### Pulling the lever
 
-The lever beside the pen's gate is taken hold of rather than taken. **F** goes
+The lever beside a gate is taken hold of rather than taken. **F** goes
 to it as it goes to anything — the body walks over and turns square to the
 wall, and the hand goes up for the handle under the arm's own drive — and once
 the hand is within three centimetres of it, it takes hold: a joint between the
@@ -870,8 +872,8 @@ the edge on the way up: the other hand always, the sword hand too if the sword
 is on your back. A hand with a sword in it lifts the sword up and out of the
 way instead, because held at the guard, a body driven up a face swung the blade
 into the edge. A wall is no ledge, and a pillar is no ledge: there is nothing
-on top of either to stand on. The training room has a ledge in its south-west
-corner, a metre and a half up, and a crate against it to go up by in two.
+on top of either to stand on. The hall has a ledge in its south-west corner,
+a metre and a half up, and a crate against it to go up by in two.
 
 And it goes up the way a body does. It takes hold of the edge and hangs off
 it with its feet still on the face, pulls itself up until its hips are at the
@@ -892,9 +894,20 @@ within a stride, a top between a knee and a chest when looked down on, a far
 side within a pace and a half, and floor to land on with nothing overhead. A
 wall fails the top, a pillar fails it too, and with nothing to vault the key
 does nothing. The body is driven up, over and down by its velocity, a hand
-planted on the top on the way. The hall's block is vaultable, and the training
-room has a low wall along its west side to practise on — **Space** with **W**
-there climbs onto it instead.
+planted on the top on the way. The hall has a low wall and a block in a row
+across its east half to practise on — **Space** with **W** at either climbs
+onto it instead — and a rail at the end of the row, lower than a knee, that
+only a jump gets you over.
+
+### Jumping from stone to stone
+
+Along the hall's south wall, behind the low wall, four stones stand in a row a
+stride apart, 45 centimetres high: over a knee, so a step does not get you
+onto one, and under a knee, so **Space** jumps rather than climbing. Walk off
+one and you are on the floor between it and the next. A running jump carries
+you from each to the next — the harness does it, from the floor to the first
+and from the first to the second, and walks into both and the rail as well to
+see that walking does not.
 
 The body runs in level and springs from just short of the near side, rather
 than rising off its first step. The other hand goes down flat on the top as it
@@ -908,48 +921,54 @@ the top and turned, and the planted hand on it.
 
 ## The testing area
 
-Four rooms, and the point of them is that they are not one room.
+A hall, and four rooms off it behind gates.
 
 ```
-                              ┌───────────────────────────┐
-  ┌───────────────┐           │          THE HALL         │           ┌───────────────┐
-  │    THE PEN    │   gate    │           an orc          │   door    │   THE CELL    │
-  │   two orcs,   ├───────────┤  a low beam, a block and  ├───────────┤   a goblin,   │
-  │  and nothing  │   lever   │        a thin post        │           │  and nothing  │
-  │     else      │           │                           │           │     else      │
-  └───────────────┘           └────────────┐   ┌──────────┘           └───────────────┘
-                                           │   │ door
-                              ┌────────────┘   └──────────┐
-                              │     THE TRAINING ROOM     │
-                              │   the practice dummy and  │
-                              │        four pillars       │
-                              │                           │
-                              └───────────────────────────┘
-                                     you start here
+                   ┌───────────────────┬───────────────────┐
+                   │    THE WARREN     │     THE CELL      │
+                   │    two kobolds    │   three goblins   │
+                   │                   │                   │
+┌──────────────────┼───────┤gate├──────┴──────┤gate├───────┼──────────────────┐
+│     THE PEN      │               THE HALL                │     THE DEN      │
+│     two orcs     ┃ gate                             gate ┃     the ogre     │
+│                  ┃  the dummy and four pillars, a ledge  ┃                  │
+│                  │  and a crate; a rail, a low wall, a   │                  │
+│                  │    block, and stones to jump along    │                  │
+│                  │                                       │                  │
+└──────────────────┴────────────┐              ┌───────────┴──────────────────┘
+                                │              │
+                                │ THE ENTRANCE │
+                                │              │
+                                │you start here│
+                                └──────────────┘
 ```
 
-You start in the training room with the practice dummy and four pillars — and
-a shield on a rack by the east wall, a potion beside it, and along the west
-side a low wall to vault and a ledge to climb — and nothing else in it: a cut
-you land there is a cut you can read. North through
-the door is the hall, which holds the orc and the scenery a big swing gets
-caught on. East out of the hall is the cell, which holds the goblin and
-nothing at all, because a spear's reach is the whole argument and a cluttered
-room would answer it for you.
+You start down the entrance, a passage running south out of the hall, with a
+rack and its shield against its east wall and a potion beside it. It opens
+into the hall across its whole width. The hall's west half is where the
+training room was, walls and all: the practice dummy and four pillars round
+it, and in the south-west corner a stone ledge a metre and a half up, with a
+crate against it to go up by in two. A cut you land there is a cut you can
+read. Its east half is for your feet: a rail to jump, a low wall and a block
+to vault in a row across it, and behind them, along the south wall, four
+stepping stones a stride apart to jump from one to the next. Up over the
+north-west corner a timber beam waits for a big overhead, and a thin post
+stands by the north-east corner to be cut.
 
-West out of the hall, across it from the cell's door and on the same line, is
-the pen, and the pen has a gate. Two orcs wait in it — the second orc and the
-third, as the fight panel has them, told apart by what they wear — and nothing
-else, because what two of them at once is like is the whole of it. You open
-the gate yourself, with the lever on the hall's side of the wall a pace north
-of it (see [Pulling the lever](#pulling-the-lever)), when you want to find
-out. Shut, the gate is a wall: timber and iron that stops a blade, a body and
-a line of sight the way stone does, so the orcs behind it neither see you nor
-come for you, and you do not see them. Opened, it is winched up in a little
-over three seconds into the gatehouse built over the doorway to take it — the
+Off the hall, behind gates, is everything that wants to kill you: two orcs in
+the pen to the west, two kobolds in the warren and three goblins in the cell
+to the north, and the ogre in the den to the east — and nothing else in any
+of them, because what is in them is the whole of it. Every gate has a lever
+on the hall's side of its wall, a pace along from the doorway, and nothing
+comes out until you pull it (see [Pulling the lever](#pulling-the-lever)).
+Shut, a gate is a wall: timber and iron that stops a blade, a body and a line
+of sight the way stone does, so what is behind it neither sees you nor comes
+for you, and you do not see it. Opened, it is winched up in a little over
+three seconds into the gatehouse built over the doorway to take it — the
 walls have no roof, and a gate wound up out of one would stand in the air —
-and the doorway is a doorway like the others. It comes down again only with a
-reset.
+and the doorway is a doorway like any other. It comes down again only with a
+reset. Which room you open, and when, and whether you open another before you
+have finished with the first, is yours.
 
 Walls change what an opponent can know, and that turns out to be the whole of
 the layout:
@@ -966,9 +985,9 @@ Sight alone is not enough to start a fight, and a door is why. A door is a hole
 you can see a long way through, so a bare line-of-sight test had the orc set off
 across its hall the moment you lined up with the doorway eighteen metres away
 in another room. **Notice is close range** — nine metres — and once it has
-noticed you, sight alone keeps it coming. So you can stand in the training room
-and look through the door at an orc that has not seen you yet, and walk through
-that door and find that it has.
+noticed you, sight alone keeps it coming. So you can stand in the hall and look
+through an open gateway at a goblin that has not seen you yet, and walk through
+it and find that it has.
 
 Losing sight does not stop a fight dead either, but it knows no more of you
 than it saw. For four tenths of a second after the line breaks — about one
@@ -986,19 +1005,21 @@ orc's hall and along the other side of the wall, and it walked most of the way
 across its hall toward you, into the stone, and gave up there — wherever there
 was — and waited against the wall.
 
-**The gate going up is heard.** Standing at the lever you are a pace north of
-the doorway, where nobody in the pen can see you through it, so sight alone
-would leave the two orcs waiting at their posts with the gate wide open until
-you walked in front of it. But a gate grinding up is a noise, and anything
-within ten metres of it that is not already after you goes to see: to the
-gateway, on out the far side of it from where it stood, and a look round
+**A gate going up is heard.** Standing at its lever you are a pace along the
+wall from the doorway, where nothing behind it can see you through it, so
+sight alone would leave them waiting at their posts with the gate wide open
+until you walked in front of it. But a gate grinding up is a noise, and
+anything within ten metres of it that is not already after you goes to see: to
+the gateway, on out the far side of it from where it stood, and a look round
 from there — the same search it makes where it last saw you. It learns nothing
 of you by the noise. The ray it always casts decides whether it finds you,
 and from the doorway you are three paces off and in plain sight; if you have
 gone, it gives up and walks home, and waits there with the gate open behind it.
 The fight panel says `looking` while it is looking, and `fighting` once it has
-seen you. The goblin is twenty metres off, through the stone, and hears
-nothing.
+seen you. It is heard in the room behind the gate and out in the hall, and not
+through anybody else's walls: the nearest goblin in the cell is under ten
+metres from the warren's doorway, and it hears nothing when the warren's gate
+goes up.
 
 ## The bestiary
 
@@ -1045,11 +1066,8 @@ hops clear of most of what comes at it, and lets go of its own swing when you
 cut it — and by going for your legs. An ogre carries 387, with joints only
 two and a half times as hard as yours, so its arm still comes off; but nothing
 here puts it on the floor, and its club puts you there (see
-[Sent flying](#sent-flying)). Neither has a room yet. `?spawn=kobold`,
-`?spawn=ogre` or `?spawn=kobold,ogre` on the address puts them at the north end
-of the training room, facing you; there are six fighters' worth of collision
-slots and the rooms already hold five, so while two of them are there the pen
-stands empty.
+[Sent flying](#sent-flying)). Two kobolds wait in the warren, and the ogre
+on its own in the den (see [The testing area](#the-testing-area)).
 
 The one number a species declares that its size does not explain is `grit`, a
 strength multiplier, and the two smallest creatures need it. A goblin's spear
@@ -1536,7 +1554,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Seventy-one things the physics taught us
+## Seventy-two things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2196,6 +2214,18 @@ every hull bumps into every other, whoever's side it is on, and nothing meets
 its own colliders anyway. The hulls share one bit now, and at two bits a
 fighter there is room for six.
 
+**The ninth fighter needed fewer bits each, not more.** Two bits a fighter
+gave out at six, and the rooms off the hall hold eight things that want to
+kill you. But "everyone's but mine" never needed a bit of my own: it needs a
+set of bits that nobody else's set sits inside. Every fighter's body is three
+of six body bits now, and its weapon three of six weapon bits — there are
+twenty ways to pick three of six, and no three sits inside another — so a
+filter of the three it has not got meets every other three and never its own.
+Which side a weapon cuts comes out of the same bits: yours all have the first
+bit and theirs never do, so every one of theirs has a bit that nobody on your
+side has, and a filter of the bits your side lacks catches all of their side
+and none of yours. Fifteen bits hold eleven fighters, one against ten.
+
 **A vault that rises from its first step never gets a hand on the top.** The
 first vault drove the body along one curve from where it stood, up, over and
 down, so it was climbing from the moment it set off — and the hand that was to
@@ -2456,12 +2486,12 @@ Some things look like bugs and are not:
 
 ```
 src/
-  main.ts            wiring, camera, who is in which room, and who comes when
-                     asked for (`?spawn=`)
+  main.ts            wiring, camera, the gates' noise, and what is shown
   tuning.ts          every constant that shapes the feel
   core/
     loop.ts          fixed 60Hz accumulator
-    physics.ts       Rapier world, and one collision slot per fighter
+    physics.ts       Rapier world, and three bits of six for each fighter's
+                     body and weapon
     renderer.ts      three.js scene
     interpolate.ts   render interpolation between physics states
   input/input.ts     pointer lock, accumulated deltas
@@ -2503,12 +2533,13 @@ src/
                      or taking hold of a lever and pulling it down
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
-    arena.ts         four rooms built to be hit, the doors between them, a
-                     ledge to climb, the pen's gate and the gatehouse over it,
-                     and where the things lying about go
-    gate.ts          the pen's gate, winched up into its gatehouse, and the
-                     lever on the wall beside it: a sprung bar on a pin that a
-                     hand takes hold of and pulls down until it catches
+    arena.ts         a hall and the entrance to it, four rooms off it behind
+                     gates, things to climb, vault and jump, the gatehouses,
+                     where everything waits, and where the things lying about go
+    roster.ts        who waits behind which gate, and who hears one go up
+    gate.ts          a gate, winched up into its gatehouse, and the lever on
+                     the wall beside it: a sprung bar on a pin that a hand
+                     takes hold of and pulls down until it catches
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing
                      more; and what it does about a noise it hears
@@ -2548,11 +2579,14 @@ swing up through you until it has floored you six times or most of a minute
 has gone and checks you got up whole, and fades every creature to check
 nothing it wears is left hanging in front of the camera.
 
-It also holds the layout to its claims: that each subject is in its own room,
-that a wall stops a line of sight and a doorway does not, that an opponent
-which cannot see you neither moves nor swings — and that walking into its room
-starts a fight; that the pen's gate, shut, stops a line of sight and the step
-probe as the walls do, and is a doorway once it is up. And it takes a joint apart to check that the cut reports two
+It also holds the layout to its claims: that each room holds what it should,
+behind a gate out of the hall with its lever on the hall's side; that a wall
+stops a line of sight and the entrance does not; that an opponent which cannot
+see you neither moves nor swings — and that walking into its room starts a
+fight; that every gate, shut, stops a line of sight and the step probe as the
+walls do, and is a doorway once it is up; and that the stones and the rail
+take a jump, and walking does not get you onto or over any of them. And it
+takes a joint apart to check that the cut reports two
 faces to bleed from, that both are attached to something that is placed every
 frame, and that the droplets fall, land and go.
 
@@ -2706,14 +2740,14 @@ arm never flailing; that the lever catches and stays down and the hand lets go
 of it, and the gate starts up about half a second later and is clear of its
 doorway in under four; that a lever that is down is not offered again; that a
 reset puts it up and shuts the gate; and that let go of halfway, it springs
-back up and nothing opens. That the game's five fit in the collision groups,
+back up and nothing opens. That the game's nine fit in the collision groups,
 every weapon reaching whoever it should and nobody else, and every hull still
-bumping into every other. And, with all five in one arena: that behind the
+bumping into every other. And, with all nine in one arena: that behind the
 shut gate the pen's two hold their posts, facing it, within noticing distance
 of you and unable to see you; that the gate going up is heard in the pen and
-not in the cell; that they come out through the gateway, find you, and swing,
-without a cut between them; and that with nobody to find, they look, give it
-up, and go home.
+behind no other gate; that they come out through the gateway, find you, and
+swing, without a cut between them; and that with nobody to find, they look,
+give it up, and go home.
 
 ## Stack
 
@@ -2725,9 +2759,7 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-A room each for the kobold and the ogre: there are collision slots for six
-fighters and the rooms hold five, so placing both means more slots or an
-empty pen. Rounds and a reason to be in the rooms. Friendly fire. A thrown
+Rounds and a reason to be in the rooms. Friendly fire. A thrown
 axe that cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually
