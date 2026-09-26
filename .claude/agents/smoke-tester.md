@@ -44,12 +44,20 @@ never edit anything in the repo.
    Compare against `git -C "$REPO" diff HEAD` to say which change most
    likely caused it. If you can't tell, say so. Don't guess.
 
+   The run is seeded (the seed is printed at the top of the log and on its
+   last line) and repeats exactly, so don't run the same snapshot again to see
+   whether a failure goes away. A few checks fail on some seeds and pass on
+   others: if a failure is a count or a rate just past its threshold in a
+   check that follows a fight, say it may be one of those. The main agent
+   decides whether to try other seeds (`SMOKE_SEED=<n>`) or HEAD on the same
+   seed.
+
 4. **Clean up:** `rm -rf "$SNAP"`.
 
 ## What to report (keep it short, since it goes back into the main agent's context)
 
 ```
-SMOKE: PASS | FAIL        (N/M checks, typecheck ok | K errors)
+SMOKE: PASS | FAIL        (N/M checks, seed S, typecheck ok | K errors)
 Snapshot: <HEAD sha> + <files changed vs HEAD>
 
 Failures (if any):

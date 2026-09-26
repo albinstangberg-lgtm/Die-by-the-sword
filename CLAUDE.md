@@ -5,6 +5,10 @@
 - `npm run typecheck`: fast (~3 s). Run it yourself after every change.
 - `npm run smoke`: headless physics harness (`tools/smoke.ts`), ~3.5 min.
   **Don't run it inline.** Hand it to the `smoke-tester` subagent (below).
+  It's seeded (`tools/dice.ts`): the same code gives the same result on every
+  run, so running it again won't turn a FAIL into a PASS.
+  `SMOKE_SEED=<n> npm run smoke` repeats a run from the seed its log prints,
+  or rolls other dice.
 
 ## Smoke tests run in the background
 

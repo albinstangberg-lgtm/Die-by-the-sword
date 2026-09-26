@@ -233,21 +233,31 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
    swordsman at `SPAWN`), drives it with `rig.step(n, keys)`, `rig.fight(n)`,
    `rig.hold(n)`, `rig.pin(at)` or `rig.place(at)`, and reports with
    `check(name, ok, detail)`, putting the measured numbers in `detail`. Then
-   call it from `run()`. Measure the thing itself: the README's five lessons
-   "about the harness rather than the game" are about checks that passed
-   because nothing happened, or because they leaned on a bug.
+   add it to `GROUPS`, just above `run()`. Measure the thing itself: the
+   README's five lessons "about the harness rather than the game" are about
+   checks that passed because nothing happened, or because they leaned on a
+   bug.
 5. Run `npm run typecheck` yourself. Run the harness (`npm run smoke`) the
    way CLAUDE.md says: through the `smoke-tester` agent, in the background.
    It runs the real modules against Rapier in Node for a few minutes, prints
    `passed/total checks passed`, and exits non-zero on any failure. It can't
-   run a single group; to iterate on one, comment out the other calls in
-   `run()`, and put them back before committing.
-6. The AI, the way a body falls when it dies and the spin of a severed dummy
-   limb all use unseeded `Math.random()`, and a physics check that follows a
-   fight starts from wherever the fight left things, so the same code can fail
-   different checks on different runs. Read the numbers in a failure's
-   detail, run it again, and compare with a run without your change before
-   deciding a failure is yours; don't loosen a threshold to get a pass.
+   run a single group from the command line; to iterate on one, comment out
+   the other entries in `GROUPS`, and put them back before committing. Each
+   group rolls its own dice, so on its own it gives exactly what it gives in
+   the full run.
+6. The harness's dice are loaded: `tools/dice.ts` replaces `Math.random` with
+   a seeded generator, so the same code gives the same result on every run,
+   and running it again tells you nothing new. The seed is printed at the top
+   of the log and on its last line, and `SMOKE_SEED=<n> npm run smoke` repeats
+   a run exactly, or rolls other dice. The AI, the way a body falls when it
+   dies and the spin of a severed dummy limb all roll them, and a physics
+   check that follows a fight starts from wherever the fight left things, so a
+   change that rolls differently, or moves anything a fight touches, deals the
+   rest of that group different dice, and a check that fails on some dice can
+   turn over without being broken. Read the numbers in a failure's detail, and
+   run the same seed without your change, and your change on a few other
+   seeds, before deciding a failure is yours; don't loosen a threshold to get
+   a pass.
 7. If the feel changed, say what to try in the browser (`npm run dev`). The
    harness measures; it can't feel.
 
