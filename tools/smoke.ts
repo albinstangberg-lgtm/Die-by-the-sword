@@ -6561,6 +6561,34 @@ async function theNewcomersCloseAndCut(): Promise<void> {
   }
 }
 
+async function everyLookFadesWithItsBody(): Promise<void> {
+  console.log("\nwhat a creature wears goes with it: the camera fades it out as one");
+  // The camera backed into a wall fades the figure out of its way, and what
+  // it wears -- a helm, a harness, a tail, a scabbard -- is drawn on top of
+  // the body. A material left out of the fade would leave a helmet hanging
+  // in front of the lens.
+  const missed: string[] = [];
+  let pieces = 0;
+  for (const species of Object.values(SPECIES) as Species[]) {
+    const rig = await buildRig({}, species, foeSpawn(species));
+    const f = rig.foe.fighter;
+    f.setFade(0.5);
+    const roots: THREE.Object3D[] = [f.mesh, ...f.parts.filter((p) => p.body).map((p) => p.mesh)];
+    for (const root of roots) {
+      root.traverse((o) => {
+        const mat = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+        if (!mat) return;
+        for (const m of Array.isArray(mat) ? mat : [mat]) {
+          pieces++;
+          if (Math.abs(m.opacity - 0.5) > 1e-6 && !missed.includes(species.key)) missed.push(species.key);
+        }
+      });
+    }
+  }
+  check("every piece of every creature fades with its body", missed.length === 0 && pieces > 200,
+    missed.length ? `left solid: ${missed.join(", ")}` : `${pieces} pieces across ${Object.keys(SPECIES).length} creatures, all at half`);
+}
+
 async function theNewKeysAreWhereTheySay(): Promise<void> {
   console.log("\nthe new keys are where the HUD says");
   check("C crouches", KEY_MAP.KeyC === "crouch", `C -> ${KEY_MAP.KeyC}`);
@@ -6713,6 +6741,7 @@ async function run(): Promise<void> {
   await theNewcomersScaleHonestly();
   await aClubSendsYouFlying();
   await theNewcomersCloseAndCut();
+  await everyLookFadesWithItsBody();
   await theNewKeysAreWhereTheySay();
 
   console.log(

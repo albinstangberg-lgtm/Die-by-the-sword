@@ -277,39 +277,63 @@ export const SWORD: Weapon = {
   build() {
     const g = new THREE.Group();
     const steel = STEEL();
+    steel.flatShading = true;
     const edge = EDGE();
 
-    const mid = SWORD_GRIP + SWORD_SPAN / 2;
+    // A blade of four faces meeting at a ridge down the middle and at the
+    // edges, tapering a little along its length and to a point over its last
+    // hand's breadth. The collider is the box the blade fits in: the point
+    // is inside it.
+    const tip = 0.14;
     const blade = new THREE.Mesh(
-      new THREE.BoxGeometry(SWORD_HALF_THICK * 2, SWORD_SPAN, SWORD_HALF_WIDTH * 2), steel,
-    );
-    blade.position.y = mid;
+      bladeGeometry(SWORD_SPAN, SWORD_HALF_WIDTH, SWORD_HALF_THICK, tip), steel);
+    blade.position.y = SWORD_GRIP;
     blade.castShadow = true;
     g.add(blade);
 
-    // Bright slivers on the two cutting edges. Purely visual, but they let you
-    // read the blade's roll at a glance -- which matters, because roll decides
-    // whether a hit cuts or slaps.
+    // Bright slivers on the two cutting edges, as far as the point. Purely
+    // visual, but they let you read the blade's roll at a glance -- which
+    // matters, because roll decides whether a hit cuts or slaps.
+    const run = SWORD_SPAN - tip;
     for (const sz of [-1, 1]) {
-      const e = new THREE.Mesh(
-        new THREE.BoxGeometry(SWORD_HALF_THICK * 2.1, SWORD_SPAN, 0.003), edge,
-      );
-      e.position.set(0, mid, sz * SWORD_HALF_WIDTH);
+      const e = new THREE.Mesh(new THREE.BoxGeometry(0.0022, run, 0.0035), edge);
+      e.position.set(0, SWORD_GRIP + run / 2, sz * SWORD_HALF_WIDTH * 0.95);
       g.add(e);
     }
 
+    // A crossguard with blocks on its ends, a grip bound with cord, and a
+    // wheel of a pommel.
     const brass = BRASS();
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.022, 0.19), brass);
+    const guard = new THREE.Mesh(new THREE.CapsuleGeometry(0.011, 0.17, 3, 8), brass);
+    guard.rotation.x = Math.PI / 2;
     guard.position.y = SWORD_GRIP;
     guard.castShadow = true;
     g.add(guard);
+    for (const sz of [-1, 1]) {
+      const end = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 6), brass);
+      end.position.set(0, SWORD_GRIP + 0.006, sz * 0.097);
+      g.add(end);
+    }
+    const langet = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.03, 0.034), brass);
+    langet.position.y = SWORD_GRIP + 0.012;
+    g.add(langet);
 
     const grip = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.017, 0.019, SWORD_GRIP, 10), LEATHER());
+      new THREE.CylinderGeometry(0.016, 0.018, SWORD_GRIP, 10), LEATHER());
     grip.position.y = SWORD_GRIP / 2;
     g.add(grip);
+    for (let k = 1; k <= 3; k++) {
+      const cord = new THREE.Mesh(new THREE.TorusGeometry(0.0175, 0.0028, 4, 12), LEATHER());
+      cord.rotation.x = Math.PI / 2;
+      cord.position.y = (SWORD_GRIP * k) / 4;
+      g.add(cord);
+    }
 
-    g.add(new THREE.Mesh(new THREE.SphereGeometry(0.026, 10, 8), brass));
+    const pommel = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.027, 0.02, 14), brass);
+    pommel.rotation.z = Math.PI / 2;
+    pommel.position.y = -0.012;
+    pommel.castShadow = true;
+    g.add(pommel);
 
     return g;
   },
@@ -383,18 +407,22 @@ export const AXE: Weapon = {
     haft.castShadow = true;
     g.add(haft);
 
-    const head = new THREE.Mesh(
-      new THREE.BoxGeometry(0.036, AXE_HEAD_LEN, AXE_EDGE_OUT), iron);
-    head.position.set(0, AXE_HAFT_END - AXE_HEAD_LEN * 0.1, AXE_EDGE_OUT / 2);
+    // A bearded head, flaring from the eye round the haft to its edge. The
+    // collider is the box it fits in.
+    const head = new THREE.Mesh(axeHead(AXE_HEAD_LEN, AXE_EDGE_OUT, 0.036, 0.3), iron);
+    head.position.set(0, AXE_HAFT_END - AXE_HEAD_LEN * 0.1, 0);
     head.castShadow = true;
     g.add(head);
 
-    // The bit: a thin bright wedge on the leading face, so which way the axe
-    // is facing is readable from across the room.
-    const bit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.012, AXE_HEAD_LEN * 1.18, 0.016), edge);
-    bit.position.set(0, AXE_HAFT_END - AXE_HEAD_LEN * 0.1, AXE_EDGE_OUT);
+    // The bit: a thin bright sliver along the edge, so which way the axe is
+    // facing is readable from across the room.
+    const bit = new THREE.Mesh(edgeStrip(AXE_HEAD_LEN * 1.3, 0.014), edge);
+    bit.position.set(0, AXE_HAFT_END - AXE_HEAD_LEN * 0.16, AXE_EDGE_OUT + 0.002);
     g.add(bit);
+    // Iron wrapped round the haft under the head.
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.05, 8), iron);
+    collar.position.y = AXE_HAFT_END - AXE_HEAD_LEN * 0.55;
+    g.add(collar);
 
     // A spike on the back, purely so the silhouette is not a rectangle.
     const spike = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.09, 6), iron);
@@ -708,6 +736,48 @@ function axeHead(len: number, out: number, thick: number, beard: number): THREE.
     const k = 1 - 0.75 * Math.min(1, Math.max(0, z / out));
     pos.setX(i, pos.getX(i) * k);
   }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * A blade: four faces meeting at a ridge down its middle and at its two
+ * edges, `len` long along +Y from the guard, `halfWidth` from the ridge to an
+ * edge and `halfThick` through at the ridge, narrowing a little along its
+ * length and then to a point over the last `tip` of it. Flat faces, so the
+ * light runs down the facets as it turns.
+ */
+function bladeGeometry(len: number, halfWidth: number, halfThick: number, tip: number): THREE.BufferGeometry {
+  const stations: number[] = [0, (len - tip) * 0.5, len - tip];
+  const n = 7;
+  for (let i = 1; i <= n; i++) stations.push(len - tip + (tip * i) / n);
+  const at = (y: number): [number, number] => {
+    if (y <= len - tip) {
+      const f = y / (len - tip);
+      return [halfWidth * (1 - 0.14 * f), halfThick * (1 - 0.25 * f)];
+    }
+    const f = (y - (len - tip)) / tip;
+    return [halfWidth * 0.86 * (1 - f) * (1 + 0.55 * f), halfThick * 0.75 * (1 - 0.85 * f)];
+  };
+  const ring = (y: number): THREE.Vector3[] => {
+    const [w, t] = at(y);
+    return [
+      new THREE.Vector3(0, y, w), new THREE.Vector3(t, y, 0),
+      new THREE.Vector3(0, y, -w), new THREE.Vector3(-t, y, 0),
+    ];
+  };
+  const pos: number[] = [];
+  const quad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3) => {
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    pos.push(a.x, a.y, a.z, c.x, c.y, c.z, d.x, d.y, d.z);
+  };
+  for (let i = 0; i < stations.length - 1; i++) {
+    const lo = ring(stations[i]);
+    const hi = ring(stations[i + 1]);
+    for (let k = 0; k < 4; k++) quad(lo[k], lo[(k + 1) % 4], hi[(k + 1) % 4], hi[k]);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   geo.computeVertexNormals();
   return geo;
 }

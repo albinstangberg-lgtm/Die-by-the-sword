@@ -1,5 +1,6 @@
 import { makeBuild, type Build } from "./anatomy";
 import type { Palette } from "./fighter";
+import type { Look } from "./look";
 import { AXE, CLUB, HATCHET, SPEAR, SWORD, type Weapon } from "./weapons";
 
 /**
@@ -299,6 +300,8 @@ export interface Species {
   readonly build: Build;
   readonly weapon: Weapon;
   readonly palette: Palette;
+  /** What it looks like past its size and colours: its face, what it wears. See look.ts. */
+  readonly look: Look;
   /**
    * Arm force budget as a multiple of the tuning clamp, from the square of the
    * body's thickness -- muscle cross-section, which is what force comes from.
@@ -350,10 +353,11 @@ export interface Species {
  * The size part is the square of its thickness -- muscle cross-section, which
  * is where force comes from and the reason a 147kg orc swings a 3.65kg axe on
  * the same tuning a human swings a sword. `grit` is the part size does not
- * explain, and there is exactly one creature here that needs it: a goblin's
- * spear is a metre of lever, and at the strength its shoulders imply the arm's
- * torque budget cannot hold the shaft on line while the hand accelerates. Its
- * thrusts arrived rotating and landed flat. A wiry thing that is strong for
+ * explain, and the two smallest creatures here need it. A goblin's spear is a
+ * metre of lever, and at the strength its shoulders imply the arm's torque
+ * budget cannot hold the shaft on line while the hand accelerates: its thrusts
+ * arrived rotating and landed flat. A kobold's hatchet hung off an arm that
+ * short and came through too slowly to bite. A wiry thing that is strong for
  * its size is both the obvious answer and the true one.
  */
 function sizedPower(build: Build, grit = 1): number {
@@ -378,6 +382,11 @@ export const SWORDSMAN: Species = {
   build: HUMAN_BUILD,
   weapon: SWORD,
   palette: { cloth: 0x3f4a5c, skin: 0x9c8570, mark: 0xc44a2f },
+  // A man-at-arms: a steel cap with a nasal, plates on his shoulders.
+  look: {
+    face: "man", helm: true, eyes: 0x2a2018, dress: "tunic", feet: "boots",
+    pauldrons: true, bracers: true, leather: 0x3d2e22, metal: 0xa3aab2,
+  },
   power: sizedPower(HUMAN_BUILD),
   aggression: 1,
   // It fences: goes round you, gives ground about as often as it takes it,
@@ -469,6 +478,12 @@ export const ORC: Species = {
   build: ORC_BUILD,
   weapon: AXE,
   palette: { cloth: 0x4a4230, skin: 0x6f8355, mark: 0xb5432c },
+  // Tusks, a black topknot, a harness over a bare chest, and eyes that catch
+  // the light.
+  look: {
+    face: "orc", hair: 0x1c1a18, eyes: 0xffa62b, glow: true, dress: "harness", feet: "boots",
+    pauldrons: false, bracers: true, leather: 0x3a2618, metal: 0x6d6a66,
+  },
   power: sizedPower(ORC_BUILD),
   // It presses. Backing off is not in it.
   aggression: 1.15,
@@ -583,6 +598,10 @@ export const GOBLIN: Species = {
   build: GOBLIN_BUILD,
   weapon: SPEAR,
   palette: { cloth: 0x5c4a2f, skin: 0x8a9a53, mark: 0xd8b64a },
+  // All ears and nose, in rags, barefoot.
+  look: {
+    face: "goblin", eyes: 0xf2e24a, glow: true, dress: "rags", feet: "claws", leather: 0x4b3a22,
+  },
   power: sizedPower(GOBLIN_BUILD, 1.8),
   aggression: 0.85,
   // Never still. It skips about at the end of its spear, darts in to make you
@@ -672,6 +691,11 @@ export const KOBOLD: Species = {
   build: KOBOLD_BUILD,
   weapon: HATCHET,
   palette: { cloth: 0x6b5a3e, skin: 0xa0552c, mark: 0xe0c060 },
+  // Scaled, snouted and horned, with a tail, and a hide round its middle.
+  look: {
+    face: "kobold", eyes: 0xffc23a, glow: true, dress: "hide", feet: "claws",
+    leather: 0x5b4630, tail: 0.55, scales: true,
+  },
   // Wiry, like the goblin: at the strength its shoulders imply, a hatchet on
   // the end of an arm that short hangs off it.
   power: sizedPower(KOBOLD_BUILD, 2),
@@ -768,6 +792,11 @@ export const OGRE: Species = {
   build: OGRE_BUILD,
   weapon: CLUB,
   palette: { cloth: 0x5a4632, skin: 0x8d8a6a, mark: 0x9c3a26 },
+  // A jaw like a trough, a topknot, a gut, and a hide round it.
+  look: {
+    face: "ogre", hair: 0x2b2118, eyes: 0xc8a050, glow: true, dress: "hide", feet: "claws",
+    leather: 0x6a5238, belly: 0.95,
+  },
   power: sizedPower(OGRE_BUILD),
   heave: 0.1,
   aggression: 1.2,

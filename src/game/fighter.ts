@@ -4,10 +4,11 @@ import type { PhysicsWorld, Side } from "../core/physics";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
 import { HUMAN, type Build, type Segment } from "./anatomy";
+import { disposeTree, footMesh, jointBall, shellMesh, stumpCap } from "./skin";
 import {
-  disposeTree, footMesh, handMesh, headMesh as headShape, jointBall, shellMesh,
-  stumpCap,
-} from "./skin";
+  dressArm, dressLeg, dressTrunk, handFor, headFor, MAN_LOOK, trunkWear, Wardrobe,
+  type Look, type TrunkWear,
+} from "./look";
 import type { WoundEnd } from "./blood";
 import {
   CROUCH_DROP, LIFT_AHEAD, LIFT_MIDDLE, Pose, Posture, SIDE_SWING, type Gait, type PostureDrive,
@@ -555,11 +556,12 @@ export class Fighter {
   private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0, side: 0 };
   private headMesh!: THREE.Object3D;
 
-  /** One set of materials for the whole figure, from its palette. */
-  private clothMat!: THREE.MeshStandardMaterial;
-  private skinMat!: THREE.MeshStandardMaterial;
-  private markMat!: THREE.MeshStandardMaterial;
-  private beltMat!: THREE.MeshStandardMaterial;
+  /**
+   * One set of materials for the whole figure, from its palette and its look,
+   * and which of them each part of the trunk and legs is made of.
+   */
+  readonly wardrobe: Wardrobe;
+  private readonly wear: TrunkWear;
 
   /** Dark caps added to cut faces, cleared when a reset puts the limb back. */
   private readonly caps: THREE.Object3D[] = [];
@@ -690,6 +692,8 @@ export class Fighter {
     readonly palette: Palette = PLAYER_PALETTE,
     /** Proportions. A goblin and an orc are this same class at other sizes. */
     readonly build: Build = HUMAN,
+    /** Its face, and what it wears: see look.ts. Nothing of it is ever hit. */
+    readonly look: Look = MAN_LOOK,
   ) {
     const { rapier, world } = phys;
     // Local aliases so every measurement below reads as anatomy rather than
@@ -708,12 +712,8 @@ export class Fighter {
     this.pelvis.add(this.chest);
     this.chest.position.y = this.posture.waistY;
 
-    this.clothMat = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.85 });
-    this.skinMat = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.68 });
-    this.markMat = new THREE.MeshStandardMaterial({ color: palette.mark, roughness: 0.6 });
-    this.beltMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(palette.cloth).multiplyScalar(0.55), roughness: 0.7,
-    });
+    this.wardrobe = new Wardrobe(palette, look);
+    this.wear = trunkWear(this.wardrobe);
 
     this.body = world.createRigidBody(
       rapier.RigidBodyDesc.dynamic()
@@ -738,7 +738,7 @@ export class Fighter {
 
     // The trunk. A chest that tapers to a waist and hips that flare out of it,
     // drawn a little wider than they are deep, because a body is.
-    const chest = shellMesh(this.clothMat, {
+    const chest = shellMesh(this.wear.chest, {
       from: SEGMENT.torso.radius * 0.82,
       to: SEGMENT.torso.radius * 0.84,
       length: SEGMENT.torso.length,
@@ -749,7 +749,7 @@ export class Fighter {
     this.collider = this.rigidPart("torso", "body", SEGMENT.torso,
       this.torsoY, 0, chest, this.chest, this.posture.waistY);
 
-    const hips = shellMesh(this.clothMat, {
+    const hips = shellMesh(this.wear.hips, {
       from: SEGMENT.pelvis.radius * 0.98,
       to: SEGMENT.pelvis.radius * 0.86,
       length: SEGMENT.pelvis.length,
@@ -764,6 +764,7 @@ export class Fighter {
     this.buildHead();
     this.buildOffArm();
     this.buildLegs();
+    dressTrunk(build, this.wardrobe, chest, this.pelvis, [this.shoulderBall, this.offShoulderBall]);
 
     this.scene.add(this.mesh);
     // The anchors the arm is about to be jointed to have to exist first.
@@ -822,7 +823,7 @@ export class Fighter {
     const waist = this.posture.waistY;
 
     for (const sx of [-1, 1]) {
-      const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.clothMat, 0.8);
+      const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.wear.shoulders, 0.8);
       shoulder.position.set(sx * STANDING.shoulderX, local(STANDING.shoulder) - waist, 0);
       this.chest.add(shoulder);
       // The sword side is +X: it is the one the shoulder girdle carries about.
@@ -833,7 +834,7 @@ export class Fighter {
         this.offShoulderBall = shoulder;
       }
 
-      const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.clothMat, 0.92);
+      const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.wear.thighs, 0.92);
       hip.position.set(sx * STANDING.hipX, local(STANDING.hip), 0);
       this.pelvis.add(hip);
     }
@@ -841,24 +842,15 @@ export class Fighter {
     // A neck, and it has to be long enough to see: shoulders sit a hand's
     // width below the skull, and without a column between them the head reads
     // as sitting straight on the chest.
-    const neck = shellMesh(this.skinMat, {
+    const neck = shellMesh(this.wardrobe.skin, {
       from: SEGMENT.head.radius * 0.66,
       to: SEGMENT.head.radius * 0.56,
       length: SEGMENT.head.radius * 2.0,
     });
     neck.position.y = local(STANDING.neck) - SEGMENT.head.radius * 0.35 - waist;
     this.chest.add(neck);
-
-    const belt = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        SEGMENT.pelvis.radius * 1.03, SEGMENT.pelvis.radius * 1.03,
-        0.055 * this.build.scale, 20),
-      this.beltMat,
-    );
-    belt.scale.set(1.1, 1, 0.92);
-    belt.position.y = local(STANDING.waist);
-    belt.castShadow = true;
-    this.pelvis.add(belt);
+    // The belt, and whatever else goes round the middle, is the look's: see
+    // `dressTrunk`.
   }
 
   private buildHead(): void {
@@ -883,7 +875,7 @@ export class Fighter {
       this.head,
     );
 
-    this.headMesh = headShape(seg.radius, this.skinMat, this.markMat);
+    this.headMesh = headFor(seg.radius, this.wardrobe);
     this.scene.add(this.headMesh);
     this.parts.push({
       name: "head", label: "head", collider, body: this.head,
@@ -953,7 +945,7 @@ export class Fighter {
     const p = this.body.translation();
     const sx = -STANDING.shoulderX;
 
-    const make = (seg: Segment, topY: number, wide: number, narrow: number) => {
+    const make = (seg: Segment, topY: number, wide: number, narrow: number, belly: number, peak: number) => {
       const centre = topY - seg.length / 2;
       const body = world.createRigidBody(
         rapier.RigidBodyDesc.dynamic()
@@ -974,29 +966,32 @@ export class Fighter {
       );
       // Local +Y runs from the joint DOWN the limb, so -Y is the shoulder end
       // and the taper runs thick to thin in that order.
-      const mesh = shellMesh(this.skinMat, {
+      const mesh = shellMesh(this.wardrobe.skin, {
         from: seg.radius * wide,
         to: seg.radius * narrow,
         length: seg.length,
-        belly: 1.05,
+        belly,
+        peak,
       });
       return { body, collider, mesh, seg };
     };
 
-    const upper = make(SEGMENT.upperArm, STANDING.shoulder, 1.06, 0.84);
+    const upper = make(SEGMENT.upperArm, STANDING.shoulder, 1.06, 0.84, 1.09, 0.45);
     const elbowY = STANDING.shoulder - SEGMENT.upperArm.length;
-    const fore = make(SEGMENT.foreArm, elbowY, 1.0, 0.68);
+    const fore = make(SEGMENT.foreArm, elbowY, 1.0, 0.68, 1.1, 0.3);
 
     // The elbow belongs to the upper arm and the hand to the forearm, so a cut
     // at either joint leaves a rounded joint on the body and a flat cut face
     // on the piece that fell.
-    const elbow = jointBall(SEGMENT.foreArm.radius * 1.15, this.skinMat);
+    const elbow = jointBall(SEGMENT.foreArm.radius * 1.05, this.wardrobe.skin);
     elbow.position.y = SEGMENT.upperArm.length / 2;
     upper.mesh.add(elbow);
 
-    const hand = handMesh(SEGMENT.foreArm.radius * 1.22, this.skinMat);
+    const hand = handFor(SEGMENT.foreArm.radius * 1.22, this.wardrobe, this.wardrobe.skin);
     hand.position.y = SEGMENT.foreArm.length / 2;
     fore.mesh.add(hand);
+    dressArm(this.wardrobe, upper.mesh, fore.mesh,
+      { upper: SEGMENT.upperArm, fore: SEGMENT.foreArm });
 
     this.offUpper = upper.body;
     this.offFore = fore.body;
@@ -1034,16 +1029,17 @@ export class Fighter {
 
       // A leg hangs off its pivot, so here +Y is the joint end and -Y the far
       // one -- the opposite way round from an arm, and worth stating twice.
-      const thighMesh = shellMesh(this.clothMat, {
+      const thighMesh = shellMesh(this.wear.thighs, {
         from: SEGMENT.thigh.radius * 0.8,
         to: SEGMENT.thigh.radius * 1.02,
         length: SEGMENT.thigh.length,
-        belly: 1.06,
+        belly: 1.08,
+        peak: 0.62,
       });
       thighMesh.position.y = -SEGMENT.thigh.length / 2;
       hipPivot.add(thighMesh);
 
-      const knee = jointBall(SEGMENT.shin.radius * 1.12, this.clothMat);
+      const knee = jointBall(SEGMENT.shin.radius * 1.03, this.wear.thighs);
       knee.position.y = -SEGMENT.thigh.length / 2;
       thighMesh.add(knee);
 
@@ -1051,11 +1047,12 @@ export class Fighter {
       kneePivot.position.y = -SEGMENT.thigh.length;
       hipPivot.add(kneePivot);
 
-      const shinMesh = shellMesh(this.clothMat, {
+      const shinMesh = shellMesh(this.wear.shins, {
         from: SEGMENT.shin.radius * 0.62,
         to: SEGMENT.shin.radius * 1.0,
         length: SEGMENT.shin.length,
-        belly: 1.04,
+        belly: 1.12,
+        peak: 0.68,
       });
       shinMesh.position.y = -SEGMENT.shin.length / 2;
       kneePivot.add(shinMesh);
@@ -1063,10 +1060,11 @@ export class Fighter {
       // Forward is -Z, so the foot lies out ahead of the ankle rather than
       // down from it. Scenery: the collider is the shin and stops at the sole.
       const foot = footMesh(SEGMENT.shin.radius * 0.72,
-        SEGMENT.shin.length * 0.52, this.beltMat);
+        SEGMENT.shin.length * 0.52, this.wardrobe.belt);
       foot.position.set(0, -SEGMENT.shin.length / 2 + SEGMENT.shin.radius * 0.3,
         -SEGMENT.shin.length * 0.12);
       shinMesh.add(foot);
+      dressLeg(this.wardrobe, shinMesh, foot, SEGMENT.shin, this.build.scale);
 
       const kinematic = (seg: Segment, label: string, mesh: THREE.Object3D) => {
         const bodyR = world.createRigidBody(rapier.RigidBodyDesc.kinematicPositionBased());
@@ -2584,7 +2582,7 @@ export class Fighter {
     if (Math.abs(a - this.fade) < 0.01) return;
     this.fade = a;
 
-    for (const m of [this.clothMat, this.skinMat, this.markMat, this.beltMat]) {
+    for (const m of this.wardrobe.all) {
       m.transparent = a < 1;
       m.opacity = a;
       m.depthWrite = a > 0.6;

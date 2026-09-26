@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
-import { disposeTree, handMesh, jointBall, shellMesh, stumpCap } from "./skin";
+import { disposeTree, jointBall, shellMesh, stumpCap } from "./skin";
+import { dressArm, handFor } from "./look";
 import type { WoundEnd } from "./blood";
 
 import type { Tuning } from "../tuning";
@@ -534,7 +535,7 @@ export class Arm {
   /** The scabbard the weapon goes into, if this weapon has one: a sword does. */
   private scabbard: THREE.Object3D | null = null;
   /** The hand, which rides the weapon while it is held and the forearm while it is not. */
-  private handMeshObj!: THREE.Mesh;
+  private handMeshObj!: THREE.Object3D;
   /**
    * The inside of the hand, riding the forearm: where something the hand
    * picks up is held. A plain node, so what hangs from it keeps its shape.
@@ -806,7 +807,7 @@ export class Arm {
 
     this.wristJoint = this.makeWristJoint();
 
-    this.buildMeshes(fighter.palette.skin);
+    this.buildMeshes();
     scene.add(this.group);
     if (weapon === SWORD) this.buildScabbard();
   }
@@ -1948,8 +1949,11 @@ export class Arm {
   // Presentation
   // -------------------------------------------------------------------------
 
-  private buildMeshes(skinColour: number): void {
-    const skin = new THREE.MeshStandardMaterial({ color: skinColour, roughness: 0.65 });
+  private buildMeshes(): void {
+    // Its own materials, the same as the body's: the body fades out when the
+    // camera is pushed into it, and this arm must not go with it.
+    const wardrobe = this.fighter.wardrobe.copy(this.fighter.palette);
+    const skin = wardrobe.skin;
     const upper = this.build.segment.upperArm;
     const fore = this.build.segment.foreArm;
 
@@ -1957,16 +1961,17 @@ export class Arm {
     // the hand, so the limb tapers from -Y to +Y and the hand goes at +foreHalf.
     this.upperMesh = shellMesh(skin, {
       from: upper.radius * 1.06, to: upper.radius * 0.84,
-      length: upper.length, belly: 1.05,
+      length: upper.length, belly: 1.09, peak: 0.45,
     });
     this.foreMesh = shellMesh(skin, {
       from: fore.radius, to: fore.radius * 0.68,
-      length: fore.length, belly: 1.05,
+      length: fore.length, belly: 1.1, peak: 0.3,
     });
 
-    const elbow = jointBall(fore.radius * 1.15, skin);
+    const elbow = jointBall(fore.radius * 1.05, skin);
     elbow.position.y = this.upperHalf;
     this.upperMesh.add(elbow);
+    dressArm(wardrobe, this.upperMesh, this.foreMesh, { upper, fore });
 
     this.group.add(this.upperMesh, this.foreMesh);
 
@@ -1978,7 +1983,7 @@ export class Arm {
     // rides the weapon rather than the forearm, so a turn of the grip turns
     // the hand with it: the forearm is drawn round, and its own twist along
     // its length would not show anyway.
-    const hand = this.handMeshObj = handMesh(fore.radius * 1.22, skin);
+    const hand = this.handMeshObj = handFor(fore.radius * 1.22, wardrobe, skin);
     this.bladeMesh.add(hand);
     // And the inside of the hand, on the forearm, for anything held in it
     // that is not the weapon.
@@ -2940,6 +2945,9 @@ export class Arm {
     g.add(own);
     this.scabbardBlade = own;
     this.fighter.chest.add(g);
+    // It rides the body's back, so it fades with the body, not with this arm:
+    // the camera backed up against a wall looks straight through it.
+    this.fighter.wardrobe.adopt(g);
     this.scabbard = g;
   }
 

@@ -140,7 +140,7 @@ export class Combatant {
     /** How an impact readout refers to its parts: "your", "the orc's". */
     private readonly possessive: string = species.possessive,
   ) {
-    this.fighter = new Fighter(phys, scene, spawn, side, species.palette, species.build);
+    this.fighter = new Fighter(phys, scene, spawn, side, species.palette, species.build, species.look);
     this.arm = new Arm(phys, scene, this.fighter, tuning, species.weapon, side);
     this.arm.power = species.power;
     this.arm.heave = (species.heave ?? 0) * this.fighter.body.mass();
