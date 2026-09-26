@@ -106,7 +106,10 @@ export interface Tuning {
   /**
    * How big a shove any body can step out of, as a Froude number: speed over
    * the square root of gravity times leg length. The same for every creature;
-   * what differs is how much each one weighs.
+   * what differs is how much each one weighs. 0.26 is two thirds of what it
+   * was when a weapon's speed was measured about its grip (see
+   * `Arm.velocityAt`), as the blows it judges are; any lower and a middling
+   * blow floors a goblin it should only stagger.
    */
   balance: number;
   /**
@@ -198,7 +201,7 @@ export const DEFAULTS: Tuning = {
   gravity: -9.81,
 
   armBehindBlow: 1,
-  balance: 0.4,
+  balance: 0.26,
   clash: 0.85,
 
   moveSpeed: 3.1,

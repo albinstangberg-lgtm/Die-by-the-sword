@@ -254,8 +254,16 @@ const SQUARE = 0.2;
  * same arm: thirty-six seconds of shuffling in and out, sidestepping and
  * turning never took this past 5 m/s, and nine cuts and nine chops each took
  * it past once.
+ *
+ * Those were speeds worked out about the grip, which gave the tip its
+ * weapon's swing about its middle a second time (see `Arm.velocityAt`). Taken
+ * about the centre of mass, where they belong, the same readings come out
+ * about two thirds as fast, and 3.3 m/s is where as many blades start coming
+ * at it in the same fights -- 481 in eighty-nine thousand looks, where 5 saw
+ * 488 -- and as many start going back (see `GOING_BACK`): 1011, where 5 saw
+ * 1020.
  */
-const SWING = 5;
+const SWING = 3.3;
 
 /** How near a swinging blade must come to be its problem: metres past its hull. */
 const DANGER = 0.75;
@@ -268,9 +276,11 @@ const WIND_SEEN = 0.5;
 
 /**
  * Below this, m/s, your weapon moving fast is not coming at it: drawn back,
- * or carried aside. See `threat`.
+ * or carried aside. See `threat`. 1 m/s when a tip's speed was measured about
+ * the grip; this is the same half of fast-moving readings about its centre
+ * of mass.
  */
-const GOING_BACK = 1;
+const GOING_BACK = 0.7;
 
 /** Its reaction time, seconds: the quickest and the slowest. */
 const REACT = [0.12, 0.22] as const;
@@ -365,9 +375,11 @@ const THERE = { windup: 0.1, strike: 0.15, recover: 0.12 } as const;
  * of a second of sword held against your ribs, every blow. Getting the guard
  * back up is the same: close in, the guard it wants is where you are standing.
  * A stopped blade sits well under a metre a second; one checked for a step by
- * your sword and going on through is at two or more, and not for long.
+ * your sword and going on through is at two or more, and not for long. Those
+ * were tip speeds measured about the grip; taken about the weapon's centre of
+ * mass, the same fifth of slow readings is under 0.7.
  */
-const STALLED = 1;
+const STALLED = 0.7;
 const STALL_TIME = 0.08;
 
 /**
@@ -527,9 +539,11 @@ const SWAY = { yaw: 0.05, pitch: 0.035, time: 2.4 } as const;
 
 /**
  * How far ahead of your blade it puts its own, seconds of your blade's
- * travel: where it will be, not where it was.
+ * travel: where it will be, not where it was. As far ahead as 0.08 s was when
+ * your blade's speed was measured about its grip, a third again as fast as
+ * it really goes.
  */
-const LEAD = 0.08;
+const LEAD = 0.11;
 
 /** A parry's reach, 0..1 of its arm: out from the body, not at full stretch. */
 const PARRY_REACH = 0.55;

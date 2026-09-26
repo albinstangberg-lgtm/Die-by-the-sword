@@ -286,6 +286,11 @@ damage = (closing speed − threshold) × bite alignment² × sweet spot
   pace. Without it a spear thrust arriving at 4 m/s scored two points of damage
   and the goblin was decoration.
 
+All of it comes to 1.47 points of damage per metre a second past the threshold,
+for a sword's edge square on at its percussion point — the number that put the
+damage back where it was once a weapon's speed was measured about its centre of
+mass (see *A body's velocity is its centre of mass's*, below).
+
 There is no light attack or heavy attack. The only way to raise the number is to
 swing faster, with the edge leading, and connect on the right part of the weapon
 — which is to say, to actually cut properly.
@@ -382,7 +387,7 @@ The orc does not have a stagger resistance. It has 173 kilos. It is also why
 *committed to everything it starts* is literal: a stagger is the only way to
 take a swing off something once it has begun, nothing you can swing moves an
 orc that far, and a goblin's thrust you can knock clean out of it. The other way
-round, the orc's axe staggers you about one blow in three and now and then puts
+round, the orc's axe staggers you about one blow in ten and now and then puts
 you on the floor, and the goblin's spear, with under three kilos behind it, has
 never moved anyone.
 
@@ -418,17 +423,16 @@ from a blade of the same weight and speed, all in
   back. A club's upward part is lift, and a body lifted has nothing under it to
   step out of the rest with, so lift counts against balance as a shove does.
 
-And the ogre puts itself behind it: a tenth of its 317 kilos, on top of its arm
-and the club, makes 54 kilos of blow, against 11 behind the orc's axe and 5.6
-behind your sword. When that puts you down, all of you goes together — the
+And the ogre puts itself behind it: a quarter of its 317 kilos, on top of its
+arm and the club, makes 102 kilos of blow, against 11 behind the orc's axe and
+5.6 behind your sword. When that puts you down, all of you goes together — the
 chest, the hips, the legs, the arm and the sword in it are all given the same
 kick — so you go up and over as one body, rather than having your chest
 snatched out from under your legs. Swung up through you in the harness's cell,
-it puts you on the floor half a dozen times in under a minute, throwing you
-as far as three to six metres, and you get up again with everything still on.
-In half a minute of an ordinary fight it floors you five to eight times and
-takes more than half your health. A kobold's hatchet has yet to put anybody
-down.
+it puts you on the floor half a dozen times in under a minute, throwing you as
+far as three to six metres, and you get up again with everything still on. In
+half a minute of an ordinary fight it floors you five to eight times and takes
+more than half your health. A kobold's hatchet has yet to put anybody down.
 
 ### Weapons meeting
 
@@ -1078,7 +1082,7 @@ that short and landed too slowly to bite. A wiry thing that is strong for its
 size is both the obvious answer and the true one.
 
 And one creature declares `heave`: how much of its own body it throws in
-behind a blow after its arm. Only the ogre does, a tenth of itself.
+behind a blow after its arm. Only the ogre does, a quarter of itself.
 
 ### What they look like
 
@@ -1554,7 +1558,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Seventy-two things the physics taught us
+## Seventy-three things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2253,6 +2257,35 @@ and measured at your chest, with its short arm reaching up for it, its reach
 came out at half a metre: it stood on your toes to swing, and hacked at you on
 the way back as much as on the way through. Reach is measured now at whichever
 of your head, your middle and your legs a creature goes for most.
+
+**A body's velocity is its centre of mass's.** Rapier's `linvel()` is how fast
+a body's centre of mass is going, and a point on it goes at that plus the spin
+about the centre of mass. Every speed on a weapon — where a blow landed, how
+fast the tip was going — was worked out with the spin about the grip instead,
+where the weapon's body has its origin, and a sword's centre of mass is 54
+centimetres up the blade, an axe's 79. So every point of a turning weapon was
+given its centre of mass's swing a second time: eleven metres a second on the
+sword at 20 rad/s, all of it along the swing. Across every blow in the harness
+the blades had arrived at about two thirds of the speed they were scored at,
+and the slowest "hits" were mostly a blade resting on something while the arm
+turned. Measured honestly, the same swings did half the damage, cut a third
+less often and shoved a third less hard, and an opponent saw a third of the
+cuts coming at it. Everything set against those speeds was fitted again to the
+same seven thousand blows on flesh, nine hundred clashes and eighty-nine
+thousand looks at a blade coming: each weapon's threshold and bite, so that as
+many of its blows get past the one and it does as much in all (a spear, whose
+point barely turns in a thrust, lost least, and now draws blood more often and
+less each time); when a weapon is knocked aside, and how hard; when an opponent
+reads a swing, stops one or leads it; and how much of itself the ogre puts
+behind its club, a quarter where it was a tenth, so that its upswing still
+lifts you as high. Balance came only part of the way back. Planted feet soak up
+the same speed of every blow, a bigger share of a slower one, and a Froude
+number any lower than 0.26, two thirds of what it was, has the harness's
+middling blow floor a goblin it should only stagger: an orc's axe rocks you
+about half as often as it did. A throw had it right all along: it leaves at the
+palm's speed about the forearm's centre of mass. The blade speeds quoted
+elsewhere in this document were measured about the grip, and most are half as
+high again as the blade was really going.
 
 ## Tuning
 

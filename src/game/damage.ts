@@ -9,7 +9,7 @@ import { heft, SWORD, type Weapon } from "./weapons";
  * A swing does damage in proportion to how well it was actually thrown.
  *
  *   damage = (closing speed − threshold) × bite alignment² × sweet spot
- *            × heft × sharpness
+ *            × heft × sharpness × DAMAGE_PER_MS
  *
  * Each term throws away a different kind of bad swing:
  *
@@ -50,6 +50,24 @@ export interface CutQuality {
 export const MIN_CUT_SPEED = SWORD.minCutSpeed;
 
 /**
+ * Points of damage per m/s past the threshold, for a sword's edge dead square
+ * at its percussion point.
+ *
+ * Not 1, because the speeds are honest now. A weapon's speed at a point used
+ * to be worked out about its grip, which gave every point of a turning weapon
+ * its centre of mass's swing a second time: half as fast again as the blade
+ * really went. Every threshold and every sharpness was set against those
+ * speeds. Measured about the centre of mass, the same swings did half the
+ * damage; this, with each weapon's threshold and sharpness fitted again to
+ * the same seven thousand hits on flesh, puts it back -- as many of each
+ * weapon's hits get past its threshold as did, and it does as much in all.
+ * Not the same hits: a spear's shaft swung round used to outrun its point
+ * thrust home, and now it does not, so a spear draws blood more often, and
+ * less each time.
+ */
+export const DAMAGE_PER_MS = 1.47;
+
+/**
  * Leverage along the reference sword: zero across the guard and ricasso,
  * peaking around two thirds down where a real blade's percussion point sits,
  * easing off at the tip where there is speed but no mass behind it.
@@ -65,7 +83,8 @@ export function cutDamage(q: CutQuality): number {
     * q.edgeAlign * q.edgeAlign
     * weapon.sweetSpot(q.alongBlade)
     * heft(q.massKg ?? weapon.mass)
-    * weapon.sharpness;
+    * weapon.sharpness
+    * DAMAGE_PER_MS;
 }
 
 /**

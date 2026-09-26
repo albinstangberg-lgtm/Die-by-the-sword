@@ -798,7 +798,10 @@ export const OGRE: Species = {
     leather: 0x6a5238, belly: 0.95,
   },
   power: sizedPower(OGRE_BUILD),
-  heave: 0.1,
+  // A quarter of itself behind the club. A tenth lifted you as high when the
+  // club's speed was measured about its grip, which made it half again as
+  // fast as it goes (see `Arm.velocityAt`).
+  heave: 0.25,
   aggression: 1.2,
   // It lumbers: a long plant between steps, little waiting once it is close,
   // nothing it gets out of the way of, no quick steps and no hops. It will

@@ -46,9 +46,15 @@ const RESTING_SPEED = 0.35;
  * A weapon knocked by another: the speed it is sent back at, m/s, below which
  * nothing comes of it and at which an arm loses all it can (`Tuning.clash`),
  * and how long the hardest knock takes to get over, seconds.
+ *
+ * 0.5 and 4 when a weapon's speed was measured about its grip (see
+ * `Arm.velocityAt`), which counted each blade's spin twice, and two blades
+ * swinging into each other both of theirs. Fitted to the same nine hundred
+ * clashes measured about their centres of mass, these knock about as many
+ * weapons aside, and about as hard.
  */
-const KNOCK_MIN = 0.5;
-const KNOCK_FULL = 4;
+const KNOCK_MIN = 0.12;
+const KNOCK_FULL = 2.6;
 const KNOCK_TIME = 0.6;
 
 export type Quality = "touch" | "flat" | "glance" | "bite" | "clean";
@@ -504,12 +510,17 @@ export class Impacts {
   }
 }
 
+/**
+ * What the HUD calls a hit. The speeds were 1.2, 4.5 and 2.5 m/s when a
+ * weapon's speed was measured about its grip (see `Arm.velocityAt`); these
+ * call as many of the same fights' hits touches, clean cuts and bites.
+ */
 function classify(speed: number, edgeAlign: number, alongBlade: number): Quality {
-  if (speed < 1.2) return "touch";
+  if (speed < 0.7) return "touch";
   if (edgeAlign < 0.35) return "flat";
   if (alongBlade < 0.15) return "glance";   // caught it on the guard
-  if (edgeAlign > 0.72 && speed > 4.5) return "clean";
-  if (edgeAlign > 0.5 && speed > 2.5) return "bite";
+  if (edgeAlign > 0.72 && speed > 3) return "clean";
+  if (edgeAlign > 0.5 && speed > 1.7) return "bite";
   return "glance";
 }
 

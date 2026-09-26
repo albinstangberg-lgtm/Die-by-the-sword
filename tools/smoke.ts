@@ -1481,9 +1481,15 @@ async function weaponsAreToldApartByPhysics(): Promise<void> {
   check("an axe hits harder than a sword at the same speed",
     hit(AXE, 10) > hit(SWORD, 10) * 1.2,
     `axe ${hit(AXE, 10).toFixed(1)} vs sword ${hit(SWORD, 10).toFixed(1)}`);
+  // Slow for a cut: at 2.4 m/s a sword's does what it did at 3.5 when a
+  // weapon's speed was measured about its grip (see `Arm.velocityAt`). A
+  // sword swings about its middle far more than a spear thrusts, so it lost
+  // more of its measured speed to that, and with each refitted to the damage
+  // it did in a fight, a thrust comes out two and a half cuts here, not the
+  // nearly four it did.
   check("a thrust is worth throwing at a speed a cut is not",
-    hit(SPEAR, 3.5) > hit(SWORD, 3.5) * 3,
-    `at 3.5 m/s: spear ${hit(SPEAR, 3.5).toFixed(1)} vs sword ${hit(SWORD, 3.5).toFixed(1)}`);
+    hit(SPEAR, 2.4) > hit(SWORD, 2.4) * 2,
+    `at 2.4 m/s: spear ${hit(SPEAR, 2.4).toFixed(1)} vs sword ${hit(SWORD, 2.4).toFixed(1)}`);
 }
 
 async function theAxeIsHarderToSwing(): Promise<void> {
