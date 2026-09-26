@@ -4,10 +4,11 @@ import type { PhysicsWorld, Side } from "../core/physics";
 import type { Keys } from "../input/input";
 import type { Tuning } from "../tuning";
 import { HUMAN, type Build, type Segment } from "./anatomy";
+import { disposeTree, footMesh, jointBall, shellMesh, stumpCap } from "./skin";
 import {
-  disposeTree, footMesh, handMesh, headMesh as headShape, jointBall, shellMesh,
-  stumpCap,
-} from "./skin";
+  dressArm, dressLeg, dressTrunk, handFor, headFor, MAN_LOOK, trunkWear, Wardrobe,
+  type Look, type TrunkWear,
+} from "./look";
 import type { WoundEnd } from "./blood";
 import {
   CROUCH_DROP, LIFT_AHEAD, LIFT_MIDDLE, Pose, Posture, SIDE_SWING, type Gait, type PostureDrive,
@@ -17,6 +18,7 @@ import { clamp, smoothstep } from "./motion";
 import { emptyBlow, judgeBlow, type Blow } from "./balance";
 import type { Impact } from "./impacts";
 import { Ragdoll } from "./ragdoll";
+import { emptyMove, moveAt, Pacing, type Move, type MoveKind } from "./traverse";
 
 /**
  * A fighter: one locomotion hull carrying a human-shaped skeleton.
@@ -191,11 +193,18 @@ const VAULT_HIGH = 1.15;
 const VAULT_DEPTH = 1.5;
 /** How far over its top the soles clear it. */
 const VAULT_CLEAR = 0.1;
-/** How long a vault takes at human scale, seconds, and the fastest it may be driven, m/s. */
-const VAULT_TIME = 0.62;
+/**
+ * How long each stage of a vault takes, at human scale: seconds whatever its
+ * length, and metres a second on top of that. In to the take-off, up off
+ * it, across, and down.
+ */
+const VAULT_PACE: readonly (readonly [number, number])[] = [
+  [0.05, 3.5], [0.02, 7], [0.02, 6], [0.04, 6],
+];
+/** How far short of the near face the hull takes off from, at human scale. */
+const TAKE_OFF = 0.15;
+/** The fastest a vault or a climb may be driven, m/s, in all but the rarest step. */
 const VAULT_SPEED = 7;
-/** Points along a vault's path: enough that following them reads as a curve. */
-const VAULT_POINTS = 24;
 
 /** How far ahead of the middle of the body a ledge may be, to be climbed: an arm's length. */
 const CLIMB_REACH = 0.95;
@@ -209,16 +218,30 @@ const CLIMB_HIGH = 2.2;
 const CLIMB_DEPTH = 0.3;
 /** How far past its edge the body goes to stand. */
 const CLIMB_ON = 0.12;
-/**
- * How long a climb takes, seconds at human scale: a moment to get the hands
- * on, and more for every metre of it.
- */
-const CLIMB_TIME = 0.45;
-const CLIMB_PER_METRE = 0.35;
-/** Points up the face; half as many again over the edge. */
-const CLIMB_POINTS = 16;
+/** Points along each stage of a vault or a climb: enough that following them reads as a curve. */
+const STAGE_POINTS = 12;
 /** How far apart the hands take hold of a ledge, either side of the middle. */
 const HOLD_SPREAD = 0.2;
+/** How far over its top a hand holds a ledge, and past its edge onto it, at human scale. */
+const HOLD_UP = 0.04;
+const GRIP_IN = 0.02;
+/**
+ * The way up a ledge, metres at human scale: the shoulders this far below
+ * its top with the hands on it, the hips this far over it once pulled up,
+ * and the least any stage of it rises.
+ */
+const GRAB_BELOW = 0.25;
+const HIPS_OVER = 0.1;
+const CLIMB_NUDGE = 0.03;
+/**
+ * How long each stage of a climb takes, at human scale: seconds whatever its
+ * length, and metres a second on top of that. Onto the edge, up the face to
+ * the hips, pushed up over the top with a foot coming up onto it, and onto
+ * the top to stand.
+ */
+const CLIMB_PACE: readonly (readonly [number, number])[] = [
+  [0.08, 5], [0.05, 2.8], [0.06, 3.2], [0.08, 2.8],
+];
 
 /** A stoop's crouch, as a share of an ordinary one's depth. How far it bows over is the posture's. */
 const STOOP_SINK = 1.4;
@@ -533,11 +556,12 @@ export class Fighter {
   private readonly gaitNow: Gait = { phase: 0, amount: 0, forward: 0, side: 0 };
   private headMesh!: THREE.Object3D;
 
-  /** One set of materials for the whole figure, from its palette. */
-  private clothMat!: THREE.MeshStandardMaterial;
-  private skinMat!: THREE.MeshStandardMaterial;
-  private markMat!: THREE.MeshStandardMaterial;
-  private beltMat!: THREE.MeshStandardMaterial;
+  /**
+   * One set of materials for the whole figure, from its palette and its look,
+   * and which of them each part of the trunk and legs is made of.
+   */
+  readonly wardrobe: Wardrobe;
+  private readonly wear: TrunkWear;
 
   /** Dark caps added to cut faces, cleared when a reset puts the limb back. */
   private readonly caps: THREE.Object3D[] = [];
@@ -568,13 +592,19 @@ export class Fighter {
   /**
    * A vault or a climb under way: where it goes, as a path of hull centres
    * with the distance along it to each, how far through it the body is,
-   * seconds, and where on the stone the hands go, left then right.
+   * seconds, and where on the stone the hands go, left then right. `marks`
+   * are how far along the path each of its landmarks falls, which the phase
+   * counts -- see traverse.ts -- and `pace` how far through them the body is
+   * for how far through the time.
    */
   private traverse: {
-    kind: "vault" | "climb";
+    kind: MoveKind;
     path: THREE.Vector3[]; along: number[]; time: number; duration: number;
     hold: [THREE.Vector3, THREE.Vector3];
+    marks: number[]; pace: Pacing; phase: number;
   } | null = null;
+  /** The body's pose for the traverse under way: see traverse.ts. */
+  private readonly move: Move = emptyMove();
   private readonly _hold = { left: new THREE.Vector3(), right: new THREE.Vector3(), weight: 0 };
 
   /**
@@ -647,6 +677,12 @@ export class Fighter {
    * needs to know, or the hips of a body on the floor are scenery.
    */
   onStandIn?: (handle: number, part: string | null) => void;
+  /**
+   * Told when a blow puts this body over, with the velocity it throws it
+   * with, world, m/s: for whatever else is jointed to it -- the sword arm --
+   * to go with it.
+   */
+  onThrown?: (dv: THREE.Vector3) => void;
 
   constructor(
     private phys: PhysicsWorld,
@@ -656,6 +692,8 @@ export class Fighter {
     readonly palette: Palette = PLAYER_PALETTE,
     /** Proportions. A goblin and an orc are this same class at other sizes. */
     readonly build: Build = HUMAN,
+    /** Its face, and what it wears: see look.ts. Nothing of it is ever hit. */
+    readonly look: Look = MAN_LOOK,
   ) {
     const { rapier, world } = phys;
     // Local aliases so every measurement below reads as anatomy rather than
@@ -674,12 +712,8 @@ export class Fighter {
     this.pelvis.add(this.chest);
     this.chest.position.y = this.posture.waistY;
 
-    this.clothMat = new THREE.MeshStandardMaterial({ color: palette.cloth, roughness: 0.85 });
-    this.skinMat = new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.68 });
-    this.markMat = new THREE.MeshStandardMaterial({ color: palette.mark, roughness: 0.6 });
-    this.beltMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(palette.cloth).multiplyScalar(0.55), roughness: 0.7,
-    });
+    this.wardrobe = new Wardrobe(palette, look);
+    this.wear = trunkWear(this.wardrobe);
 
     this.body = world.createRigidBody(
       rapier.RigidBodyDesc.dynamic()
@@ -704,7 +738,7 @@ export class Fighter {
 
     // The trunk. A chest that tapers to a waist and hips that flare out of it,
     // drawn a little wider than they are deep, because a body is.
-    const chest = shellMesh(this.clothMat, {
+    const chest = shellMesh(this.wear.chest, {
       from: SEGMENT.torso.radius * 0.82,
       to: SEGMENT.torso.radius * 0.84,
       length: SEGMENT.torso.length,
@@ -715,7 +749,7 @@ export class Fighter {
     this.collider = this.rigidPart("torso", "body", SEGMENT.torso,
       this.torsoY, 0, chest, this.chest, this.posture.waistY);
 
-    const hips = shellMesh(this.clothMat, {
+    const hips = shellMesh(this.wear.hips, {
       from: SEGMENT.pelvis.radius * 0.98,
       to: SEGMENT.pelvis.radius * 0.86,
       length: SEGMENT.pelvis.length,
@@ -730,6 +764,7 @@ export class Fighter {
     this.buildHead();
     this.buildOffArm();
     this.buildLegs();
+    dressTrunk(build, this.wardrobe, chest, this.pelvis, [this.shoulderBall, this.offShoulderBall]);
 
     this.scene.add(this.mesh);
     // The anchors the arm is about to be jointed to have to exist first.
@@ -788,7 +823,7 @@ export class Fighter {
     const waist = this.posture.waistY;
 
     for (const sx of [-1, 1]) {
-      const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.clothMat, 0.8);
+      const shoulder = jointBall(SEGMENT.upperArm.radius * 1.5, this.wear.shoulders, 0.8);
       shoulder.position.set(sx * STANDING.shoulderX, local(STANDING.shoulder) - waist, 0);
       this.chest.add(shoulder);
       // The sword side is +X: it is the one the shoulder girdle carries about.
@@ -799,7 +834,7 @@ export class Fighter {
         this.offShoulderBall = shoulder;
       }
 
-      const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.clothMat, 0.92);
+      const hip = jointBall(SEGMENT.thigh.radius * 1.08, this.wear.thighs, 0.92);
       hip.position.set(sx * STANDING.hipX, local(STANDING.hip), 0);
       this.pelvis.add(hip);
     }
@@ -807,24 +842,15 @@ export class Fighter {
     // A neck, and it has to be long enough to see: shoulders sit a hand's
     // width below the skull, and without a column between them the head reads
     // as sitting straight on the chest.
-    const neck = shellMesh(this.skinMat, {
+    const neck = shellMesh(this.wardrobe.skin, {
       from: SEGMENT.head.radius * 0.66,
       to: SEGMENT.head.radius * 0.56,
       length: SEGMENT.head.radius * 2.0,
     });
     neck.position.y = local(STANDING.neck) - SEGMENT.head.radius * 0.35 - waist;
     this.chest.add(neck);
-
-    const belt = new THREE.Mesh(
-      new THREE.CylinderGeometry(
-        SEGMENT.pelvis.radius * 1.03, SEGMENT.pelvis.radius * 1.03,
-        0.055 * this.build.scale, 20),
-      this.beltMat,
-    );
-    belt.scale.set(1.1, 1, 0.92);
-    belt.position.y = local(STANDING.waist);
-    belt.castShadow = true;
-    this.pelvis.add(belt);
+    // The belt, and whatever else goes round the middle, is the look's: see
+    // `dressTrunk`.
   }
 
   private buildHead(): void {
@@ -849,7 +875,7 @@ export class Fighter {
       this.head,
     );
 
-    this.headMesh = headShape(seg.radius, this.skinMat, this.markMat);
+    this.headMesh = headFor(seg.radius, this.wardrobe);
     this.scene.add(this.headMesh);
     this.parts.push({
       name: "head", label: "head", collider, body: this.head,
@@ -919,7 +945,7 @@ export class Fighter {
     const p = this.body.translation();
     const sx = -STANDING.shoulderX;
 
-    const make = (seg: Segment, topY: number, wide: number, narrow: number) => {
+    const make = (seg: Segment, topY: number, wide: number, narrow: number, belly: number, peak: number) => {
       const centre = topY - seg.length / 2;
       const body = world.createRigidBody(
         rapier.RigidBodyDesc.dynamic()
@@ -940,29 +966,32 @@ export class Fighter {
       );
       // Local +Y runs from the joint DOWN the limb, so -Y is the shoulder end
       // and the taper runs thick to thin in that order.
-      const mesh = shellMesh(this.skinMat, {
+      const mesh = shellMesh(this.wardrobe.skin, {
         from: seg.radius * wide,
         to: seg.radius * narrow,
         length: seg.length,
-        belly: 1.05,
+        belly,
+        peak,
       });
       return { body, collider, mesh, seg };
     };
 
-    const upper = make(SEGMENT.upperArm, STANDING.shoulder, 1.06, 0.84);
+    const upper = make(SEGMENT.upperArm, STANDING.shoulder, 1.06, 0.84, 1.09, 0.45);
     const elbowY = STANDING.shoulder - SEGMENT.upperArm.length;
-    const fore = make(SEGMENT.foreArm, elbowY, 1.0, 0.68);
+    const fore = make(SEGMENT.foreArm, elbowY, 1.0, 0.68, 1.1, 0.3);
 
     // The elbow belongs to the upper arm and the hand to the forearm, so a cut
     // at either joint leaves a rounded joint on the body and a flat cut face
     // on the piece that fell.
-    const elbow = jointBall(SEGMENT.foreArm.radius * 1.15, this.skinMat);
+    const elbow = jointBall(SEGMENT.foreArm.radius * 1.05, this.wardrobe.skin);
     elbow.position.y = SEGMENT.upperArm.length / 2;
     upper.mesh.add(elbow);
 
-    const hand = handMesh(SEGMENT.foreArm.radius * 1.22, this.skinMat);
+    const hand = handFor(SEGMENT.foreArm.radius * 1.22, this.wardrobe, this.wardrobe.skin);
     hand.position.y = SEGMENT.foreArm.length / 2;
     fore.mesh.add(hand);
+    dressArm(this.wardrobe, upper.mesh, fore.mesh,
+      { upper: SEGMENT.upperArm, fore: SEGMENT.foreArm });
 
     this.offUpper = upper.body;
     this.offFore = fore.body;
@@ -1000,16 +1029,17 @@ export class Fighter {
 
       // A leg hangs off its pivot, so here +Y is the joint end and -Y the far
       // one -- the opposite way round from an arm, and worth stating twice.
-      const thighMesh = shellMesh(this.clothMat, {
+      const thighMesh = shellMesh(this.wear.thighs, {
         from: SEGMENT.thigh.radius * 0.8,
         to: SEGMENT.thigh.radius * 1.02,
         length: SEGMENT.thigh.length,
-        belly: 1.06,
+        belly: 1.08,
+        peak: 0.62,
       });
       thighMesh.position.y = -SEGMENT.thigh.length / 2;
       hipPivot.add(thighMesh);
 
-      const knee = jointBall(SEGMENT.shin.radius * 1.12, this.clothMat);
+      const knee = jointBall(SEGMENT.shin.radius * 1.03, this.wear.thighs);
       knee.position.y = -SEGMENT.thigh.length / 2;
       thighMesh.add(knee);
 
@@ -1017,11 +1047,12 @@ export class Fighter {
       kneePivot.position.y = -SEGMENT.thigh.length;
       hipPivot.add(kneePivot);
 
-      const shinMesh = shellMesh(this.clothMat, {
+      const shinMesh = shellMesh(this.wear.shins, {
         from: SEGMENT.shin.radius * 0.62,
         to: SEGMENT.shin.radius * 1.0,
         length: SEGMENT.shin.length,
-        belly: 1.04,
+        belly: 1.12,
+        peak: 0.68,
       });
       shinMesh.position.y = -SEGMENT.shin.length / 2;
       kneePivot.add(shinMesh);
@@ -1029,10 +1060,11 @@ export class Fighter {
       // Forward is -Z, so the foot lies out ahead of the ankle rather than
       // down from it. Scenery: the collider is the shin and stops at the sole.
       const foot = footMesh(SEGMENT.shin.radius * 0.72,
-        SEGMENT.shin.length * 0.52, this.beltMat);
+        SEGMENT.shin.length * 0.52, this.wardrobe.belt);
       foot.position.set(0, -SEGMENT.shin.length / 2 + SEGMENT.shin.radius * 0.3,
         -SEGMENT.shin.length * 0.12);
       shinMesh.add(foot);
+      dressLeg(this.wardrobe, shinMesh, foot, SEGMENT.shin, this.build.scale);
 
       const kinematic = (seg: Segment, label: string, mesh: THREE.Object3D) => {
         const bodyR = world.createRigidBody(rapier.RigidBodyDesc.kinematicPositionBased());
@@ -1338,7 +1370,8 @@ export class Fighter {
     gait.forward = this.wayAhead;
     gait.side = this.waySide;
     this.posture.update(drive, this.focus, this.yaw, this.body.translation(), t, dt, crouch,
-      this.traverse ? 0 : clamp(this.stoop, 0, 1), clamp(this.hurt, 0, 1), gait);
+      this.traverse ? 0 : clamp(this.stoop, 0, 1), clamp(this.hurt, 0, 1), gait,
+      this.traverse ? this.move : null);
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
@@ -1378,11 +1411,8 @@ export class Fighter {
   get handhold(): { left: THREE.Vector3; right: THREE.Vector3; weight: number } | null {
     const tr = this.traverse;
     if (!tr) return null;
-    const f = Math.min(1, tr.time / tr.duration);
     const h = this._hold;
-    h.weight = tr.kind === "climb"
-      ? smoothstep(0, 0.2, f) * (1 - smoothstep(0.62, 0.92, f))
-      : smoothstep(0, 0.12, f) * (1 - smoothstep(0.4, 0.62, f));
+    h.weight = this.move.hold;
     h.left.copy(tr.hold[0]);
     h.right.copy(tr.hold[1]);
     return h;
@@ -1432,22 +1462,26 @@ export class Fighter {
     const over = top + VAULT_CLEAR * s;
     if (this.blocked(p.x, over + this.build.hull.height * 0.75, p.z, dx, 0, dz, land)) return false;
 
-    // The path, as hull centres: up off the floor while closing on it, over
-    // its top with the soles clear of it the whole way from its near edge to
-    // its far one, and down the other side.
-    const rise = Math.max(0.05 * s, near - r);
+    // The path, as hull centres, in stages: in along the floor to a stride
+    // short of the near face, and a spring from there that has the soles up
+    // over the top by the time the hull reaches it; across, clear of it the
+    // whole way from its near edge to its far one; and down the other side.
+    // Low until the last moment, so the hand can go down onto the top before
+    // the body goes up over it.
+    const takeOff = Math.max(0, near - r - TAKE_OFF * s);
+    const cross = near - r + 0.05 * s;
     const clearFrom = far + r * 0.6;
     const lift = over - soles;
-    const path: THREE.Vector3[] = [];
-    for (let i = 0; i <= VAULT_POINTS; i++) {
-      const x = (land * i) / VAULT_POINTS;
-      const h = x < rise ? lift * smoothstep(0, rise, x)
-        : x <= clearFrom ? lift
-          : lift * (1 - smoothstep(clearFrom, land, x));
-      path.push(new THREE.Vector3(p.x + dx * x, p.y + h, p.z + dz * x));
-    }
+    const way: Stage[] = [
+      { x: takeOff, y: soles, shape: level },
+      { x: cross, y: soles + lift, shape: spring },
+      { x: clearFrom, y: soles + lift, shape: level },
+      { x: land, y: soles, shape: fall },
+    ];
+    const { path, marks, times, duration } = stages(
+      this.body.translation(), dx, dz, soles, this.build.hullCentreY, way, VAULT_PACE, s);
     // A hand planted on its top as the body goes over.
-    this.begin("vault", path, VAULT_TIME * Math.sqrt(s), near + 0.12 * s, top);
+    this.begin("vault", path, marks, times, duration, near + 0.08 * s, top);
     return true;
   }
 
@@ -1500,49 +1534,79 @@ export class Fighter {
       if (this.blocked(fromX, y, fromZ, dx, 0, dz, on - rise + r)) return false;
     }
 
-    const path: THREE.Vector3[] = [];
-    const climb = up - p.y;
-    for (let i = 0; i <= CLIMB_POINTS; i++) {
-      const f = i / CLIMB_POINTS;
-      path.push(new THREE.Vector3(
-        p.x + dx * rise * smoothstep(0, 0.5, f), p.y + climb * smoothstep(0, 1, f),
-        p.z + dz * rise * smoothstep(0, 0.5, f)));
-    }
-    const stand = top + this.build.hullCentreY + 0.01 * s;
-    for (let i = 1; i <= CLIMB_POINTS / 2; i++) {
-      const f = smoothstep(0, 1, i / (CLIMB_POINTS / 2));
-      const x = rise + (on - rise) * f;
-      path.push(new THREE.Vector3(p.x + dx * x, up + (stand - up) * f, p.z + dz * x));
-    }
-    const human = height / s;
-    this.begin("climb", path, (CLIMB_TIME + CLIMB_PER_METRE * human) * Math.sqrt(s),
-      near + 0.08 * s, top);
+    // The way up, as the soles have it: in against the face with the hands
+    // going up onto the edge -- a spring, if it is high enough to need one --
+    // then pulled up it until the hips are level with the top, pushed up
+    // over it, a foot coming up onto it, until the hull is clear of the
+    // edge, and on to stand. A ledge the hips are already over runs through
+    // the first two in no time.
+    const st = this.build.standing;
+    const grab = Math.max(soles + CLIMB_NUDGE * s, top - st.shoulder - GRAB_BELOW * s);
+    const hips = Math.max(grab + CLIMB_NUDGE * s, top - st.hip + HIPS_OVER * s);
+    const centre = this.build.hullCentreY;
+    const way: Stage[] = [
+      { x: rise, y: grab, shape: level }, { x: rise, y: hips, shape: level },
+      { x: rise, y: up - centre, shape: level }, { x: on, y: top + 0.01 * s, shape: level },
+    ];
+    const { path, marks, times, duration } = stages(
+      this.body.translation(), dx, dz, soles, centre, way, CLIMB_PACE, s);
+    // The hands over the edge itself: with the shoulders no higher than the
+    // top, a forearm reaching past the corner props on it, and the palm
+    // grips the edge whether it was sent there or not.
+    this.begin("climb", path, marks, times, duration, near + GRIP_IN * s, top);
     return true;
   }
 
   /**
-   * Set a traverse going along a path of hull centres, at no less than
-   * `minTime` seconds and no faster than a body can be driven, with the hands
-   * to hold on at the edge `edge` metres ahead, on a top at `top`.
+   * Set a traverse going along a path of hull centres, over `duration`
+   * seconds, reaching each of its landmarks -- `marks`, metres along it -- at
+   * the matching share of the time in `times`, with the hands to hold on at
+   * the edge `edge` metres ahead, on a top at `top`. Between landmarks it
+   * goes evenly along the path, and the time it is given to get from one to
+   * the next is eased, so it neither stops at them nor jerks off from one.
+   *
+   * The chest and the hips stop meeting the stone for as long as it lasts:
+   * the body you can see leans over a top and sinks below the hull that is
+   * actually clearing it (see traverse.ts), and colliders that went with it
+   * caught on the edge they were drawn going over and stopped the hull dead.
+   * A blade still finds them. The legs never met the stone.
    */
   private begin(
-    kind: "vault" | "climb", path: THREE.Vector3[], minTime: number, edge: number, top: number,
+    kind: MoveKind, path: THREE.Vector3[], marks: number[], times: number[], duration: number,
+    edge: number, top: number,
   ): void {
-    const along = [0];
-    for (let i = 1; i < path.length; i++) along.push(along[i - 1] + path[i].distanceTo(path[i - 1]));
-    const duration = Math.max(minTime, along[along.length - 1] / VAULT_SPEED);
+    const along = alongPath(path);
     const s = this.build.scale;
     const p = this.body.translation();
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
-    const at = new THREE.Vector3(p.x - sin * edge, top + 0.03 * s, p.z - cos * edge);
+    const at = new THREE.Vector3(p.x - sin * edge, top + HOLD_UP * s, p.z - cos * edge);
     const spread = HOLD_SPREAD * s;
     const hold: [THREE.Vector3, THREE.Vector3] = [
       at.clone().add(new THREE.Vector3(-cos * spread, 0, sin * spread)),
       at.clone().add(new THREE.Vector3(cos * spread, 0, -sin * spread)),
     ];
-    this.traverse = { kind, path, along, time: 0, duration, hold };
+    this.traverse = {
+      kind, path, along, time: 0, duration, hold,
+      marks, pace: new Pacing(times, marks.map((_, i) => i)), phase: 0,
+    };
+    moveAt(kind, 0, s, this.move);
     this.knock.set(0, 0, 0);
+    this.collider.setCollisionGroups(this.side.hitOnlyFilter);
+    this.pelvisCollider.setCollisionGroups(this.side.hitOnlyFilter);
+  }
+
+  /**
+   * Over, or cut short: the chest and hips meet the stone again, and
+   * whatever of the pose is left is the posture's to come back from.
+   */
+  private endTraverse(handOver: boolean): void {
+    if (!this.traverse) return;
+    if (handOver) this.posture.handOver(this.move);
+    this.traverse = null;
+    this.collider.setCollisionGroups(this.side.bodyFilter);
+    // Getting up keeps the hips out of the floor until it is on its feet.
+    if (this.stance === "up") this.pelvisCollider.setCollisionGroups(this.side.bodyFilter);
   }
 
   /** Is there stone along a ray, within `reach`? */
@@ -1564,13 +1628,18 @@ export class Fighter {
     const v = this.traverse!;
     v.time += dt;
     const done = v.time >= v.duration;
-    const u = smoothstep(0, 1, Math.min(1, v.time / v.duration));
-    const want = u * v.along[v.along.length - 1];
+    // How far through its landmarks it is -- what the body's pose is keyed
+    // to -- and so how far along the path.
+    const m = v.marks;
+    v.phase = done ? m.length - 1 : clamp(v.pace.at(v.time / v.duration), 0, m.length - 1);
+    const k = Math.min(m.length - 2, Math.floor(v.phase));
+    const want = m[k] + (m[k + 1] - m[k]) * (v.phase - k);
     let i = 1;
     while (i < v.along.length - 1 && v.along[i] < want) i++;
     const a = v.along[i - 1];
     const b = v.along[i];
     const target = _pVault.lerpVectors(v.path[i - 1], v.path[i], b > a ? (want - a) / (b - a) : 1);
+    moveAt(v.kind, v.phase, this.build.scale, this.move);
 
     const p = this.body.translation();
     const vel = target.set(target.x - p.x, target.y - p.y, target.z - p.z).multiplyScalar(1 / dt);
@@ -1580,10 +1649,11 @@ export class Fighter {
     this.grounded = false;
     this.coyote = 0;
     this.gait = 0;
-    this.tuck += (1 - this.tuck) * Math.min(1, TUCK_RATE * 1.5 * dt);
+    // The legs are the pose's while it lasts, not folded up as in a jump.
+    this.tuck += (0 - this.tuck) * Math.min(1, TUCK_RATE * 1.5 * dt);
     this.striding += (0 - this.striding) * Math.min(1, STRIDE_OUT * dt);
     if (done) {
-      this.traverse = null;
+      this.endTraverse(true);
       this.jumpLock = JUMP_LOCK;
     }
   }
@@ -1654,9 +1724,10 @@ export class Fighter {
       // the piece that was hit, which drags the rest after it by its joints.
       if (worse) {
         const hit = this.phys.world.getCollider(impact.colliderHandle)?.parent() ?? this.body;
-        const j = blow.speed * hit.mass();
+        const j = hit.mass();
+        const push = blow.push;
         hit.applyImpulseAtPoint(
-          { x: impact.into.x * j, y: impact.into.y * j, z: impact.into.z * j },
+          { x: push.x * j, y: push.y * j, z: push.z * j },
           { x: impact.at.x, y: impact.at.y, z: impact.at.z }, true);
       }
       return blow;
@@ -1709,15 +1780,25 @@ export class Fighter {
    * bends on the way down.
    */
   private knockDown(blow: Blow): void {
-    this.traverse = null;
+    this.endTraverse(false);
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
     this.reel = 0;
     this.knock.set(0, 0, 0);
 
+    // The whole body goes, not just the hull: the head and the arms are
+    // jointed bodies of their own, and thrown off its feet by a club a body
+    // left them behind for its joints to snatch after it.
+    const thrown = _thrown.set(blow.knock.x, blow.lift, blow.knock.z);
     const lv = this.body.linvel();
-    this.body.setLinvel({ x: lv.x + blow.knock.x, y: lv.y, z: lv.z + blow.knock.z }, true);
+    this.body.setLinvel({ x: lv.x + thrown.x, y: lv.y + thrown.y, z: lv.z + thrown.z }, true);
+    for (const part of this.parts) {
+      if (!part.body || part.severed) continue;
+      const v = part.body.linvel();
+      part.body.setLinvel({ x: v.x + thrown.x, y: v.y + thrown.y, z: v.z + thrown.z }, true);
+    }
+    this.onThrown?.(thrown);
     // Turning about up x dir carries the top of the body along dir.
     const axis = _spin.crossVectors(UP, blow.dir);
     const rate = (blow.over * blow.topple) / this.build.hullCentreY;
@@ -1743,7 +1824,7 @@ export class Fighter {
     // Died on its feet: the blow that did it goes on, because nothing is left
     // to step out of it. A blow that put the body over already has.
     if (this.stance === "up" && !this.ragdoll) this.fallFrom(this._blow);
-    this.traverse = null;
+    this.endTraverse(false);
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
@@ -2260,7 +2341,8 @@ export class Fighter {
     const spin = this.spin;
     const turning = Math.abs(spin) > SPIN_MIN;
     // A body on the floor has nothing to plant: its feet go where its hips do.
-    const moving = this.gait > 0.05 || this.tuck > 0.3 || this.stance !== "up";
+    const moving = this.gait > 0.05 || this.tuck > 0.3 || this.stance !== "up"
+      || this.traverse !== null;
     // Turning, a step takes as long as the hips take to come round `TURN_STEP`.
     const time = turning ? clamp(TURN_STEP / Math.abs(spin), STEP_QUICK, STEP_TIME) : STEP_TIME;
     const follow = Math.min(1, FOLLOW_RATE * dt);
@@ -2436,6 +2518,15 @@ export class Fighter {
       leg.knee = strideKnee + (tuckKnee - strideKnee) * this.tuck + STEP_KNEE * lift
         + crouchKnee * bent;
       leg.roll = roll * bent;
+      // Going over or up something, the pose has the leg -- all of it that
+      // is not standing on the floor. See traverse.ts.
+      if (this.traverse) {
+        const m = this.move.legs[leg.sign < 0 ? 0 : 1];
+        const air = 1 - m.ground;
+        leg.hip += (m.hip - leg.hip) * air;
+        leg.knee += (m.knee - leg.knee) * air;
+        leg.roll += (m.roll - leg.roll) * air;
+      }
       // Knocked down, the legs go slack -- and straighten again on the way up.
       if (this.sprawl > 1e-3) {
         const [hip, knee] = leg.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
@@ -2491,7 +2582,7 @@ export class Fighter {
     if (Math.abs(a - this.fade) < 0.01) return;
     this.fade = a;
 
-    for (const m of [this.clothMat, this.skinMat, this.markMat, this.beltMat]) {
+    for (const m of this.wardrobe.all) {
       m.transparent = a < 1;
       m.opacity = a;
       m.depthWrite = a > 0.6;
@@ -2836,7 +2927,7 @@ export class Fighter {
       leg.step = -1;
     }
     // On its feet, whatever it was doing on the floor.
-    this.traverse = null;
+    this.endTraverse(false);
     this.stance = "up";
     this.stanceTime = 0;
     this.lying = 0;
@@ -2958,6 +3049,72 @@ const _qInv = new THREE.Quaternion();
 const ZERO = { x: 0, y: 0, z: 0 } as const;
 const _qHull = new THREE.Quaternion();
 const _pVault = new THREE.Vector3();
+const _thrown = new THREE.Vector3();
+
+/**
+ * One stage of a vault or a climb: where it ends, as a distance ahead of
+ * where it set off and a height for the soles, and how the height goes from
+ * the last stage's to this one's -- `shape` maps how far across it is to how
+ * far up.
+ */
+interface Stage {
+  x: number;
+  y: number;
+  shape: (f: number) => number;
+}
+
+/** Straight there. */
+const level = (f: number) => f;
+/** Up fast and levelling off: a spring off the floor. */
+const spring = (f: number) => Math.sin((f * Math.PI) / 2);
+/** Coming down: slow over the top, and quicker to the floor. */
+const fall = (f: number) => smoothstep(0, 1, f);
+
+/**
+ * A path of hull centres through stages, from a body at `p` heading along
+ * `dx, dz` with its soles at `soles`: the points, the distance along it to
+ * each landmark, the share of the time at which each is reached, and the
+ * time the whole takes -- each stage a moment whatever its length and more
+ * for every metre, at its own speed, at the body's size. `pace` is a pair
+ * per stage: seconds, and metres a second.
+ */
+function stages(
+  p: { x: number; y: number; z: number }, dx: number, dz: number, soles: number, centre: number,
+  way: readonly Stage[], pace: readonly (readonly [number, number])[], scale: number,
+): { path: THREE.Vector3[]; marks: number[]; times: number[]; duration: number } {
+  const path = [new THREE.Vector3(p.x, p.y, p.z)];
+  const clock = [0];
+  let from = { x: 0, y: soles };
+  for (let k = 0; k < way.length; k++) {
+    const to = way[k];
+    for (let i = 1; i <= STAGE_POINTS; i++) {
+      const f = i / STAGE_POINTS;
+      const x = from.x + (to.x - from.x) * f;
+      const y = from.y + (to.y - from.y) * to.shape(f);
+      path.push(new THREE.Vector3(p.x + dx * x, y + centre, p.z + dz * x));
+    }
+    const [base, speed] = pace[k];
+    clock.push(clock[k] + (base + Math.hypot(to.x - from.x, to.y - from.y) / (speed * scale))
+      * Math.sqrt(scale));
+    from = to;
+  }
+  const along = alongPath(path);
+  const duration = clock[clock.length - 1];
+  return {
+    path,
+    marks: clock.map((_, k) => along[k * STAGE_POINTS]),
+    times: clock.map((t) => t / duration),
+    duration,
+  };
+}
+
+/** The distance along a path to each of its points, from the first. */
+function alongPath(path: readonly THREE.Vector3[]): number[] {
+  const along = [0];
+  for (let i = 1; i < path.length; i++) along.push(along[i - 1] + path[i].distanceTo(path[i - 1]));
+  return along;
+}
+
 const _qChest = new THREE.Quaternion();
 const _pHull = new THREE.Vector3();
 const _hip = new THREE.Vector3();

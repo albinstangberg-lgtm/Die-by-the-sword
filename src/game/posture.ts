@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { Build } from "./anatomy";
 import type { Tuning } from "../tuning";
 import { Spring, clamp, smoothstep, soft } from "./motion";
+import type { Move } from "./traverse";
 
 /**
  * How a fighter carries its body around the sword arm.
@@ -207,6 +208,12 @@ export const SIDE_SWING = 0.18;
 export const LIFT_AHEAD = 0.6;
 export const LIFT_MIDDLE = Math.PI / 2;
 
+/**
+ * How much of the hips' turn in a vault or a climb the chest goes round with:
+ * some, so the shoulders are not left square over hips turned half across.
+ */
+const MOVE_CHEST = 0.3;
+
 /** How the legs are going, for the trunk to go with them. */
 export interface Gait {
   /** The stride phase: the left leg's, radians. See `Fighter.poseLegs`. */
@@ -260,6 +267,13 @@ export class Pose {
   roll = 0;
   /** How far the stride has dipped the body, metres: never above standing. */
   dip = 0;
+  /**
+   * The hips turned by a vault or a climb, radians, positive to the left:
+   * on top of `pelvis` and `hipSwing`, and unlike the stride's swing the legs
+   * go round with it -- it is where they are going, not a twist over feet
+   * that stay put. See traverse.ts.
+   */
+  turn = 0;
 
   /** Where the chest actually faces, relative to the hull. */
   get chestYaw(): number {
@@ -283,6 +297,7 @@ export class Pose {
     this.chestSwing = o.chestSwing;
     this.roll = o.roll;
     this.dip = o.dip;
+    this.turn = o.turn;
     return this;
   }
 
@@ -298,12 +313,13 @@ export class Pose {
     this.chestSwing = a.chestSwing + (b.chestSwing - a.chestSwing) * t;
     this.roll = a.roll + (b.roll - a.roll) * t;
     this.dip = a.dip + (b.dip - a.dip) * t;
+    this.turn = a.turn + (b.turn - a.turn) * t;
     return this;
   }
 
   /** The hips group's turn in the hull's frame: its yaw with the stride, and its tilt. */
   hipsQuat(out: THREE.Quaternion): THREE.Quaternion {
-    return out.setFromEuler(_e.set(0, this.pelvis + this.hipSwing, this.roll, "YXZ"));
+    return out.setFromEuler(_e.set(0, this.pelvis + this.hipSwing + this.turn, this.roll, "YXZ"));
   }
 }
 
@@ -410,8 +426,9 @@ export class Posture {
     // height the body is at now, with the lean the crouch gives it.
     out.sink = this.pose.sink;
     out.lean += this.crouchLean(out.sink) + STOOP_LEAN * this.stoop;
-    // Walking and breathing are motion, and a held aim has none.
-    out.hipSwing = out.chestSwing = out.roll = out.dip = 0;
+    // Walking and breathing are motion, and a held aim has none; nor has
+    // going over or up something.
+    out.hipSwing = out.chestSwing = out.roll = out.dip = out.turn = 0;
     return out;
   }
 
@@ -428,7 +445,7 @@ export class Posture {
       pose.pelvis = pose.spine = pose.lean = pose.bend = 0;
       pose.protract = pose.elevate = 0;
       pose.sink = 0;
-      pose.hipSwing = pose.chestSwing = pose.roll = pose.dip = 0;
+      pose.hipSwing = pose.chestSwing = pose.roll = pose.dip = pose.turn = 0;
     }
     this.breath = 0;
     for (const s of [this.twist, this.hips, this.leanS, this.bendS,
@@ -463,13 +480,15 @@ export class Posture {
    * into the body's own frame. `crouch` is how far down the legs want to be,
    * 0 standing and 1 an ordinary crouch -- a stoop goes further -- `stoop`
    * how far over the body bows to get a hand to the floor, 0..1, `hurt`
-   * how far it is curled round a lost sword arm, 0..1, and `gait` how the
-   * legs are going, for the trunk to walk with them.
+   * how far it is curled round a lost sword arm, 0..1, `gait` how the legs
+   * are going, for the trunk to walk with them, and `move` a vault or a
+   * climb under way: laid on top of the rest (see traverse.ts).
    */
   update(
     drive: PostureDrive | null, focus: THREE.Vector3 | null,
     hullYaw: number, hullPos: { x: number; y: number; z: number },
     t: Tuning, dt: number, crouch = 0, stoop = 0, hurt = 0, gait: Gait | null = null,
+    move: Move | null = null,
   ): void {
     this.prev.copy(this.pose);
     const k = t.secondaryMotion;
@@ -519,7 +538,33 @@ export class Posture {
 
     this.walk(gait, k, dt);
 
+    // Going over or up something: its pose on top of all that. Not through
+    // the springs -- the way is smooth already, and a spring would leave the
+    // legs over the top a tenth of a second after the hull had gone by.
+    pose.turn = 0;
+    if (move) {
+      pose.lean += move.lean;
+      pose.bend += move.bend;
+      pose.sink += move.sink;
+      pose.roll += move.roll;
+      pose.turn = move.turn;
+      // The chest goes some of the way round with the hips.
+      pose.chestSwing += MOVE_CHEST * move.turn;
+    }
+
     this.updateGaze(focus ?? drive?.look ?? null, hullYaw, hullPos, t, dt);
+  }
+
+  /**
+   * A vault or a climb is over: whatever of its pose is left -- the lean it
+   * landed with, the knees still bent under it -- is handed to the springs,
+   * which bring the body back up out of it as they would out of a crouch.
+   * Without this the body snapped upright on the step the hull arrived.
+   */
+  handOver(move: Move): void {
+    this.leanS.x += move.lean;
+    this.bendS.x += move.bend;
+    this.sinkS.x += move.sink;
   }
 
   /**

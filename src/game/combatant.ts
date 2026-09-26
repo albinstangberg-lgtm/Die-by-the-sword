@@ -140,9 +140,20 @@ export class Combatant {
     /** How an impact readout refers to its parts: "your", "the orc's". */
     private readonly possessive: string = species.possessive,
   ) {
-    this.fighter = new Fighter(phys, scene, spawn, side, species.palette, species.build);
+    this.fighter = new Fighter(phys, scene, spawn, side, species.palette, species.build, species.look);
     this.arm = new Arm(phys, scene, this.fighter, tuning, species.weapon, side);
     this.arm.power = species.power;
+    this.arm.heave = (species.heave ?? 0) * this.fighter.body.mass();
+    // Thrown off its feet, the sword arm goes with the body it hangs from.
+    this.fighter.onThrown = (dv) => {
+      if (this.arm.severedAt === "shoulder") return;
+      const bodies = this.arm.severedAt === "elbow"
+        ? [this.arm.upper] : [this.arm.upper, this.arm.fore, this.arm.blade];
+      for (const b of bodies) {
+        const v = b.linvel();
+        b.setLinvel({ x: v.x + dv.x, y: v.y + dv.y, z: v.z + dv.z }, true);
+      }
+    };
     this.offArm = new OffArm(phys, this.fighter, side, tuning);
     this.offArm.power = species.power;
 
@@ -242,9 +253,10 @@ export class Combatant {
   /**
    * Going over or up something, the hands take hold of it: the other hand
    * always, and the sword hand if the sword is away. A hand with a sword in
-   * it cannot -- the blade would go into the stone -- so going up a ledge it
-   * holds the sword up and out of the way instead: held at its guard, a body
-   * driven up a face at a climb's speed swung the blade into the edge.
+   * it cannot -- the blade would go into the stone -- so it holds the sword
+   * up and out of the way instead: held at its guard, a body driven up a
+   * face at a climb's speed swung the blade into the edge, and one sinking
+   * over a wall as it vaults (see traverse.ts) put it into the top.
    */
   private holdOn(): void {
     const hold = this.fighter.handhold;
@@ -253,7 +265,7 @@ export class Combatant {
       this.offArm.stopSling();
       this.offArm.guide(hold.left, hold.weight);
       if (this.arm.sheathed && !this.arm.stowing) this.arm.guide(hold.right, hold.weight);
-      else if (this.arm.wielding && this.fighter.climbing) {
+      else if (this.arm.wielding) {
         const f = this.fighter;
         const s = f.build.scale;
         f.shoulderWorld(_up);
@@ -344,6 +356,13 @@ export class Combatant {
     if (LEGS.test(target.part)) {
       this.legWound += amount;
       this.fighter.lame = Math.min(1, this.legWound / (JOINT_INTEGRITY.knee * this.jointScale));
+    }
+
+    // A club breaks what it lands on and takes nothing off: it hurts, it
+    // lames a leg, it kills, but there is no edge to part a joint with.
+    if (impact.weapon.bite === "blunt") {
+      if (this.health <= 0) this.collapse();
+      return true;
     }
 
     if (target.joint !== null && !this.arm.disarmed) {
