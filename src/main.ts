@@ -1,12 +1,10 @@
 import * as THREE from "three";
 import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
-import { createPhysics, GROUP, groups, makeSides, MAX_FIGHTERS } from "./core/physics";
+import { createPhysics, GROUP, groups, makeSides } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input, type Action } from "./input/input";
-import {
-  buildArena, DUMMY_AT, GATE_AT, GOBLIN_POST, ITEM_LAYOUT, ORC_POST, PEN_POSTS, SPAWN,
-} from "./game/arena";
+import { buildArena, DUMMY_AT, ITEM_LAYOUT, SPAWN } from "./game/arena";
 import { Items, promptFor } from "./game/items";
 import { Pickup } from "./game/pickup";
 import { Targets } from "./game/targets";
@@ -14,10 +12,11 @@ import { Dummy } from "./game/dummy";
 import { Combatant } from "./game/combatant";
 import { PLAYER_PALETTE } from "./game/fighter";
 import { MAN_LOOK } from "./game/look";
-import { GOBLIN, ORC, SPECIES, SWORDSMAN, type Species } from "./game/species";
+import { gateHeard, ROSTER, spawnOf } from "./game/roster";
+import { SWORDSMAN } from "./game/species";
 import type { Arm } from "./game/arm";
 import type { Fighter } from "./game/fighter";
-import { Ai, noise } from "./game/ai";
+import { Ai } from "./game/ai";
 import { Impacts } from "./game/impacts";
 import { Trail } from "./game/trail";
 import { Hud, type Kit } from "./ui/hud";
@@ -27,90 +26,16 @@ import { Panel, loadTuning } from "./ui/panel";
 /**
  * Die by the Sword.
  *
- * Four rooms, a practice dummy, and things that want to kill you: an orc with
- * an axe in the hall beyond the north door, a goblin with a spear in the cell
- * beyond that, and two more orcs behind a gate at the far end of the hall.
- * A kobold with a hatchet and an ogre with a club have no room yet, and come
- * only when asked for (`?spawn=kobold,ogre`, see `TRYING`). Every one of them
- * -- you included -- is the same Combatant driving the same physical arm
- * under the same force clamp. The only difference between a player and a
- * monster here is who supplies the mouse deltas, and how big the animal
- * holding the weapon is.
+ * A hall, a practice dummy, and things that want to kill you behind four
+ * gates off it: two orcs with axes in the pen, two kobolds with hatchets in
+ * the warren, three goblins with spears in the cell, and an ogre with a club
+ * in the den (see arena.ts, and roster.ts for who stands where). Nothing
+ * comes out until you pull the lever beside its gate. Every one of them --
+ * you included -- is the same Combatant driving the same physical arm under
+ * the same force clamp. The only difference between a player and a monster
+ * here is who supplies the mouse deltas, and how big the animal holding the
+ * weapon is.
  */
-
-interface Foe {
-  species: Species;
-  at: THREE.Vector3;
-  /** Which way it faces at its post, as a yaw; north if not given. */
-  facing?: number;
-  /** How the fight panel names it, if not by its species. */
-  name?: string;
-}
-
-/**
- * The pen's two orcs: told apart by name on the fight panel, and by what
- * they wear -- nothing else about them differs from the hall's.
- */
-const PEN_ORCS = [
-  { name: "the second orc", cloth: 0x33322e },
-  { name: "the third orc", cloth: 0x5c3d29 },
-];
-
-/** The pen's two orcs, at their posts behind the gate. */
-const PEN: Foe[] = PEN_POSTS.map((p, i) => ({
-  species: { ...ORC, palette: { ...ORC.palette, cloth: PEN_ORCS[i].cloth } },
-  at: post(p.at, ORC.build.hullCentreY),
-  facing: p.facing,
-  name: PEN_ORCS[i].name,
-}));
-
-/**
- * Creatures with no room of their own yet -- the kobold, the ogre -- asked
- * for by name in the address, `?spawn=kobold` or `?spawn=kobold,ogre`, to try
- * out: at the north end of the training room, facing you, up to two of them.
- * There are six fighters' worth of collision slots (see physics.ts) and the
- * rooms already hold five, so two of them make way by leaving the pen empty.
- */
-const TRY_POSTS = [
-  { at: new THREE.Vector3(-2.2, 0, 2.4), facing: Math.PI },
-  { at: new THREE.Vector3(2.2, 0, 2.4), facing: Math.PI },
-];
-const TRYING: Foe[] = (new URLSearchParams(location.search).get("spawn") ?? "")
-  .split(",").map((k) => (SPECIES as Record<string, Species>)[k.trim().toLowerCase()])
-  .filter((sp): sp is Species => sp !== undefined)
-  .slice(0, TRY_POSTS.length)
-  .map((species, i) => ({
-    species, at: post(TRY_POSTS[i].at, species.build.hullCentreY), facing: TRY_POSTS[i].facing,
-  }));
-
-/**
- * The opponents, and where they wait.
- *
- * One to a room, which is the whole point of the layout: you meet the orc on
- * its own and then the goblin on its own, and whatever you learn from the
- * first you get to use on the second. Then the pen, where two of them wait
- * together behind a gate that stays shut until you open it: what two at once
- * is like is something you choose to find out. Their spawn heights are their
- * own hulls' centres, so nobody starts sunk into the floor or dropping into
- * it.
- */
-const FOES: Foe[] = [
-  { species: ORC, at: post(ORC_POST, ORC.build.hullCentreY) },
-  { species: GOBLIN, at: post(GOBLIN_POST, GOBLIN.build.hullCentreY) },
-  ...(1 + 2 + PEN.length + TRYING.length <= MAX_FIGHTERS ? PEN : []),
-  ...TRYING,
-];
-
-/**
- * How far off the gate going up is heard, metres: across the pen, and the
- * far end of the hall -- not through the cell's walls and the length of the
- * hall besides.
- */
-const EARSHOT = 10;
-
-function post(at: THREE.Vector3, hullCentreY: number): THREE.Vector3 {
-  return new THREE.Vector3(at.x, hullCentreY + 0.11, at.z);
-}
 
 const mount = document.getElementById("app")!;
 const veil = document.getElementById("veil")!;
@@ -131,16 +56,17 @@ async function main(): Promise<void> {
   // One side per fighter, all the foes on one team. Deriving them together is
   // what makes "everyone's weapon but my own, and not my ally's back" a filter
   // rather than a pile of special cases.
-  const sides = makeSides([0, ...FOES.map(() => 1)]);
+  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
+  const gateways = Object.values(arena.gateways);
 
   const player = new Combatant(phys, renderer.scene, SPAWN, sides[0], tuning,
     targets, { ...SWORDSMAN, palette: PLAYER_PALETTE, look: MAN_LOOK }, "you", "your");
-  const foes = FOES.map((f, i) => ({
-    combatant: new Combatant(phys, renderer.scene, f.at, sides[i + 1], tuning,
-      targets, f.species, f.name, f.name && `${f.name}'s`),
-    ai: new Ai(f.species),
-    spawn: f.at,
-    facing: f.facing ?? 0,
+  const foes = ROSTER.map((o, i) => ({
+    combatant: new Combatant(phys, renderer.scene, spawnOf(o), sides[i + 1], tuning,
+      targets, o.species, o.name, `${o.name}'s`),
+    ai: new Ai(o.species),
+    spawn: spawnOf(o),
+    facing: o.facing,
   }));
   // Turned to face the way it faces at its post before it has thought once:
   // its first thought takes its post, and the way it faces there, as it
@@ -160,8 +86,8 @@ async function main(): Promise<void> {
   const items = new Items(renderer.scene, ITEM_LAYOUT);
   // Whatever comes off an opponent can be picked up and carried off.
   items.watch(foes.map((f) => f.combatant));
-  // And F goes to the lever as it goes to anything, to pull it.
-  items.add(arena.lever.item);
+  // And F goes to a lever as it goes to anything, to pull it.
+  for (const g of gateways) items.add(g.lever.item);
   const pickup = new Pickup(player, items);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
@@ -181,8 +107,10 @@ async function main(): Promise<void> {
       interp.add(c.arm.blade, c.arm.bladeMesh);
     }
     for (const [body, mesh] of dummy.bodies) interp.add(body, mesh);
-    interp.add(arena.lever.body, arena.lever.mesh);
-    interp.add(arena.gate.body, arena.gate.mesh);
+    for (const g of gateways) {
+      interp.add(g.lever.body, g.lever.mesh);
+      interp.add(g.gate.body, g.gate.mesh);
+    }
   };
   registerBodies();
   // A piece let go of starts from the hand, wherever it last lay.
@@ -222,15 +150,13 @@ async function main(): Promise<void> {
       hud.showSever({ label: `${f.combatant.name} is down`, at: new THREE.Vector3() });
   }
 
-  // The gate going up is a noise, and anything near enough to hear it that
-  // is not already after you goes to see: through the gateway, and on out
-  // the far side of it. It knows nothing more than that; if you are not
-  // where it can see you once it gets there, it looks round and goes home.
-  const heardAt = new THREE.Vector3(GATE_AT.x, 1.6, GATE_AT.z);
-  arena.gate.onStart = () => {
-    hud.showNote("the gate grinds up");
-    noise(heardAt, EARSHOT, foes);
-  };
+  // A gate going up is a noise, and whatever is behind it comes to see why.
+  for (const g of gateways) {
+    g.gate.onStart = () => {
+      hud.showNote(`${g.room.name}'s gate grinds up`);
+      gateHeard(g.spec.room, foes);
+    };
+  }
 
   // Two weapons met and one was knocked aside: say so, when it was yours or
   // theirs by you, and hard enough to be an opening rather than a tap.
@@ -348,10 +274,12 @@ async function main(): Promise<void> {
       f.ai.reset();
     }
     face();
-    // Shut behind them again, now that nobody is standing in the gateway, and
-    // the lever back up.
-    arena.lever.reset();
-    arena.gate.reset();
+    // Shut behind them again, now that nobody is standing in the gateways, and
+    // the levers back up.
+    for (const g of gateways) {
+      g.lever.reset();
+      g.gate.reset();
+    }
     dummy.reset();
     // The rays anybody casts before the world next steps -- what an opponent
     // sees, thinking first thing -- see all that where it now is, and not the
@@ -377,8 +305,8 @@ async function main(): Promise<void> {
 
   applyTuning();
   // The world's rays find nothing until it has stepped once, and everybody
-  // looks before the first step: the walls -- and the pen's gate -- have to
-  // be there to look at.
+  // looks before the first step: the walls -- and the gates -- have to be
+  // there to look at.
   phys.world.updateSceneQueries();
 
   // --- camera: over the left shoulder, so the right arm stays in frame ---
@@ -526,13 +454,13 @@ async function main(): Promise<void> {
         f.ai.think(f.combatant, player, tuning, dt);
         f.combatant.act(f.ai, f.ai.keys, tuning, dt);
       }
-      arena.gate.step(dt);
+      for (const g of gateways) g.gate.step(dt);
 
       interp.capture();
       phys.step();
       interp.commit();
-      // Pulled far enough, the lever catches, and sets the gate going.
-      arena.lever.update();
+      // Pulled far enough, a lever catches, and sets its gate going.
+      for (const g of gateways) g.lever.update();
       items.update();
 
       for (const c of everyone) c.arm.updateDerived();

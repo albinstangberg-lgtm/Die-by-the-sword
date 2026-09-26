@@ -3198,7 +3198,7 @@ export class Ai implements ArmInput {
 }
 
 /**
- * A noise at `at` -- the pen's gate going up: every one of `listeners` alive
+ * A noise at `at` -- a gate going up: every one of `listeners` alive
  * and within `earshot` of it, flat metres, hears it (see `Ai.hear`) and goes
  * to see, on out the far side of it from where it stood. How many did.
  */

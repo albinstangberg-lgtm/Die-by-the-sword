@@ -378,7 +378,7 @@ export class Hud {
 
   private refreshFight(): void {
     if (!this.player) return;
-    const row = (c: Combatant) => {
+    const row = (c: Combatant, outlook = "") => {
       const s = c.state;
       const pct = (s.health / s.maxHealth) * 100;
       const cls = s.dead ? "gone" : pct < 30 ? "bad" : pct < 60 ? "warn" : "";
@@ -391,23 +391,23 @@ export class Hud {
         s.dead ? "dead" : "",
       ].filter(Boolean).join(" · ");
       return `<div class="limb ${cls}">
-          <span>${c.name}${tags ? ` — ${tags}` : ""}</span>
+          <span>${c.name}${tags ? ` — ${tags}` : ""}</span>${outlook ? `<em>${outlook}</em>` : ""}
           <i style="width:${pct.toFixed(0)}%"></i>
         </div>`;
     };
 
     /**
-     * Whether it has noticed you, and nothing more.
+     * After each opponent's name, whether it has noticed you, and nothing
+     * more.
      *
-     * This line used to name the attack being wound up and say how to beat
-     * it, with a bar filling toward the moment it landed. Nothing says what is
-     * coming now: you read that off its arm.
+     * This used to be a line of its own naming the attack being wound up and
+     * saying how to beat it, with a bar filling toward the moment it landed.
+     * Nothing says what is coming now: you read that off its arm. And it goes
+     * on the same line as its health, so that eight of them fit down the side
+     * of the screen.
      */
-    const outlook = (f: TrackedFoe) =>
-      `<div class="intent">${f.combatant.name}: ${f.ai.outlook}</div>`;
-
     this.fightEl.innerHTML = `<h2>Fight</h2>${row(this.player)}`
-      + this.foes.map((f) => row(f.combatant) + outlook(f)).join("");
+      + this.foes.map((f) => row(f.combatant, f.ai.outlook)).join("");
   }
 
   /** Integrity bars for every joint still holding. */

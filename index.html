@@ -59,14 +59,19 @@
       .bar.bad > i { background: #d8562f; }
 
       #fight {
-        top: 0; right: 0; padding: 0.9rem 1.1rem; width: 15rem; z-index: 10;
+        top: 0; right: 0; padding: 0.9rem 1.1rem; width: 20rem; z-index: 10;
         text-shadow: 0 1px 3px rgba(0,0,0,0.95);
       }
       #fight h2 {
         font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
         color: var(--dim); font-weight: 500; margin: 0 0 0.5rem;
       }
-      #fight .intent { color: var(--dim); margin-top: 0.2rem; margin-bottom: 0.5rem; }
+      #fight .limb { display: flex; align-items: baseline; }
+      #fight .limb > span { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #fight .limb > em {
+        position: relative; z-index: 1; flex: none; margin-left: 0.5rem;
+        color: var(--dim); font-style: normal;
+      }
       #panel:not(.hidden) ~ #fight { display: none; }
 
       /* A red vignette when the player is cut — the camera is behind the
