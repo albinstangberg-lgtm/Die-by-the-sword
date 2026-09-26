@@ -2479,6 +2479,14 @@ async function factionsGoForEachOther(): Promise<void> {
     `the kobold after ${kobold.ai.fighting?.name ?? "nobody"}`);
   // Come to its elbow, it is a good deal nearer than you are, and once it
   // lands a blow it is the one that did: either way the orc turns round.
+  //
+  // What is asked here is the orc's answer to the kobold, so from here on
+  // the kobold does not know you are there. Left to itself, one whose way to
+  // the orc took it past you -- the orc goes round you as it fights, and
+  // drags the kobold's way round with it -- found you twice as near as the
+  // orc, and turned on you instead, as it should (see `TURN_ON`); and the orc
+  // never had anything at its back to turn round on.
+  kobold.ai.company = [kobold.combatant, orc.combatant];
   let turned = -1;
   let near = Infinity;
   for (let i = 0; i < 60 * 15 && turned < 0; i++) {
