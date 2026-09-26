@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { Loop, STEP } from "./core/loop";
 import { Renderer } from "./core/renderer";
-import { createPhysics, GROUP, groups, makeSides } from "./core/physics";
+import { createPhysics, GROUP, groups, makeSides, MAX_FIGHTERS } from "./core/physics";
 import { Interpolator } from "./core/interpolate";
 import { Input, type Action } from "./input/input";
 import {
@@ -13,7 +13,8 @@ import { Targets } from "./game/targets";
 import { Dummy } from "./game/dummy";
 import { Combatant } from "./game/combatant";
 import { PLAYER_PALETTE } from "./game/fighter";
-import { GOBLIN, ORC, SWORDSMAN, type Species } from "./game/species";
+import { MAN_LOOK } from "./game/look";
+import { GOBLIN, ORC, SPECIES, SWORDSMAN, type Species } from "./game/species";
 import type { Arm } from "./game/arm";
 import type { Fighter } from "./game/fighter";
 import { Ai, noise } from "./game/ai";
@@ -29,10 +30,12 @@ import { Panel, loadTuning } from "./ui/panel";
  * Four rooms, a practice dummy, and things that want to kill you: an orc with
  * an axe in the hall beyond the north door, a goblin with a spear in the cell
  * beyond that, and two more orcs behind a gate at the far end of the hall.
- * Every one of them -- you included -- is the same Combatant driving the same
- * physical arm under the same force clamp. The only difference between a
- * player and a monster here is who supplies the mouse deltas, and how big the
- * animal holding the weapon is.
+ * A kobold with a hatchet and an ogre with a club have no room yet, and come
+ * only when asked for (`?spawn=kobold,ogre`, see `TRYING`). Every one of them
+ * -- you included -- is the same Combatant driving the same physical arm
+ * under the same force clamp. The only difference between a player and a
+ * monster here is who supplies the mouse deltas, and how big the animal
+ * holding the weapon is.
  */
 
 interface Foe {
@@ -53,6 +56,33 @@ const PEN_ORCS = [
   { name: "the third orc", cloth: 0x5c3d29 },
 ];
 
+/** The pen's two orcs, at their posts behind the gate. */
+const PEN: Foe[] = PEN_POSTS.map((p, i) => ({
+  species: { ...ORC, palette: { ...ORC.palette, cloth: PEN_ORCS[i].cloth } },
+  at: post(p.at, ORC.build.hullCentreY),
+  facing: p.facing,
+  name: PEN_ORCS[i].name,
+}));
+
+/**
+ * Creatures with no room of their own yet -- the kobold, the ogre -- asked
+ * for by name in the address, `?spawn=kobold` or `?spawn=kobold,ogre`, to try
+ * out: at the north end of the training room, facing you, up to two of them.
+ * There are six fighters' worth of collision slots (see physics.ts) and the
+ * rooms already hold five, so two of them make way by leaving the pen empty.
+ */
+const TRY_POSTS = [
+  { at: new THREE.Vector3(-2.2, 0, 2.4), facing: Math.PI },
+  { at: new THREE.Vector3(2.2, 0, 2.4), facing: Math.PI },
+];
+const TRYING: Foe[] = (new URLSearchParams(location.search).get("spawn") ?? "")
+  .split(",").map((k) => (SPECIES as Record<string, Species>)[k.trim().toLowerCase()])
+  .filter((sp): sp is Species => sp !== undefined)
+  .slice(0, TRY_POSTS.length)
+  .map((species, i) => ({
+    species, at: post(TRY_POSTS[i].at, species.build.hullCentreY), facing: TRY_POSTS[i].facing,
+  }));
+
 /**
  * The opponents, and where they wait.
  *
@@ -67,12 +97,8 @@ const PEN_ORCS = [
 const FOES: Foe[] = [
   { species: ORC, at: post(ORC_POST, ORC.build.hullCentreY) },
   { species: GOBLIN, at: post(GOBLIN_POST, GOBLIN.build.hullCentreY) },
-  ...PEN_POSTS.map((p, i) => ({
-    species: { ...ORC, palette: { ...ORC.palette, cloth: PEN_ORCS[i].cloth } },
-    at: post(p.at, ORC.build.hullCentreY),
-    facing: p.facing,
-    name: PEN_ORCS[i].name,
-  })),
+  ...(1 + 2 + PEN.length + TRYING.length <= MAX_FIGHTERS ? PEN : []),
+  ...TRYING,
 ];
 
 /**
@@ -108,7 +134,7 @@ async function main(): Promise<void> {
   const sides = makeSides([0, ...FOES.map(() => 1)]);
 
   const player = new Combatant(phys, renderer.scene, SPAWN, sides[0], tuning,
-    targets, { ...SWORDSMAN, palette: PLAYER_PALETTE }, "you", "your");
+    targets, { ...SWORDSMAN, palette: PLAYER_PALETTE, look: MAN_LOOK }, "you", "your");
   const foes = FOES.map((f, i) => ({
     combatant: new Combatant(phys, renderer.scene, f.at, sides[i + 1], tuning,
       targets, f.species, f.name, f.name && `${f.name}'s`),

@@ -58,10 +58,24 @@ drive against the lever's spring — until it catches. The gate grinds up into
 the gatehouse over it, and the two orcs in the pen behind it hear it go and
 come out to see why.
 
+And there are two more things to fight, with no room of their own yet: a
+kobold, a little over a metre of scaly, skittish thing with a hatchet, and an
+ogre, two and a half metres of it with an iron-bound oak club that cuts
+nothing at all. It hits you and you go flying. Put `?spawn=kobold,ogre` on the
+address, or either one alone, and they wait for you at the north end of the
+training room (see [The bestiary](#the-bestiary)). Everyone has a face now, too, and something
+on: your tunic, bracers and boots, the orc's harness and tusks, the goblin's
+rags, the kobold's horns and tail, the ogre's hide — none of it ever hit by
+anything, and all of it fading with the body when the camera is backed into a
+wall. And going over a wall or up onto a ledge is a body doing it: the vault
+springs off the near side, plants a hand on the top and swings the legs round
+over it, and the climb hangs off the edge, heaves the chest over and brings a
+knee up onto it.
+
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 409 checks, no browser needed
+npm run smoke    # headless physics harness — 431 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -350,8 +364,9 @@ it falls the way the blow sent it — over its feet if it was hit high, onto its
 back if its legs were taken. It lies there most of a second, pulls itself
 together, is driven back up round its feet the way it is walked — by its
 velocity, never placed — and takes its weapon back up to the guard. Only the
-sideways part of a blow counts: one straight down drives a body into the floor,
-and the floor pushes back.
+sideways part of a blade's blow counts: one straight down drives a body into
+the floor, and the floor pushes back. A club is another matter (see
+[Sent flying](#sent-flying)).
 
 The same swing — your sword, 8 m/s into the upper chest:
 
@@ -379,6 +394,39 @@ kilos it went into.
 The practice dummy takes a blow like a punching bag, through its middle
 wherever it lands, and its mount drags, so it rocks and settles inside half a
 second.
+
+### Sent flying
+
+A blade goes in and stops, and what a body takes from it is what a blow that
+sticks can give. The ogre's club does not stick. Three things set it apart
+from a blade of the same weight and speed, all in
+[`balance.ts`](src/game/balance.ts):
+
+- **it comes back off you.** Oak bound in iron rebounds, and a blow that
+  bounces gives the body more than one that stays: along the line it drove in
+  on, the body is sent (1 + rebound) times as fast as a sticking blow would
+  send it, and the club's `rebound` is 0.4. Square on, at the same weight and
+  speed, a club throws a body at 3.84 m/s where a blade throws it at 2.74.
+- **it takes you where it was going.** Its speed across the body goes with the
+  body too, as far as rough wood and iron studs can grip — never faster than
+  six tenths of what it presses in with — so a club that glances off drags a
+  body at 0.28 m/s where a square one throws it at 3.84.
+- **coming up, it lifts you.** A blade's blow counts only along the floor,
+  since one straight down drives a body into the floor and the floor pushes
+  back. A club's upward part is lift, and a body lifted has nothing under it to
+  step out of the rest with, so lift counts against balance as a shove does.
+
+And the ogre puts itself behind it: a tenth of its 317 kilos, on top of its arm
+and the club, makes 54 kilos of blow, against 11 behind the orc's axe and 5.6
+behind your sword. When that puts you down, all of you goes together — the
+chest, the hips, the legs, the arm and the sword in it are all given the same
+kick — so you go up and over as one body, rather than having your chest
+snatched out from under your legs. Swung up through you in the harness's cell,
+it puts you on the floor half a dozen times in under a minute, throwing you
+as far as three to six metres, and you get up again with everything still on.
+In half a minute of an ordinary fight it floors you five to eight times and
+takes more than half your health. A kobold's hatchet has yet to put anybody
+down.
 
 ### Weapons meeting
 
@@ -825,6 +873,17 @@ into the edge. A wall is no ledge, and a pillar is no ledge: there is nothing
 on top of either to stand on. The training room has a ledge in its south-west
 corner, a metre and a half up, and a crate against it to go up by in two.
 
+And it goes up the way a body does. It takes hold of the edge and hangs off
+it with its feet still on the face, pulls itself up until its hips are at the
+top, throws its chest out over the edge, and brings one knee up onto it, then
+the other foot, and stands. The knee stays down and the foot tucked under the
+hips until the hips have come up past the top, so the legs stay out of the
+face on the way: the harness lets neither go more than two centimetres into
+the stone. The poses are keyed to landmarks along the way up — the hands on
+the edge, the hips level with the top, the body clear of it, standing — the
+same landmarks the body is driven through, so it is where its pose says it is
+at every one of them.
+
 ### Vaulting
 
 **V** goes over something between knee and chest high, rather than up onto it.
@@ -836,6 +895,16 @@ does nothing. The body is driven up, over and down by its velocity, a hand
 planted on the top on the way. The hall's block is vaultable, and the training
 room has a low wall along its west side to practise on — **Space** with **W**
 there climbs onto it instead.
+
+The body runs in level and springs from just short of the near side, rather
+than rising off its first step. The other hand goes down flat on the top as it
+comes over the edge, and the body turns on it: hips skimming the top, knees
+tucked, the legs swung round over it to the side, then unwinding on the far
+side to come down on both feet, still leaning into the way it was going. A
+hand with a sword in it lifts the sword clear, as it does on a climb. The
+harness holds it to what it looks like: the legs never more than two
+centimetres into the stone all the way over, the hips within half a metre of
+the top and turned, and the planted hand on it.
 
 ## The testing area
 
@@ -933,7 +1002,7 @@ nothing.
 
 ## The bestiary
 
-Three creatures, and not one of them has a stat block. A species is **a size, a
+Five creatures, and not one of them has a stat block. A species is **a size, a
 weapon, and the shapes of swing its arm knows** — everything that makes an orc
 feel like an orc falls out of the physics those three imply.
 
@@ -942,6 +1011,8 @@ feel like an orc falls out of the physics those three imply.
 | **you / the swordsman** | 1.85m, 82kg | sword, 1.4kg | the reference. Every number in this project was tuned against this figure. |
 | **the orc** | 2.11m, 147kg | axe, 3.65kg | slow, enormous, committed to everything it starts |
 | **the goblin** | 1.37m, 32kg | spear, 1.05kg | outreaches you, and does nothing else well |
+| **the kobold** | 1.11m, 16kg | hatchet, 0.7kg | at your knees, never still, and gone before you can answer |
+| **the ogre** | 2.52m, 317kg | club, 6kg | slow, and does not need to be quick: it hits you and you go flying |
 
 (Masses are the walking body — the hull that does the shoving. Arms and weapons
 are separate bodies on top.)
@@ -949,7 +1020,8 @@ are separate bodies on top.)
 Bodies are one set of human proportions multiplied by a length scale and a
 thickness scale. Lengths go with the scale, thicknesses with scale × girth, and
 mass with volume — so a goblin at 0.74 weighs a third of you and an orc at 1.14
-nearly twice. That cube law is doing real work: it is why an orc shrugs off a
+nearly twice, a kobold at 0.6 a fifth, and an ogre at 1.36, built thick, nearly
+four times. That cube law is doing real work: it is why an orc shrugs off a
 cut that fells a goblin, and it is geometry rather than a difficulty setting.
 
 Two things are derived from that mass, at different rates, and the gap between
@@ -966,12 +1038,58 @@ Nor do you knock one over. The same mass is what a blow has to move, and
 nothing you can swing moves 173 kilos (see [Weight](#weight)). A goblin, you
 can put on the floor.
 
+The kobold and the ogre are the same two laws at the two ends of them. A
+kobold carries 19 health to your 100 and a neck one clean cut goes through; it
+lives by never being where you swung — it skitters, darts in and out again,
+hops clear of most of what comes at it, and lets go of its own swing when you
+cut it — and by going for your legs. An ogre carries 387, with joints only
+two and a half times as hard as yours, so its arm still comes off; but nothing
+here puts it on the floor, and its club puts you there (see
+[Sent flying](#sent-flying)). Neither has a room yet. `?spawn=kobold`,
+`?spawn=ogre` or `?spawn=kobold,ogre` on the address puts them at the north end
+of the training room, facing you; there are six fighters' worth of collision
+slots and the rooms already hold five, so while two of them are there the pen
+stands empty.
+
 The one number a species declares that its size does not explain is `grit`, a
-strength multiplier, and exactly one creature needs it. A goblin's spear is a
-metre of lever; at the strength its shoulders imply, the arm's torque budget
-cannot hold the shaft on line while the hand accelerates, and every thrust
-arrived rotating and landed flat. A wiry thing that is strong for its size is
-both the obvious answer and the true one.
+strength multiplier, and the two smallest creatures need it. A goblin's spear
+is a metre of lever; at the strength its shoulders imply, the arm's torque
+budget cannot hold the shaft on line while the hand accelerates, and every
+thrust arrived rotating and landed flat. A kobold's hatchet hung off an arm
+that short and landed too slowly to bite. A wiry thing that is strong for its
+size is both the obvious answer and the true one.
+
+And one creature declares `heave`: how much of its own body it throws in
+behind a blow after its arm. Only the ogre does, a tenth of itself.
+
+### What they look like
+
+Every body is the same tapered shells laid over the same capsules
+([`skin.ts`](src/game/skin.ts)), and those are shaped like limbs now: a calf is
+fullest up by the knee, a forearm by the elbow. Past its size and its
+colours, what tells one creature from another is its **look**
+([`look.ts`](src/game/look.ts)) — a face, what it wears, and what it is made
+of:
+
+| | face | wears |
+|---|---|---|
+| **you** | a nose, a brow, a chin, ears, cropped hair | a tunic belted over breeches, bracers, boots |
+| **the swordsman** | the same, under a steel cap with a nasal | the same, and plates on the shoulders |
+| **the orc** | a heavy brow, a flat nose, a jaw thrust out, tusks, pointed ears, a topknot | a leather harness over a bare chest, bracers, boots |
+| **the goblin** | a long nose, big ears, yellow eyes that catch the light | rags and a sash, bare clawed feet |
+| **the kobold** | a snout, teeth, horns swept back, frills, scales | a hide round its middle, a tail, clawed feet |
+| **the ogre** | a wide flat nose, an underslung jaw, short tusks, a topknot | a gut, a hide round its middle, clawed feet |
+
+The surfaces are made rather than painted: cloth has a weave, leather a grain,
+skin is mottled and a kobold's is scaled, each one grey, shading whatever
+colour it is laid on, and its own bump map. They are built from numbers
+rather than drawn on a canvas, so the headless harness builds them as happily
+as a browser does. None of it is anything a blade finds: it hangs off the meshes that are
+already placed, so a head that comes off takes its ears and its helm with it,
+and all of it fades with the body when the camera is backed into a wall. The
+weapons have been given the same care — a sword blade faceted to a ridge and a
+point, with a crossguard, a cord-bound grip and a wheel pommel, and an axe
+head that thins to its edge.
 
 ### The weapons
 
@@ -993,11 +1111,23 @@ hand. Almost everything that distinguishes them falls out of that.
   the axe's; the butt behind the hand balances the head in front of it and
   brings that down by a third. Swung side on it is still a broom handle. Driven
   down its own length it is the most dangerous thing in the room.
+- **The hatchet** is the axe made small: 0.7kg over forty centimetres, most of
+  it in a head that thins to its edge. There is too little of it to carry the
+  arm round after it, so it goes where the kobold's arm puts it, and what
+  little there is bites keener than a sword's edge — but only at the head.
+- **The club** is 6kg of oak with iron bands and studs round its head, 4.6 of
+  it in the last half metre. It is the one weapon here that does not bite: it
+  lands the same whichever way it is turned, the forearm does not twist to put
+  an edge on line, and it never takes anything off anyone — forty blows leave
+  an arm on that two cuts of your sword take off. Its damage is what it does
+  to your health, and what it does to where you are standing.
 
 Four things a weapon declares rather than derives, because they describe the
-shape of its business end and a mass never can: which axis bites (an edge, or a
-point), where along itself its leverage is, how fast it has to be moving to do
-anything, and how concentrated that bite is.
+shape of its business end and a mass never can: which axis bites (an edge, a
+point, or none of it — blunt), where along itself its leverage is, how fast it
+has to be moving to do anything, and how concentrated that bite is. A blunt
+one declares a fifth, how far it comes back off what it hits (see
+[Sent flying](#sent-flying)).
 
 ### Swings, made up as they are thrown
 
@@ -1406,7 +1536,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Sixty-seven things the physics taught us
+## Seventy-one things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2066,6 +2196,34 @@ every hull bumps into every other, whoever's side it is on, and nothing meets
 its own colliders anyway. The hulls share one bit now, and at two bits a
 fighter there is room for six.
 
+**A vault that rises from its first step never gets a hand on the top.** The
+first vault drove the body along one curve from where it stood, up, over and
+down, so it was climbing from the moment it set off — and the hand that was to
+go down on the top was still more than half a metre short of it as the body
+went over. A body does not rise until it springs. It runs in level now, takes
+off just short of the near side, and the hand has something to go down on.
+
+**A knee brought up in front of a body hanging off a wall is a knee in the
+wall.** The first climb brought a knee up as soon as the hands had the edge,
+the way a climb is usually drawn, and the knee went twenty centimetres into
+the face. The knee stays down and the foot tucked under the hips until the
+hips are up past the top now, and the harness measures the legs' own colliders
+against the stone for the whole of both moves, not just the hull.
+
+**Easing a foot down to the floor put it through the edge.** Between a posed
+leg and one standing on the top, the leg was eased from the one's angles to the
+other's, and halfway there it described a leg that was neither, whose foot was
+in the stone. A key that puts a foot down now takes its angles from the pose
+beside it, so between the two only how much of the leg the floor has changes.
+
+**Reach is measured at the height of what you swing at.** Every creature
+measures how far its weapon reaches level with your chest, and for everything
+up to now that was where it swung. A kobold swings at your legs half the time,
+and measured at your chest, with its short arm reaching up for it, its reach
+came out at half a metre: it stood on your toes to swing, and hacked at you on
+the way back as much as on the way through. Reach is measured now at whichever
+of your head, your middle and your legs a creature goes for most.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -2298,7 +2456,8 @@ Some things look like bugs and are not:
 
 ```
 src/
-  main.ts            wiring, camera, who is in which room
+  main.ts            wiring, camera, who is in which room, and who comes when
+                     asked for (`?spawn=`)
   tuning.ts          every constant that shapes the feel
   core/
     loop.ts          fixed 60Hz accumulator
@@ -2308,13 +2467,22 @@ src/
   input/input.ts     pointer lock, accumulated deltas
   game/
     arm.ts           THE MECHANIC — read this one first
-    weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
-    species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
+    weapons.ts       sword, axe, spear, hatchet, club: masses, leverage, what
+                     bites -- or, for a club, how far it comes back off you --
+                     and inertia
+    species.ts       the bestiary — a size, a weapon, the shapes of swing it
+                     knows, and what it looks like
+    look.ts          faces, clothes, harness, helm, tail and claws: what a
+                     creature wears over its shells, and the woven, grained,
+                     mottled and scaled surfaces they are made of
     anatomy.ts       one set of proportions, scaled to any body
     fighter.ts       torso, locomotion, the jump, the climb and the vault, feet
                      that stay planted and step round a turn, a stride that goes
                      the way the body does, legs that bend into a crouch or a
                      stoop, and a body that can be knocked over and get back up
+    traverse.ts      the vault and the climb as a body does them: poses keyed
+                     to the landmarks along the way, and how fast it goes
+                     between them
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
                      how far a crouch sinks it and a stoop bows it over, the
                      hips and chest walking with the legs whichever way they
@@ -2347,8 +2515,10 @@ src/
     cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
-    balance.ts       what a blow does to a body that has to stay on its feet
-    skin.ts          the visible body: tapered shells over the capsules
+    balance.ts       what a blow does to a body that has to stay on its feet,
+                     and how far a club sends one that cannot
+    skin.ts          the visible body: tapered shells over the capsules, full
+                     where the muscle is
     blood.ts         droplets, and the two faces a cut leaves behind
     impacts.ts       contact events -> impact quality; gold sparks off stone, red off flesh
     targets.ts       collider -> name registry
@@ -2358,7 +2528,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 409 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 431 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -2370,7 +2540,13 @@ hovers roughly where it belongs — jumps a fighter and measures where it lands,
 round slower than a sword on the same arm and the same command, shows that a
 spear held by the butt swings markedly less far than a choked-up one, and runs
 half a minute of live fight against each species to check it closes, swings,
-lands cuts, and never exceeds the reach of its own arm.
+lands cuts, and never exceeds the reach of its own arm. It holds the vault and
+the climb to what they look like — legs out of the stone, a hand on the top,
+the chest over the edge — puts a club and a blade of the same weight through
+the same body to check the club throws it further and lifts it, has the ogre
+swing up through you until it has floored you six times or most of a minute
+has gone and checks you got up whole, and fades every creature to check
+nothing it wears is left hanging in front of the camera.
 
 It also holds the layout to its claims: that each subject is in its own room,
 that a wall stops a line of sight and a doorway does not, that an opponent
@@ -2549,8 +2725,10 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. A thrown axe that
-cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
+A room each for the kobold and the ogre: there are collision slots for six
+fighters and the rooms hold five, so placing both means more slots or an
+empty pen. Rounds and a reason to be in the rooms. Friendly fire. A thrown
+axe that cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually
 wants. Blood that stays on the
