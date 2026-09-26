@@ -4655,14 +4655,28 @@ async function itHopsClearAndFlinches(): Promise<void> {
   // spear: in the cell there is not always floor behind it for a hop, and
   // every swing it parries is one it does not step out of.
   const hopper = { ...GOBLIN, footwork: { ...GOBLIN.footwork, hop: 1, parry: 0 } };
-  const rig = await buildRig({}, hopper, spawnFor(GOBLIN, 20.8, 3.5));
+  const start = spawnFor(GOBLIN, 20.8, 3.5);
+  const rig = await buildRig({}, hopper, start);
   const home = new THREE.Vector3(20.8, HOME.y, 7.2);
   rig.place(home);
   const drive = fencer();
   let rose = 0;
   let floor = rig.foe.position(new THREE.Vector3()).y;
   const it = new THREE.Vector3();
-  for (let i = 0; i < 60 * 45; i++) {
+  // A minute of it, put back where it began every seven and a half seconds.
+  // It only hops out of a swing it sees coming while it is not swinging
+  // itself -- three to ten times a bout -- and a bout that gives it no floor
+  // to give ground on gives it fewer: pressed for long enough, it is pinned
+  // against a wall. In the den that happened sooner than in the hall this
+  // used to be fought in, which was half as wide again, and in forty-five
+  // seconds of it one bout in five or so it never hopped at all. You go back
+  // first, so that it does not come back down on top of you.
+  for (let i = 0; i < 60 * 60; i++) {
+    if (i > 0 && i % 450 === 0 && rig.ai.intent !== "evade" && rig.ai.intent !== "backoff") {
+      rig.place(home);
+      rig.foe.reset(rig.tuning, start);
+      rig.ai.reset();
+    }
     rig.fight(1, drive(rig));
     rig.foe.position(it);
     if (rig.foe.fighter.grounded && rig.ai.intent !== "evade" && rig.ai.intent !== "backoff") floor = it.y;
@@ -4670,7 +4684,7 @@ async function itHopsClearAndFlinches(): Promise<void> {
     if (rig.player.dead) rig.place(home);
   }
   check("a goblin swung at hops back off the floor", rig.ai.tally.hops >= 1 && rose > 0.15,
-    `${rig.ai.tally.hops} hops in 45s of being swung at by one that always does, ` +
+    `${rig.ai.tally.hops} hops in 60s of being swung at by one that always does, ` +
     `up to ${(rose * 100).toFixed(0)}cm off the floor`);
 
   // Cut it while it draws back. A stagger takes a swing off anything light
