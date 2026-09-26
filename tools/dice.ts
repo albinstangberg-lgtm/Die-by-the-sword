@@ -17,13 +17,12 @@
  */
 
 /**
- * The seed a plain `npm run smoke` rolls with, picked because it passes every
- * check: not every seed does. A few checks measure something the dice decide
- * often enough to fail on some seeds (when the dice came in, five of seeds 1
- * to 20 passed everything, and seed 1 did not), so a change that deals
- * different dice can turn one over without having broken anything. Before
- * blaming the dice, run the failing check on a few other seeds with and
- * without the change, and move this seed only if it fails as often without.
+ * The seed a plain `npm run smoke` rolls with, picked because every check
+ * passed on it. Every rule should pass on every seed, but a tendency (see
+ * smoke.ts) can miss on some, so a change that deals different dice can turn
+ * one over on this seed without having broken anything: `npm run smoke:seeds`
+ * says whether it did. One that misses here but no more often without the
+ * change stops nothing; move this seed only if one keeps doing so.
  */
 const DEFAULT_SEED = 2;
 

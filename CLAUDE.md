@@ -8,7 +8,15 @@
   It's seeded (`tools/dice.ts`): the same code gives the same result on every
   run, so running it again won't turn a FAIL into a PASS.
   `SMOKE_SEED=<n> npm run smoke` repeats a run from the seed its log prints,
-  or rolls other dice.
+  or rolls other dice. `SMOKE_ONLY=<group>,<group>` runs just those groups
+  (the functions in `GROUPS`), exactly as they run among the rest.
+- The suite has two kinds of check. A **rule** (`PASS`/`FAIL`) holds on every
+  seed: one that fails is a bug, however rarely. A **tendency** (`~` before
+  its name, `PASS`/`MISS`) is something the AI does often enough, and even a
+  sound one misses on the odd seed. `npm run smoke:seeds -- --groups <group>
+  --against HEAD` runs a group on seeds 1–10 with your change and without it,
+  and says whether anything does worse. A tendency that misses gets more
+  samples, never a lower bar.
 
 ## Smoke tests run in the background
 
@@ -21,11 +29,20 @@ the smoke suite between them:
    task it's checking and which files that task touched. The agent tests a
    frozen snapshot, so you can keep editing right away.
 3. Start the next task straight away.
-4. When a smoke report arrives, fix any FAIL it attributes to your work
-   before you start another task. Then launch a new smoke run.
+4. When a smoke report arrives, fix any rule it says your work broke, and any
+   tendency it says misses more often with your work than without, before you
+   start another task. Then launch a new smoke run.
 5. Run only one smoke-tester at a time. If one is still running when you
    finish the next task, don't start another. Launch a single run once it
    reports, and that run covers everything done since.
 6. Before you commit or push, the latest smoke report must be **PASS** and
    must have run on a snapshot that includes every change you're pushing.
-   If code changed after the last report, launch one final run and wait for it.
+   PASS means every rule held, and every tendency either held or, across
+   seeds, misses no more often with your change than without it (the
+   smoke-tester weighs that for you). If code changed after the last report,
+   launch one final run and wait for it.
+7. CI (`.github/workflows/smoke.yml`) runs on every pull request, on the
+   branch as it would be merged, and on every push to the default branch:
+   typecheck, the default seed (a tendency that misses there is weighed on
+   seeds 1–10 against the base), and every group on seeds 1–8 against the
+   base. A red CI counts the same as a FAIL here.

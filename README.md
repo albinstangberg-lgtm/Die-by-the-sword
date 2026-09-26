@@ -77,7 +77,7 @@ knee up onto it.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 435 checks, no browser needed
+npm run smoke    # headless physics harness — 444 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -2592,7 +2592,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 435 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 444 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -2607,13 +2607,23 @@ every group of checks, from the seed and the group's name. The same code gives
 the same result on every run, to the last digit of every measurement, and a
 group rolls the same wherever it runs: first, last, or on its own. The seed is
 printed at the top of the log and on its last line, and `SMOKE_SEED=7 npm run
-smoke` rolls another set. Most checks pass whatever the dice. A few measure
-something the dice decide often enough that on some seeds they don't, and the
-default seed is one on which every check passes. So a check that fails after a
-change has either been broken by it or been dealt different dice by it
-(anything that changes what is rolled, or when, or how anything in a fight
-moves, deals the rest of its group differently), and the same check on a
-handful of other seeds, with and without the change, says which.
+smoke` rolls another set.
+
+So there are two kinds of check. Most are rules: no NaN, no blade through
+stone, never your own sword in you, every swing drawn back for. They hold
+whatever the dice, and one that fails on any seed at all is a bug. The rest
+are tendencies, marked `~` in the log: what the AI does often enough — the
+orc's leap lands three times in five, the goblin quick-steps more than the
+swordsman — taken over the random choices it makes in a fight. Even a sound
+one misses on the odd seed, since anything that changes what is rolled, or
+when, or how anything in a fight moves, deals the rest of its group different
+dice. So each takes enough samples that luck alone should sink it on well
+under one seed in a hundred, and a miss (`MISS`, not `FAIL`) is weighed
+across seeds rather than read off one run: `npm run smoke:seeds -- --groups
+<group> --against HEAD` runs a group on seeds 1 to 10 with the change and
+without it, and says whether anything does worse. A tendency that misses too
+often on luck gets more samples, never a lower bar. `SMOKE_ONLY=<group> npm
+run smoke` runs one group, which gives exactly what it gives among the rest.
 
 It also drives a real scripted swing all the way through to a severed limb,
 takes a fighter apart and checks that a reset puts it back together — measuring

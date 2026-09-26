@@ -391,6 +391,16 @@ const STALL_TIME = 0.08;
 const DRAW = { angle: 0.35, reach: 0.1 } as const;
 
 /**
+ * How much further to go one way, from `along` it and `aside` of it, to end up
+ * DRAW.angle from where the arm began. Not just what is short of DRAW: gone at
+ * right angles to what is already there, that falls short again, to 0.247 rad
+ * at worst.
+ */
+function drawOn(along: number, aside: number): number {
+  return Math.sqrt(DRAW.angle * DRAW.angle - aside * aside) - along;
+}
+
+/**
  * The furthest an edge comes round off your chest toward the part of you it
  * is after, radians.
  */
@@ -945,6 +955,8 @@ export class Ai implements ArmInput {
    */
   private readonly further = { yaw: 0, pitch: 0, reach: 0 };
   private gauged = false;
+  /** Where its arm was as this wind-up began, which drawing back is measured from. */
+  private readonly drawnFrom = { yaw: 0, pitch: 0, reach: 0 };
   /** Seconds it stands getting its breath once its guard is up: after a run of swings, or a spin. */
   private winded = 0;
   /** When, into getting its guard back up, it was up; negative until it is. */
@@ -1354,7 +1366,7 @@ export class Ai implements ArmInput {
         // there is to move. The longest only bounds a weapon caught on
         // something, which never gets there at all.
         const s = this.swing!;
-        if (!this.gauged) this.gauge(self, s);
+        this.gauge(self, s);
         this.want = {
           yaw: this.aimFrom.yaw + s.from.yaw + this.further.yaw,
           pitch: this.aimFrom.pitch + s.from.pitch + this.further.pitch,
@@ -1802,22 +1814,34 @@ export class Ai implements ArmInput {
    * starts, it goes back further: round further, the way the swing is not
    * going, for a swing that goes across; for a thrust, drawn all the way in,
    * or if it is already, raised.
+   *
+   * Measured from where the arm was as the wind-up began, and again at every
+   * step of it: where a swing starts moves with the creature, since a thrust
+   * is aimed at you from wherever its shoulder is, and a quick step carries
+   * the shoulder half a metre while the weapon goes back. Settled once, at the
+   * start, a thrust with only DRAW's worth to go back could arrive having gone
+   * back two thirds of it.
    */
   private gauge(self: Combatant, s: Swing): void {
-    this.gauged = true;
+    const from = this.drawnFrom;
+    if (!this.gauged) {
+      const a = self.arm.aim;
+      from.yaw = a.yaw;
+      from.pitch = a.pitch;
+      from.reach = a.reach;
+      this.gauged = true;
+    }
     const f = this.further;
     f.yaw = f.pitch = f.reach = 0;
-    const a = self.arm.aim;
-    const angle = Math.hypot(
-      this.aimFrom.yaw + s.from.yaw - a.yaw, this.aimFrom.pitch + s.from.pitch - a.pitch);
-    const reach = Math.abs(self.arm.reachAt(s.from.reach) - a.reach);
-    if (angle >= DRAW.angle || reach >= DRAW.reach) return;
-    const short = DRAW.angle - angle;
+    const yaw = this.aimFrom.yaw + s.from.yaw - from.yaw;
+    const pitch = this.aimFrom.pitch + s.from.pitch - from.pitch;
+    const reach = Math.abs(self.arm.reachAt(s.from.reach) - from.reach);
+    if (Math.hypot(yaw, pitch) >= DRAW.angle || reach >= DRAW.reach) return;
     const across = s.from.yaw - s.to.yaw;
     const [least, most] = self.arm.reachLimits;
-    if (Math.abs(across) > 0.3) f.yaw = Math.sign(across) * short;
+    if (Math.abs(across) > 0.3) f.yaw = Math.sign(across) * drawOn(yaw * Math.sign(across), pitch);
     else if (s.from.reach * (most - least) >= 2 * DRAW.reach) f.reach = -s.from.reach;
-    else f.pitch = short;
+    else f.pitch = drawOn(pitch, yaw);
   }
 
   /**
