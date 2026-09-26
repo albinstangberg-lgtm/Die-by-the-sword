@@ -3779,6 +3779,132 @@ async function theDummySwingsWhenStruck(): Promise<void> {
     `hand ${(handMoved * 100).toFixed(0)} cm, chest ${(chestMoved * 100).toFixed(1)} cm, nothing cut`);
 }
 
+/**
+ * Knocked down, it gets up off the floor, and only off the floor: once it has
+ * come down and lain still (see `SETTLED` in fighter.ts), not in the air or
+ * still rolling. And it comes up through a crouch, bowed over its feet, and
+ * stands out of it -- no knee or hip through the floor on the way, whichever
+ * way up it lay, and no snap square at the end.
+ *
+ * A goblin and a man, each knocked over backwards -- on its back -- and
+ * forwards, on its face; and a goblin thrown up off the floor as it goes over,
+ * as the ogre's club throws you.
+ */
+async function aKnockdownGetsUpOffTheFloor(): Promise<void> {
+  console.log("\nknocked down, it gets up off the floor, through a crouch, and nothing snaps");
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(1)}deg`;
+  const trials: { species: Species; face: "up" | "down"; throw?: number }[] = [
+    { species: GOBLIN, face: "up" },
+    { species: GOBLIN, face: "down" },
+    { species: SWORDSMAN, face: "up" },
+    { species: SWORDSMAN, face: "down" },
+    { species: GOBLIN, face: "up", throw: 8 },
+  ];
+  const lines: string[] = [];
+  let everyUp = true;
+  let onFloor = true;
+  let aboveFloor = true;
+  let crouched = true;
+  let smooth = true;
+  let landedFirst = true;
+  let worstLow = Infinity;
+  let worstSnap = 0;
+  for (const trial of trials) {
+    const rig = await buildRig({}, trial.species, foeSpawn(trial.species));
+    const f = rig.foe.fighter;
+    // Facing away from you, the blow -- which goes away from you -- puts it
+    // on its face; facing you, on its back.
+    f.yaw = trial.face === "up" ? Math.PI : 0;
+    rig.hold(60);
+    const scale = trial.species.build.scale;
+    const legs = f.parts.filter((q) => /thigh|shin|pelvis/.test(q.name));
+    // A man takes a heavier blow than a sword's to put over: a club's.
+    rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8,
+      trial.species === GOBLIN ? {} : { blowMass: CLUB.mass * 3 }));
+    const floored = rig.foe.lastBlow!.effect === "down";
+    let thrown = trial.throw === undefined;
+    let airborne = -1;
+    let rose = false;
+    let landed = -1;
+    const speeds: number[] = [];
+    let riseAt = -1;
+    let upAt = -1;
+    let riseSpeed = 0;
+    let riseHeight = 0;
+    let low = Infinity;
+    let sink = 0;
+    let snap = 0;
+    let turn = 0;
+    const was = new THREE.Quaternion();
+    const now = new THREE.Quaternion();
+    for (let i = 0; i < 60 * 6 && upAt < 0; i++) {
+      // Once it has gone over far enough to be lying, up it goes.
+      if (!thrown && tiltOf(f.body) > 60) {
+        const bodies = [f.body, ...f.parts.map((q) => q.body ?? q.collider.parent())]
+          .filter((b): b is NonNullable<typeof b> => b !== null && b.isDynamic());
+        for (const b of new Set(bodies)) {
+          const v = b.linvel();
+          b.setLinvel({ x: v.x, y: v.y + trial.throw!, z: v.z }, true);
+        }
+        thrown = true;
+        airborne = i;
+      }
+      const r = f.body.rotation();
+      was.set(r.x, r.y, r.z, r.w);
+      const down = f.down;
+      const limp = f.limp;
+      rig.hold(1);
+      const v = f.body.linvel();
+      speeds.push(Math.hypot(v.x, v.y, v.z));
+      const p = f.body.translation();
+      if (airborne >= 0 && p.y > 0.6 * scale) rose = true;
+      if (rose && landed < 0 && p.y < 0.4 * scale) landed = i;
+      const r2 = f.body.rotation();
+      now.set(r2.x, r2.y, r2.z, r2.w);
+      if (limp && !f.limp && f.down) {
+        riseAt = i;
+        riseSpeed = Math.max(...speeds.slice(-13, -1));
+        riseHeight = p.y;
+      }
+      if (riseAt >= 0 && f.down && !f.limp) {
+        low = Math.min(low, ...legs.map((q) => q.collider.translation().y));
+        sink = Math.max(sink, f.posture.pose.sink);
+        turn = Math.max(turn, was.angleTo(now));
+      }
+      if (down && !f.down) {
+        upAt = i;
+        snap = was.angleTo(now);
+      }
+    }
+    const who = `${trial.species.name.replace(/^the /, "")} ${trial.throw ? "thrown" : `face ${trial.face}`}`;
+    everyUp &&= floored && upAt > 0;
+    // Lying, the chest is a hull's radius or so off the floor: a goblin's,
+    // 0.1 m. The old way up began with a thrown goblin's 0.6 m up, at 2 m/s.
+    onFloor &&= riseAt > 0 && riseHeight < 0.4 * scale;
+    if (trial.throw !== undefined) landedFirst = airborne >= 0 && landed > 0 && riseAt > landed;
+    aboveFloor &&= low > 0;
+    crouched &&= sink > 0.2 * scale;
+    smooth &&= snap < 0.035 && turn < 0.25;
+    worstLow = Math.min(worstLow, low);
+    worstSnap = Math.max(worstSnap, snap);
+    lines.push(`${who}: ${floored ? "down" : "not floored"}, up ${riseAt > 0 ? `from ${riseHeight.toFixed(2)} m at ` +
+      `${riseSpeed.toFixed(2)} m/s after ${(riseAt / 60).toFixed(2)}s` : "never"}` +
+      `${trial.throw ? ` (thrown at ${(airborne / 60).toFixed(2)}s, down again at ${(landed / 60).toFixed(2)}s)` : ""}, ` +
+      `on its feet after ${upAt > 0 ? (upAt / 60).toFixed(2) : "-"}s; legs down to ${low.toFixed(3)} m, ` +
+      `crouched ${sink.toFixed(2)} m, ${deg(turn)} a step at most and ${deg(snap)} the last`);
+  }
+  for (const line of lines) console.log(`    ${line}`);
+  check("knocked down, whichever way up it lands, it gets up", everyUp, `${trials.length} falls`);
+  check("only off the floor: down and lying there first, not in the air", onFloor && landedFirst,
+    !landedFirst ? "thrown, it began to get up before it was down again"
+      : !onFloor ? "a rise began off the floor" : "every rise began lying on the floor");
+  check("and on the way up, nothing of it goes into the floor", aboveFloor,
+    `the legs and hips down to ${worstLow.toFixed(3)} m at the lowest`);
+  check("it comes up through a crouch, not stiff as a plank", crouched,
+    "the hips sunk into a crouch on every rise");
+  check("and stands up out of it without a snap", smooth, `${deg(worstSnap)} the last step at worst`);
+}
+
 async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   console.log("\nfloored three times over, a body is still in one piece");
   const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
@@ -7244,6 +7370,7 @@ const GROUPS: (() => Promise<void>)[] = [
   aStaggerTakesTheSwingOffIt,
   realBlowsAreWeighed,
   theDummySwingsWhenStruck,
+  aKnockdownGetsUpOffTheFloor,
   knockdownsDoNotWearTheBodyOut,
   oneSwingIsOneBlow,
   aCorpseLiesStill,

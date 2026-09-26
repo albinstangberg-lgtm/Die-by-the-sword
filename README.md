@@ -546,13 +546,22 @@ on a waist that bends, the legs simulated, the neck hanging on a range. But it
 is not a dead one. It goes over **braced**: soft motors in the waist, hips and
 knees hold it more or less straight, so it goes over as a body rather than
 folding up where it stood, and they let go a quarter of a second after it lands.
-Then it lies limp. Before it gets up it **pulls itself together** on the same
-motors — the waist straightens under the chest and a knee draws up — and then
-the ragdoll is taken apart, and what gets up is the hull: the chest, which
-never stopped being it, with the hips and legs drawn out of how they lay into
-the living pose over the first quarter of a second, so nothing jumps. The
-walking capsule stays off until it is on its feet, since lying along the chest
-it would come back on half in the floor.
+Then it lies limp — you as much as anything you knock down.
+
+It gets up **only off the floor**: once it has come down and lain still there,
+never in the air however long it has been over, nor while it is still rolling.
+Then it **pulls itself together** on the same motors — the waist straightens
+under the chest and a knee draws up — and the ragdoll is taken apart, and what
+gets up is the hull: the chest, which never stopped being it, with the hips
+and legs drawn out of how they lay into the living pose over the first quarter
+of a second, so nothing jumps. It **rolls up onto its feet into a crouch**,
+bowed over them with its knees up, and stands up out of it: a second and a
+fifth at your size, upright a little over halfway through, so the last of it
+is a body straightening its legs rather than one still coming round. Face down,
+the crouch comes later — its knees go forward, and forward is the floor. It
+used to be two thirds of a second of the whole body turning up stiff about its
+feet: a plank stood on its end. The walking capsule stays off until it is on
+its feet, since lying along the chest it would come back on half in the floor.
 
 Down, it is still a body. The hips on the floor can be cut, a blow to it moves
 the piece it lands on and drags the rest after it, and knocked flat again on
@@ -1603,7 +1612,7 @@ Let the kobolds out while the orcs are loose in the hall and they go for each
 other. The fight panel says whom one is fighting when it is not you. Fish
 people and wildlife, when they come, are a side each.
 
-## Seventy-seven things the physics taught us
+## Seventy-eight things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2380,6 +2389,12 @@ now, whatever else lands on it. And a blow from whoever it is fighting already
 changes nothing: the kobold's next blow, landing while the orc finished a
 swing at it, used to cancel the turn round to you that your blow had asked
 for.
+
+**Getting up after a set time gets up in the air.** A body counted as lying
+once it had tipped far enough over, or been over long enough, and got up a
+set time after that. Thrown up off the floor as it went over, as the ogre's
+club throws you, a goblin began to get up with its chest 0.6 m in the air and
+going at 2 m/s. It waits to be lying still on something now.
 
 ## Tuning
 
