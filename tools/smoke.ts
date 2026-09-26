@@ -21,7 +21,7 @@ import {
   BLOCK, buildArena, CRATE, DUMMY_AT, GATEWAYS, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, POSTS, RAIL, ROOMS,
   SPAWN as GAME_SPAWN, STONES, THIN_POST, type Arena, type GatedRoom,
 } from "../src/game/arena";
-import { gateHeard, ROSTER, spawnOf } from "../src/game/roster";
+import { gateHeard, ROSTER, spawnOf, type Occupant } from "../src/game/roster";
 import { interact, Items, promptFor, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
 import { SLUNG, SLUNG_TURN } from "../src/game/shield";
@@ -31,12 +31,13 @@ import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
-  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, type Cut, type Species,
+  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, sideOf, type Cut,
+  type Species,
 } from "../src/game/species";
 import {
   AXE, CLUB, HATCHET, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon,
 } from "../src/game/weapons";
-import { Ai, type Swing } from "../src/game/ai";
+import { Ai, FELT, GRUDGE, type Swing } from "../src/game/ai";
 import { emptyBlow, judgeBlow, judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -1803,7 +1804,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
     `over ${axes.length} swings, ${sword.toFixed(2)}s for the sword over ${swords.length}`);
 }
 
-async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
+async function aBladeCutsEveryoneButItsOwner(): Promise<void> {
   console.log("\nthree fighters, two teams, one set of collision groups -- and the game's nine");
   const sides = makeSides([0, 1, 1]);
   const [you, orc, goblin] = sides;
@@ -1818,8 +1819,10 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
     canCut(you, orc) && canCut(you, goblin), "player -> orc, player -> goblin");
   check("theirs reach you", canCut(orc, you) && canCut(goblin, you),
     "orc -> player, goblin -> player");
-  check("but not each other", !canCut(orc, goblin) && !canCut(goblin, orc),
-    "the orc's axe passes through the goblin");
+  // Friendly fire: an ally caught by a blade is cut like anyone else, and
+  // keeping out of each other's way is theirs to see to.
+  check("and each other: an ally's blade cuts as well as anyone's", canCut(orc, goblin) && canCut(goblin, orc),
+    "orc -> goblin, goblin -> orc");
   check("and nobody cuts themselves",
     !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
 
@@ -1830,10 +1833,16 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
   const [me, ...them] = roster;
   const meets = (a: number, b: number) => ((a >>> 16) & (b & 0xffff)) !== 0 && ((b >>> 16) & (a & 0xffff)) !== 0;
   const pairs = them.flatMap((a, i) => them.filter((_, j) => j !== i).map((b) => [a, b] as const));
-  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and not one another`,
-    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => !canCut(a, b))
+  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and one another`,
+    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => canCut(a, b))
       && roster.every((s) => !canCut(s, s)),
-    `${them.length} against you, ${pairs.length} pairs of them that must not cut`);
+    `${them.length} against you, and ${pairs.length} pairs of them`);
+  // Sides are the fight's business now, not the bits': twenty fighters on
+  // twenty sides fit as well as two sides do.
+  const many = makeSides(Array.from({ length: 20 }, (_, i) => i));
+  check("and twenty fighters fit, on as many sides as there are of them",
+    many.every((a, i) => many.every((b, j) => canCut(a, b) === (i !== j))),
+    `${many.length} fighters, each on a side of its own`);
   // Bodies still meet every other body, and weapons every other weapon, but
   // never their own: "everyone but me" with three bits of six each.
   const everyone = roster.flatMap((a, i) => roster.map((b, j) => [a, b, i === j] as const));
@@ -2159,30 +2168,53 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
 
 /**
  * The whole line-up, as the game has it -- you and everything behind the four
- * gates (see roster.ts) -- in one arena, and a step that drives them all as
- * the game's does.
+ * gates (see roster.ts) -- in one arena, each on its faction's side, and a
+ * step that drives them all as the game's does. Or another line-up.
  */
-async function buildRoster(youAt: THREE.Vector3) {
+async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROSTER) {
   const tuning: Tuning = { ...DEFAULTS };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   const arena = buildArena(phys, scene, targets);
-  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
+  const sides = makeSides([0, ...line.map((o) => sideOf(o.species.faction))]);
   const you = new Combatant(phys, scene, youAt, sides[0], tuning, targets, SWORDSMAN, "you", "your");
-  const foes = ROSTER.map((o, i) => {
+  const foes = line.map((o, i) => {
     const combatant = new Combatant(phys, scene, spawnOf(o), sides[i + 1],
       tuning, targets, o.species, o.name, `${o.name}'s`);
     combatant.fighter.yaw = o.facing;
     return { combatant, ai: new Ai(o.species), room: o.room };
   });
+  const everyone = [you, ...foes.map((f) => f.combatant)];
+  for (const f of foes) f.ai.company = everyone;
   const impacts = new Impacts(phys, scene, targets, tuning);
   let cutsOnYou = 0;
+  let hurtYou = 0;
+  // A blade cuts whoever it lands on, and one of them caught by a friend's is
+  // cut like anyone else: a cut is a blow it would feel (`FELT`), and a weapon
+  // at its guard brushing a friend's arm as they go through a doorway side by
+  // side is only a touch. One of another side it goes for, as it goes for you.
   let cutsAmongThem = 0;
+  let touchesAmongThem = 0;
+  let cutsAcross = 0;
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
-      if (you.receive(i)) cutsOnYou++;
-      else if (foes.some((o) => o.combatant.receive(i))) cutsAmongThem++;
+      const yours = you.health;
+      if (you.receive(i)) { cutsOnYou++; hurtYou += yours - you.health; return; }
+      for (const o of foes) {
+        const was = o.combatant.health;
+        if (!o.combatant.receive(i)) continue;
+        o.ai.struckBy(f.combatant);
+        const cut = was - o.combatant.health >= FELT;
+        if (o.combatant.fighter.side.team !== f.combatant.fighter.side.team) {
+          if (cut) cutsAcross++;
+        } else if (cut) {
+          cutsAmongThem++;
+        } else {
+          touchesAmongThem++;
+        }
+        return;
+      }
     });
   }
   phys.world.updateSceneQueries();
@@ -2194,7 +2226,13 @@ async function buildRoster(youAt: THREE.Vector3) {
     /** Everything that waits in one room. */
     in: (room: GatedRoom) => foes.filter((f) => f.room === room),
     get cutsOnYou() { return cutsOnYou; },
+    /** Health taken off you, all told. */
+    get hurtYou() { return hurtYou; },
+    /** Cuts, and touches, by one of them on a friend. */
     get cutsAmongThem() { return cutsAmongThem; },
+    get touchesAmongThem() { return touchesAmongThem; },
+    /** Cuts by one of them on one of another side. */
+    get cutsAcross() { return cutsAcross; },
     step(n = 1) {
       for (let k = 0; k < n; k++) {
         you.act(still, NO_KEYS, tuning, STEP);
@@ -2261,9 +2299,13 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     through >= 0 && found >= 0 && swung,
     `both in the hall after ${(through / 60).toFixed(1)}s, both fighting after ` +
     `${(found / 60).toFixed(1)}s; swung: ${swung}`);
-  check("two of them on one side, and not one cut between them",
-    world.cutsOnYou > 0 && world.cutsAmongThem === 0,
-    `${world.cutsOnYou} cuts on you, ${world.cutsAmongThem} among the ${world.foes.length + 1} of you`);
+  // A friend is as easily cut as you are, and how seldom they cut each other
+  // is `friendsComeAtYouFromTwoSides`'s to weigh: nine seconds of this is
+  // one roll of the dice.
+  tendency("two of them on one side, and hardly a cut between them",
+    world.cutsOnYou > 0 && world.cutsAmongThem <= 1,
+    `${world.cutsOnYou} blows on you, ${world.cutsAmongThem} cuts among them ` +
+    `(and ${world.touchesAmongThem} touches)`);
 
   // Heard, and nobody there: you down the entrance, round the corner from
   // the gateway. They go and look, find nothing, and go home again.
@@ -2285,6 +2327,205 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     looked && left > 2 && back.every((d) => d < 0.4) && orcs.every((f) => f.ai.outlook === "waiting"),
     `went ${left.toFixed(1)} m; back to within ${Math.max(...back).toFixed(2)} m of their posts, ` +
     orcs.map((f) => `"${f.ai.outlook}"`).join(" and "));
+}
+
+/**
+ * Friends that come at you together. A blade cuts whoever it lands on, a
+ * friend as readily as you, so each keeps its friends out of the circle its
+ * own weapon sweeps -- stepping round you away from them, which brings them
+ * at you from two sides rather than one -- and looks along a swing and on
+ * through it, before letting it go and as it goes (see `Ai.makeRoom` and
+ * `Ai.inTheWay`). What they cut is you.
+ *
+ * Out in the hall's east half, you standing your ground with your guard up
+ * and them coming at you together from the east: two orcs abreast, two one
+ * behind the other, and three goblins abreast. Clear of the stone all round,
+ * and to the south most of all: a weapon is laid out that way when it is put
+ * down, and an orc put down a metre from the wall started the fight with its
+ * axe in it. Your health is put back every step, so that each fight runs its
+ * length.
+ */
+async function friendsComeAtYouFromTwoSides(): Promise<void> {
+  console.log("\nfriends together: a blade cuts whoever it lands on, and they keep out of each other's way");
+  const at = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const packs = [
+    { who: [ORC, ORC], from: [[4, -0.7], [4, 0.7]] },
+    { who: [ORC, ORC], from: [[3.5, 0], [5, 0]] },
+    { who: [GOBLIN, GOBLIN, GOBLIN], from: [[4, -1.2], [4, 0], [4, 1.2]] },
+  ] as const;
+  const seconds = 25;
+  let onYou = 0;
+  let hurt = 0;
+  let among = 0;
+  let touches = 0;
+  // How far apart round you two of them are, radians, each step both are at
+  // you: the pairs only, since the nearest two of three are nearer than any
+  // two.
+  const apart: number[] = [];
+  for (const pack of packs) {
+    const line: Occupant[] = pack.who.map((species, i) => ({
+      species,
+      room: "pen",
+      at: new THREE.Vector3(at.x + pack.from[i][0], 0, at.z + pack.from[i][1]),
+      facing: Math.PI / 2,
+      name: `${species.name} ${i + 1}`,
+    }));
+    const world = await buildRoster(at, line);
+    world.you.fighter.yaw = -Math.PI / 2;
+    const you = world.you.position(new THREE.Vector3());
+    const p = new THREE.Vector3();
+    for (let i = 0; i < 60 * seconds && !world.you.dead; i++) {
+      world.step(1);
+      world.you.health = world.you.maxHealth;
+      if (world.foes.length !== 2 || !world.foes.every((f) => f.ai.outlook === "fighting")) continue;
+      const [a, b] = world.foes.map((f) => {
+        f.combatant.position(p);
+        return Math.atan2(p.x - you.x, p.z - you.z);
+      });
+      apart.push(Math.abs(wrap(a - b)));
+    }
+    onYou += world.cutsOnYou;
+    hurt += world.hurtYou;
+    among += world.cutsAmongThem;
+    touches += world.touchesAmongThem;
+  }
+  const middle = [...apart].sort((a, b) => a - b)[Math.floor(apart.length / 2)] ?? 0;
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(0)}deg`;
+  // Over forty seeds of these fights: never more than one cut among them,
+  // against 112 to 233 blows on you. Before they looked out for each other,
+  // nine seconds of the pen's two orcs landed eleven to twenty-five blows
+  // on each other.
+  tendency("they cut you, and hardly ever each other: fifty blows on you for every cut among them",
+    onYou >= 60 && among * 50 <= onYou,
+    `${onYou} blows on you (${hurt.toFixed(0)} health), ${among} cuts among them ` +
+    `and ${touches} touches, over ${packs.length} fights of ${seconds}s`);
+  tendency("and two of them come at you from two sides, not shoulder to shoulder",
+    middle >= 1.0,
+    `${deg(middle)} apart round you, at the median`);
+}
+
+/**
+ * Sides (see `Faction`): the greenskins -- orcs, goblins and the ogre -- and
+ * the kobolds, each against the other and both against you. Each goes for
+ * whichever of another side it sees first, and never for its own, and turns
+ * on whatever lands a blow on it (see `Ai.choose`, `Ai.struckBy`).
+ *
+ * Two kobolds and two greenskins, an orc and a goblin, let loose on each
+ * other out in the hall's east half, with you at the far end of the entrance,
+ * further off than any of them notices anything: they fight each other, and
+ * nobody comes for you. Then an orc in front of you, and a kobold behind it:
+ * each goes for the nearest thing it would fight -- the orc for you, the
+ * kobold for the orc -- and the orc, hacked at from behind, turns round.
+ */
+async function factionsGoForEachOther(): Promise<void> {
+  console.log("\nfactions: greenskins and kobolds, against each other and against you");
+  const put = (species: Species, x: number, z: number, facing: number, name: string): Occupant =>
+    ({ species, room: "pen", at: new THREE.Vector3(x, 0, z), facing, name });
+  // Facing east, and facing west: forward is -Z at yaw zero, and +X is right.
+  const eastward = -Math.PI / 2;
+  const westward = Math.PI / 2;
+  const kind = (c: Combatant) => c.fighter.side.team;
+
+  const brawl = await buildRoster(new THREE.Vector3(4.5, HOME.y, 21), [
+    put(KOBOLD, 6.5, 4.9, eastward, "the kobold"),
+    put(KOBOLD, 6.5, 6.1, eastward, "the second kobold"),
+    put(ORC, 11.5, 4.8, westward, "the orc"),
+    put(GOBLIN, 11.5, 6.2, westward, "the goblin"),
+  ]);
+  const seconds = 20;
+  const wentFor = brawl.foes.map(() => new Set<Combatant>());
+  for (let i = 0; i < 60 * seconds; i++) {
+    brawl.step(1);
+    brawl.foes.forEach((f, k) => {
+      const them = f.ai.fighting;
+      if (them !== null && f.ai.outlook === "fighting") wentFor[k].add(them);
+    });
+  }
+  const own = brawl.foes.flatMap((f, k) =>
+    [...wentFor[k]].filter((c) => c !== brawl.you && kind(c) === kind(f.combatant))
+      .map((c) => `${f.combatant.name} went for ${c.name}`));
+  const each = brawl.foes.every((f, k) =>
+    [...wentFor[k]].some((c) => c !== brawl.you && kind(c) !== kind(f.combatant)));
+  const dead = brawl.foes.filter((f) => f.combatant.dead).map((f) => f.combatant.name);
+  check("kobolds and greenskins go for each other, and not one for its own",
+    each && own.length === 0,
+    own.length > 0 ? own.join("; ")
+      : brawl.foes.map((f, k) => `${f.combatant.name}: ${[...wentFor[k]].map((c) => c.name).join(", ")}`)
+        .join("; "));
+  check("and nobody comes for you, further off than they notice anything",
+    wentFor.every((w) => !w.has(brawl.you)) && brawl.cutsOnYou === 0,
+    `${brawl.cutsOnYou} blows on you`);
+  tendency("they cut each other",
+    brawl.cutsAcross >= 1,
+    `${brawl.cutsAcross} cuts across the sides in ${seconds}s, ` +
+    `${brawl.cutsAmongThem} among friends; ${dead.length > 0 ? `${dead.join(" and ")} dead` : "nobody dead"}`);
+
+  // An orc in front of you and a kobold behind it.
+  const you = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const three = await buildRoster(you, [
+    put(ORC, 10.5, 5.5, westward, "the orc"),
+    put(KOBOLD, 14, 5.5, westward, "the kobold"),
+  ]);
+  three.you.fighter.yaw = eastward;
+  const [orc, kobold] = three.foes;
+  let chose = -1;
+  for (let i = 0; i < 60 * 3 && chose < 0; i++) {
+    three.step(1);
+    if (orc.ai.outlook === "fighting" && kobold.ai.outlook === "fighting") chose = i;
+  }
+  check("each goes for the nearest thing it would fight: the orc for you, the kobold for the orc",
+    chose >= 0 && orc.ai.fighting === three.you && kobold.ai.fighting === orc.combatant,
+    `after ${(chose / 60).toFixed(1)}s the orc is after ${orc.ai.fighting?.name ?? "nobody"}, ` +
+    `the kobold after ${kobold.ai.fighting?.name ?? "nobody"}`);
+  // Come to its elbow, it is a good deal nearer than you are, and once it
+  // lands a blow it is the one that did: either way the orc turns round.
+  //
+  // What is asked here is the orc's answer to the kobold, so from here on
+  // the kobold does not know you are there. Left to itself, one whose way to
+  // the orc took it past you -- the orc goes round you as it fights, and
+  // drags the kobold's way round with it -- found you twice as near as the
+  // orc, and turned on you instead, as it should (see `TURN_ON`); and the orc
+  // never had anything at its back to turn round on.
+  kobold.ai.company = [kobold.combatant, orc.combatant];
+  let turned = -1;
+  let near = Infinity;
+  for (let i = 0; i < 60 * 15 && turned < 0; i++) {
+    three.step(1);
+    if (orc.ai.fighting === kobold.combatant) turned = i;
+    const o = orc.combatant.position(new THREE.Vector3());
+    const k = kobold.combatant.position(new THREE.Vector3());
+    near = Math.min(near, Math.hypot(o.x - k.x, o.z - k.z));
+  }
+  const hurt = orc.combatant.maxHealth - orc.combatant.health;
+  check("and the orc, the kobold at its back, turns round on it",
+    turned >= 0,
+    turned < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} after 15s, the kobold ` +
+      `as near as ${near.toFixed(2)} m`
+      : `after ${(turned / 60).toFixed(1)}s, the kobold ${near.toFixed(2)} m off at the nearest ` +
+        `and ${hurt > 0 ? `${hurt.toFixed(1)} health off it` : "not a blow landed"}`);
+
+  // Busy with the kobold, and you land a blow on it -- as the game reports
+  // yours: the harness's still sword swings at nothing. Once it has been on
+  // the kobold long enough to have got over whatever blow of the kobold's
+  // turned it round (see GRUDGE), it turns on you as soon as it is free to,
+  // not in the middle of a swing at the kobold; and it stays on you, with the
+  // kobold still at its elbow, for a second and a half at least.
+  three.step(Math.ceil(60 * GRUDGE) + 1);
+  orc.ai.struckBy(three.you);
+  // And the kobold's blows go on landing.
+  const midSwing = orc.ai.committed !== null;
+  let back = -1;
+  let held = 0;
+  for (let i = 0; back < 0 ? i < 60 * 3 : i - back < 90; i++) {
+    three.step(1);
+    if (back < 0 && orc.ai.fighting === three.you) back = i;
+    if (back >= 0 && orc.ai.fighting === three.you) held++;
+  }
+  check("and turns on you when you land a blow on it, once it has finished any swing, and stays on you",
+    turned >= 0 && back >= 0 && held >= 90,
+    back < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} 3s later`
+      : `${(back / 60).toFixed(2)}s later${midSwing ? ", having finished the swing it was in" : ""}, ` +
+        `and on you for ${(held / 60).toFixed(2)}s of the next 1.5`);
 }
 
 async function severingBleeds(): Promise<void> {
@@ -3146,7 +3387,10 @@ let blowClock = 1e6;
  * A blow with real weight behind it -- your own sword and arm, as the solver
  * has them -- driving along -Z into a fighter's chest collider at a given
  * fraction of its height. On the flat unless a test says otherwise, so it
- * pushes without cutting: what these measure is the push.
+ * pushes without cutting: what these measure is the push. The speeds are a
+ * blade's about its centre of mass, as the game measures them (see
+ * `Arm.velocityAt`): two thirds of the 6 to 12 m/s these were written at,
+ * when it was measured about the grip.
  */
 function blowOn(rig: Rig, target: Combatant, closing: number, height: number,
   over: Partial<Impact> = {}): Impact {
@@ -3187,7 +3431,7 @@ async function oneBlowThreeBodies(): Promise<void> {
     const rig = await buildRig({}, species, foeSpawn(species));
     rig.hold(60);
     const start = rig.foe.position(new THREE.Vector3());
-    rig.foe.receive(blowOn(rig, rig.foe, 8, 0.75));
+    rig.foe.receive(blowOn(rig, rig.foe, 5.3, 0.75));
     const { effect, speed, mass } = rig.foe.lastBlow!;
     let moved = 0;
     let tilt = 0;
@@ -3230,7 +3474,7 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
   rig.fight(20);
   const standing = rig.foe.position(new THREE.Vector3()).y;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   const head = rig.foe.fighter.parts.find((p) => p.name === "head")!.body!;
   let tilt = 0;
@@ -3315,7 +3559,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
     return legParts.map((l) => l.mesh.getWorldPosition(new THREE.Vector3()));
   };
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   let limp = true;
   let simulated = true;
@@ -3367,14 +3611,14 @@ async function aKnockdownGoesLimp(): Promise<void> {
 
   // Floored again halfway up: limp again, from however far up it had got.
   rig.hold(30);
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   let rising = false;
   for (let i = 0; i < 60 * 4 && !rising; i++) {
     rig.hold(1);
     rising = f.down && !f.limp;
   }
   rig.hold(10);
-  rig.foe.receive(blowOn(rig, rig.foe, 12, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 8, 0.8));
   const again = rig.foe.lastBlow!.effect === "down" && f.limp;
   for (let i = 0; i < 60 * 5 && f.down; i++) rig.hold(1);
   rig.hold(60);
@@ -3384,7 +3628,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
       + `down ${f.down}, ${census()}, tilt ${tiltOf(f.body).toFixed(1)}deg`);
 
   // And killed on the floor: it stays down, and a reset still takes it all away.
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   rig.hold(20);
   const torso = f.collider.handle;
   for (let i = 0; i < 60 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
@@ -3414,7 +3658,7 @@ async function aStaggerTakesTheSwingOffIt(): Promise<void> {
   rig.fight(2);
   const winding = rig.ai.intent === "windup" && rig.ai.committed !== null;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 6, 0.6));
+  rig.foe.receive(blowOn(rig, rig.foe, 4, 0.6));
   const effect = rig.foe.lastBlow!.effect;
   rig.fight(1);
   const after = { intent: rig.ai.intent, committed: rig.ai.committed };
@@ -3444,10 +3688,10 @@ async function realBlowsAreWeighed(): Promise<void> {
     });
     // Forty seconds of it, however many lives that takes: the AI makes its
     // swings up at random, and an orc that happens to take your head in the
-    // first few blows would leave too few to count. Eighty for the orc: with
-    // its axe's speed taken about its centre of mass it rocks you about four
-    // times in forty seconds, not seven, and on one seed in twenty it never
-    // did.
+    // first few blows would leave too few to count. Eighty for the orc: its
+    // axe rocks you about seven times in forty seconds, but that is a count
+    // of what one random fight throws at you, and forty seconds of it has
+    // given one.
     const seconds = species === ORC ? 80 : 40;
     for (let i = 0; i < 60 * seconds; i++) {
       rig.fight(1);
@@ -3543,6 +3787,132 @@ async function theDummySwingsWhenStruck(): Promise<void> {
     `hand ${(handMoved * 100).toFixed(0)} cm, chest ${(chestMoved * 100).toFixed(1)} cm, nothing cut`);
 }
 
+/**
+ * Knocked down, it gets up off the floor, and only off the floor: once it has
+ * come down and lain still (see `SETTLED` in fighter.ts), not in the air or
+ * still rolling. And it comes up through a crouch, bowed over its feet, and
+ * stands out of it -- no knee or hip through the floor on the way, whichever
+ * way up it lay, and no snap square at the end.
+ *
+ * A goblin and a man, each knocked over backwards -- on its back -- and
+ * forwards, on its face; and a goblin thrown up off the floor as it goes over,
+ * as the ogre's club throws you.
+ */
+async function aKnockdownGetsUpOffTheFloor(): Promise<void> {
+  console.log("\nknocked down, it gets up off the floor, through a crouch, and nothing snaps");
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(1)}deg`;
+  const trials: { species: Species; face: "up" | "down"; throw?: number }[] = [
+    { species: GOBLIN, face: "up" },
+    { species: GOBLIN, face: "down" },
+    { species: SWORDSMAN, face: "up" },
+    { species: SWORDSMAN, face: "down" },
+    { species: GOBLIN, face: "up", throw: 8 },
+  ];
+  const lines: string[] = [];
+  let everyUp = true;
+  let onFloor = true;
+  let aboveFloor = true;
+  let crouched = true;
+  let smooth = true;
+  let landedFirst = true;
+  let worstLow = Infinity;
+  let worstSnap = 0;
+  for (const trial of trials) {
+    const rig = await buildRig({}, trial.species, foeSpawn(trial.species));
+    const f = rig.foe.fighter;
+    // Facing away from you, the blow -- which goes away from you -- puts it
+    // on its face; facing you, on its back.
+    f.yaw = trial.face === "up" ? Math.PI : 0;
+    rig.hold(60);
+    const scale = trial.species.build.scale;
+    const legs = f.parts.filter((q) => /thigh|shin|pelvis/.test(q.name));
+    // A man takes a heavier blow than a sword's to put over: a club's.
+    rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8,
+      trial.species === GOBLIN ? {} : { blowMass: CLUB.mass * 3 }));
+    const floored = rig.foe.lastBlow!.effect === "down";
+    let thrown = trial.throw === undefined;
+    let airborne = -1;
+    let rose = false;
+    let landed = -1;
+    const speeds: number[] = [];
+    let riseAt = -1;
+    let upAt = -1;
+    let riseSpeed = 0;
+    let riseHeight = 0;
+    let low = Infinity;
+    let sink = 0;
+    let snap = 0;
+    let turn = 0;
+    const was = new THREE.Quaternion();
+    const now = new THREE.Quaternion();
+    for (let i = 0; i < 60 * 6 && upAt < 0; i++) {
+      // Once it has gone over far enough to be lying, up it goes.
+      if (!thrown && tiltOf(f.body) > 60) {
+        const bodies = [f.body, ...f.parts.map((q) => q.body ?? q.collider.parent())]
+          .filter((b): b is NonNullable<typeof b> => b !== null && b.isDynamic());
+        for (const b of new Set(bodies)) {
+          const v = b.linvel();
+          b.setLinvel({ x: v.x, y: v.y + trial.throw!, z: v.z }, true);
+        }
+        thrown = true;
+        airborne = i;
+      }
+      const r = f.body.rotation();
+      was.set(r.x, r.y, r.z, r.w);
+      const down = f.down;
+      const limp = f.limp;
+      rig.hold(1);
+      const v = f.body.linvel();
+      speeds.push(Math.hypot(v.x, v.y, v.z));
+      const p = f.body.translation();
+      if (airborne >= 0 && p.y > 0.6 * scale) rose = true;
+      if (rose && landed < 0 && p.y < 0.4 * scale) landed = i;
+      const r2 = f.body.rotation();
+      now.set(r2.x, r2.y, r2.z, r2.w);
+      if (limp && !f.limp && f.down) {
+        riseAt = i;
+        riseSpeed = Math.max(...speeds.slice(-13, -1));
+        riseHeight = p.y;
+      }
+      if (riseAt >= 0 && f.down && !f.limp) {
+        low = Math.min(low, ...legs.map((q) => q.collider.translation().y));
+        sink = Math.max(sink, f.posture.pose.sink);
+        turn = Math.max(turn, was.angleTo(now));
+      }
+      if (down && !f.down) {
+        upAt = i;
+        snap = was.angleTo(now);
+      }
+    }
+    const who = `${trial.species.name.replace(/^the /, "")} ${trial.throw ? "thrown" : `face ${trial.face}`}`;
+    everyUp &&= floored && upAt > 0;
+    // Lying, the chest is a hull's radius or so off the floor: a goblin's,
+    // 0.1 m. The old way up began with a thrown goblin's 0.6 m up, at 2 m/s.
+    onFloor &&= riseAt > 0 && riseHeight < 0.4 * scale;
+    if (trial.throw !== undefined) landedFirst = airborne >= 0 && landed > 0 && riseAt > landed;
+    aboveFloor &&= low > 0;
+    crouched &&= sink > 0.2 * scale;
+    smooth &&= snap < 0.035 && turn < 0.25;
+    worstLow = Math.min(worstLow, low);
+    worstSnap = Math.max(worstSnap, snap);
+    lines.push(`${who}: ${floored ? "down" : "not floored"}, up ${riseAt > 0 ? `from ${riseHeight.toFixed(2)} m at ` +
+      `${riseSpeed.toFixed(2)} m/s after ${(riseAt / 60).toFixed(2)}s` : "never"}` +
+      `${trial.throw ? ` (thrown at ${(airborne / 60).toFixed(2)}s, down again at ${(landed / 60).toFixed(2)}s)` : ""}, ` +
+      `on its feet after ${upAt > 0 ? (upAt / 60).toFixed(2) : "-"}s; legs down to ${low.toFixed(3)} m, ` +
+      `crouched ${sink.toFixed(2)} m, ${deg(turn)} a step at most and ${deg(snap)} the last`);
+  }
+  for (const line of lines) console.log(`    ${line}`);
+  check("knocked down, whichever way up it lands, it gets up", everyUp, `${trials.length} falls`);
+  check("only off the floor: down and lying there first, not in the air", onFloor && landedFirst,
+    !landedFirst ? "thrown, it began to get up before it was down again"
+      : !onFloor ? "a rise began off the floor" : "every rise began lying on the floor");
+  check("and on the way up, nothing of it goes into the floor", aboveFloor,
+    `the legs and hips down to ${worstLow.toFixed(3)} m at the lowest`);
+  check("it comes up through a crouch, not stiff as a plank", crouched,
+    "the hips sunk into a crouch on every rise");
+  check("and stands up out of it without a snap", smooth, `${deg(worstSnap)} the last step at worst`);
+}
+
 async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   console.log("\nfloored three times over, a body is still in one piece");
   const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
@@ -3551,7 +3921,7 @@ async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   let floored = 0;
   let finite = true;
   for (let round = 0; round < 3; round++) {
-    rig.foe.receive(blowOn(rig, rig.foe, 11, 0.8));
+    rig.foe.receive(blowOn(rig, rig.foe, 7.3, 0.8));
     if (rig.foe.fighter.down) floored++;
     for (let i = 0; i < 60 * 4 && rig.foe.fighter.down; i++) {
       rig.hold(1);
@@ -3580,7 +3950,7 @@ async function oneSwingIsOneBlow(): Promise<void> {
   const rig = await buildRig({}, SWORDSMAN, foeSpawn(SWORDSMAN));
   rig.hold(60);
   const offArm = rig.foe.fighter.parts.find((p) => p.name === "offShoulder")!;
-  const first = blowOn(rig, rig.foe, 12, 0.6);
+  const first = blowOn(rig, rig.foe, 8, 0.6);
   rig.foe.receive(first);
   const once = rig.foe.fighter.knock.length();
   // The same swing, a tenth of a second on, through the arm as well.
@@ -6973,13 +7343,15 @@ const GROUPS: (() => Promise<void>)[] = [
   theBestiaryScalesHonestly,
   eachSpeciesCanFight,
   swingsAreReadOffTheArm,
-  alliesShareAnArenaWithoutCuttingEachOther,
+  aBladeCutsEveryoneButItsOwner,
   resetPutsSeveredLimbsBackOn,
   everyMovingPartIsInterpolated,
   theTestingAreaIsAHallAndFourRooms,
   anOpponentWaitsUntilItSeesYou,
   anOpponentLooksWhereItLastSawYou,
   thePenOpensOnTwoOrcs,
+  friendsComeAtYouFromTwoSides,
+  factionsGoForEachOther,
   severingBleeds,
 
   theArmKeepsOutOfItsOwnChest,
@@ -7006,6 +7378,7 @@ const GROUPS: (() => Promise<void>)[] = [
   aStaggerTakesTheSwingOffIt,
   realBlowsAreWeighed,
   theDummySwingsWhenStruck,
+  aKnockdownGetsUpOffTheFloor,
   knockdownsDoNotWearTheBodyOut,
   oneSwingIsOneBlow,
   aCorpseLiesStill,

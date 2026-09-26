@@ -1694,6 +1694,49 @@ export class Arm {
       -clamp(WRIST_RATE * axis.z, -WRIST_SPEED, WRIST_SPEED), factor);
   }
 
+  /**
+   * The grip's stop, held after the step. Rapier holds a joint's limit with an
+   * impulse like any other constraint's, and a light weapon's head driven into
+   * something heavy, with the arm still pushing, beats it: the weapon goes
+   * round about its own length, where it weighs next to nothing, and on
+   * through the stop. A kobold's hatchet pressed into the dummy's chest went
+   * round to 136°, where the stop is at 92°. Past it, the weapon is turned
+   * back to it, about its own length through the grip, and whatever was still
+   * carrying it further is taken off. Nothing ordinary gets there: the grip is
+   * never asked for more than `TWIST_REACH`, inside the stop.
+   */
+  private holdGripStop(): void {
+    if (!this.wristJoint) return;
+    const fq = this.fore.rotation();
+    const bq = this.blade.rotation();
+    const qf = this._qa.set(fq.x, fq.y, fq.z, fq.w);
+    const qb = this._qb.set(bq.x, bq.y, bq.z, bq.w);
+    const rel = this._qc.copy(qf).invert().multiply(qb);
+    // The stop as Rapier measures it, twice the arcsine of the turn's part of
+    // the hand's quaternion -- which the wrist's bend shrinks -- so it is only
+    // ever held here where the solver let it go.
+    if (2 * Math.asin(Math.min(1, Math.abs(rel.y))) <= TWIST_LIMIT) return;
+    // The hand's quaternion is a bend after a turn about the weapon's length;
+    // the turn that brings that reading back to the stop, with the bend kept.
+    const turn = wrapPi(2 * Math.atan2(rel.y, rel.w));
+    const bend = Math.hypot(rel.w, rel.y);
+    const stop = 2 * Math.asin(Math.min(1, Math.sin(TWIST_LIMIT / 2) / bend));
+    const side = Math.sign(turn);
+    // About its own length is on the right: in its own frame, after the rest
+    // of the hand's turn, so the wrist's bend is left as it was.
+    qb.multiply(this._q4.setFromAxisAngle(this._tb.set(0, 1, 0), side * stop - turn));
+    this.blade.setRotation({ x: qb.x, y: qb.y, z: qb.z, w: qb.w }, true);
+    const along = this._ta.set(0, 1, 0).applyQuaternion(qb);
+    const wb = this.blade.angvel();
+    const wf = this.fore.angvel();
+    const rate = (wb.x - wf.x) * along.x + (wb.y - wf.y) * along.y + (wb.z - wf.z) * along.z;
+    if (rate * side > 0) {
+      this.blade.setAngvel({
+        x: wb.x - along.x * rate, y: wb.y - along.y * rate, z: wb.z - along.z * rate,
+      }, true);
+    }
+  }
+
   /** Let go of the grip: a hand nothing is driving holds its weapon loosely. */
   private slackenGrip(): void {
     if (!this.wristJoint) return;
@@ -2106,6 +2149,11 @@ export class Arm {
       this.roll = keepRoll;
       this.computeGhost(t);
     }
+  }
+
+  /** How far the weapon goes on past its percussion point, out to its tip, metres. */
+  get pastStrike(): number {
+    return this.weapon.span * (1 - this.strikePoint);
   }
 
   /**
@@ -3092,8 +3140,12 @@ export class Arm {
     return a.angleTo(b);
   }
 
-  /** Elbow flexion, for the HUD. */
+  /**
+   * After the step: elbow flexion, for the HUD, and the grip's stop, which the
+   * solver alone cannot always hold (see `holdGripStop`).
+   */
   updateDerived(): void {
+    this.holdGripStop();
     const uq = this.upper.rotation();
     const fq = this.fore.rotation();
     const a = this._v.set(0, 1, 0).applyQuaternion(this._q.set(uq.x, uq.y, uq.z, uq.w));

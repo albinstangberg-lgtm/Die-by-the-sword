@@ -131,7 +131,7 @@ brackets.
    with `setTranslation` and `setRotation` before their first step, then move
    them with `setNextKinematicTranslation` and `setNextKinematicRotation`
    (`pushKinematic` in `fighter.ts`). Nothing can push one back, so the posed
-   body parts meet only hostile blades (`hitOnlyFilter`), and a weapon nobody
+   body parts meet only other fighters' blades (`hitOnlyFilter`), and a weapon nobody
    is swinging switches to `inertBladeFilter` so they don't meet that either:
    a posed foot once fired a dropped spear across the room at 17 m/s. The gate
    is the one kinematic body that meets everything, as architecture does, and
@@ -182,9 +182,10 @@ brackets.
     weapon's origin is its grip and its centre of mass is 0.54 m up a sword,
     0.79 m up an axe, so measuring from the origin once added about 11 m/s at
     20 rad/s to every blow. Every speed threshold in the game (cut thresholds,
-    `DAMAGE_PER_MS`, balance, clash knocks, how the AI reads a swing, the
-    ogre's `heave`) is tuned against the honest speeds; don't reintroduce the
-    old measurement.
+    `DAMAGE_PER_MS`, clash knocks, how the AI reads a swing) is tuned against
+    the honest speeds, and the balance model judges a blow at `REACTION`
+    times its speed (`balance.ts`), the units its footing, balance and the
+    ogre's `heave` were set in; don't reintroduce the old measurement.
     [A body's velocity is its centre of mass's]
 
 ## Collision groups
@@ -192,20 +193,26 @@ brackets.
 Rapier keeps a collider's membership in the top 16 bits and its filter in the
 bottom 16, and two colliders touch only if each one's membership is in the
 other's filter. `physics.ts` spends the bits on `WORLD` (0x1), `PROP` (0x2)
-and one bit that every walking hull shares (0x4), then two per fighter: body
-and blade. That allows `MAX_FIGHTERS = 6`, and `makeSides` throws past it; a
-new kind of part that needs telling apart costs bits, so reuse a role below if
-one fits. Build every value with `groups(membership, filter)` or take it from a
+and one bit that every walking hull shares (0x4), then six body bits and six
+blade bits. Each fighter's body is a different three of the six body bits and
+its weapon a different three of the six blade bits, and a filter of the three
+it has not got meets every other fighter and never itself. There are twenty
+threes of six, so twenty fighters, and `makeSides` throws past that. A new kind
+of part that needs telling apart costs bits, so reuse a role below if one
+fits. Build every value with `groups(membership, filter)` or take it from a
 `Side`; never write one as a bare number. [The fifth fighter was one bit too
-many]
+many; The ninth fighter needed fewer bits each, not more]
 
-`makeSides(teams)` builds everyone's filters at once, because who is hostile
-to whom depends on the whole line-up. Use the filter for the part's role:
+`makeSides(teams)` builds everyone's filters at once. Friendly fire is on: a
+blade cuts every body but its owner's, whoever's side it is on, and
+`Side.team` is allegiance only, which the AI reads (`Ai.company`) and the
+filters do not. [Friendly fire took bits away] Use the filter for the part's
+role:
 
 | `Side` filter | Used for |
 |---|---|
 | `bodyFilter` | hittable body parts: trunk, head, arms |
-| `bladeFilter` | a weapon being swung: meets stone, props, every other blade and enemy bodies, but not its owner or allies |
+| `bladeFilter` | a weapon being swung: meets stone, props, every other blade and every other body, but not its owner |
 | `cuttableFilter` | the sweep's rays: what counts as flesh |
 | `shieldFilter`, `backShieldFilter` | a shield on the arm, and one slung on the back |
 | `inertBladeFilter` | a weapon nobody is swinging: floor, walls, props and other blades only |
@@ -278,7 +285,7 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
 | A turning weapon's speeds come out too high | a point's velocity measured from the body's origin, not its centre of mass (rule 14) |
 | A limb shoots toward its anchor on a reset or a draw | a joint created across a gap |
 | A fighter ends up a metre from where it was put | the hull was moved on its own |
-| Something posed shoves the room or launches props | a kinematic body meeting more than hostile blades, or not placed before its first step |
+| Something posed shoves the room or launches props | a kinematic body meeting more than other fighters' blades, or not placed before its first step |
 | A mesh judders on a fast monitor | the mesh is written outside the Interpolator |
 | A joint motor can't lift what it joins | Rapier's acceleration-based motors scale by the two joined bodies only; `ragdoll.ts` uses force-based motors with torques worked out from the anatomy |
 | Two springs on a ball joint circle each other | Rapier reads a ball joint's angles off its quaternion; use a velocity servo on a proper error, as `Arm.applyGrip` does |

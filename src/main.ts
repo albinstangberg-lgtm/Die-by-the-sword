@@ -13,7 +13,7 @@ import { Combatant } from "./game/combatant";
 import { PLAYER_PALETTE } from "./game/fighter";
 import { MAN_LOOK } from "./game/look";
 import { gateHeard, ROSTER, spawnOf } from "./game/roster";
-import { SWORDSMAN } from "./game/species";
+import { sideOf, SWORDSMAN } from "./game/species";
 import type { Arm } from "./game/arm";
 import type { Fighter } from "./game/fighter";
 import { Ai } from "./game/ai";
@@ -53,10 +53,11 @@ async function main(): Promise<void> {
   const targets = new Targets();
   const arena = buildArena(phys, renderer.scene, targets);
 
-  // One side per fighter, all the foes on one team. Deriving them together is
-  // what makes "everyone's weapon but my own, and not my ally's back" a filter
-  // rather than a pile of special cases.
-  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
+  // One side per fighter: you on your own, and everything else on its
+  // faction's (see `Faction`). Deriving them together is what makes
+  // "everyone's weapon but my own" a filter rather than a pile of special
+  // cases.
+  const sides = makeSides([0, ...ROSTER.map((o) => sideOf(o.species.faction))]);
   const gateways = Object.values(arena.gateways);
 
   const player = new Combatant(phys, renderer.scene, SPAWN, sides[0], tuning,
@@ -91,6 +92,9 @@ async function main(): Promise<void> {
   const pickup = new Pickup(player, items);
 
   const everyone = [player, ...foes.map((f) => f.combatant)];
+  // Each of them knows who else is in the fight: whom it may go for, and its
+  // friends, whom it fights beside and keeps its blade off (see `Ai.company`).
+  for (const f of foes) f.ai.company = everyone;
 
   // Everything with a rigid body goes through the interpolator, and nothing
   // else may place those meshes afterwards. Half the figure used to be absent
@@ -126,12 +130,15 @@ async function main(): Promise<void> {
     if (e.wound) blood.wound(e.wound);
   };
 
-  // The player's weapon can cut the dummy or anything on the other team; theirs
-  // can only cut the player. Each weapon reports through the same reporter,
-  // and a fighter it lands on says what the blow did to it.
+  // Every weapon cuts whoever it lands on but the one holding it: the dummy,
+  // you, and any of them, allies too. Each weapon reports through the same
+  // reporter, and a fighter it lands on says what the blow did to it -- and
+  // turns on whoever landed it, if they are of another side.
   impacts.addBlade(arm, (i) => {
     if (dummy.receive(i)) { hud.showImpact(i, true); return; }
     const struck = foes.find((f) => f.combatant.receive(i));
+    // Whatever you hit, you have its attention.
+    struck?.ai.struckBy(player);
     hud.showImpact(i, struck !== undefined, struck?.combatant.lastBlow ?? null);
   });
   for (const f of foes) {
@@ -139,7 +146,18 @@ async function main(): Promise<void> {
       // A shield stops the blade before it reaches anything that bleeds, and
       // the weight of the blow comes through the arm anyway.
       if (player.block(i)) { hud.showBlock(i, player.lastBlow); return; }
-      if (player.receive(i)) hud.showHurt(i, player.lastBlow);
+      if (player.receive(i)) { hud.showHurt(i, player.lastBlow); return; }
+      // One of them caught by another's blade is cut like anyone else.
+      for (const g of foes) {
+        if (g === f) continue;
+        if (g.combatant.block(i)) return;
+        const was = g.combatant.health;
+        if (g.combatant.receive(i)) {
+          g.ai.struckBy(f.combatant);
+          if (g.combatant.health < was) hud.showNote(`${f.combatant.name} cuts ${g.combatant.name}`);
+          return;
+        }
+      }
     });
     f.combatant.onDisarm = (_where, wound) => {
       hud.showSever({ label: `${f.combatant.name} is disarmed`, at: wound.at });

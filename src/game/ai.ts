@@ -400,6 +400,58 @@ function drawOn(along: number, aside: number): number {
   return Math.sqrt(DRAW.angle * DRAW.angle - aside * aside) - along;
 }
 
+// --- beside a friend -----------------------------------------------------------
+//
+// A blade cuts whoever it lands on, a friend as readily as you. Two orcs let
+// out of the pen together, each swinging whenever its own moment came, cut
+// each other as often as they cut you -- and most of what was left once they
+// looked along their swings was an axe held out at guard, carried round into
+// a friend's hip as the orc turned after you. So each keeps its friends out
+// of the circle its own weapon sweeps, stepping round you away from them to
+// do it -- which brings the two of them at you from two sides rather than
+// one -- and looks along a swing before it lets it go.
+
+/** How much room a friend's body is given past its own hull, metres. */
+const CLEAR = 0.15;
+/** How thick an arm, a leg or a head counts as, metres at human size, from its middle. */
+const LIMB = 0.12;
+/** How many points along a swing's way it looks for a friend in it. */
+const LOOK_ALONG = 6;
+/**
+ * How far on past where a swing is sent it looks for a friend, as a fraction
+ * of the swing. An axe thrown through you goes on after the arm has got to
+ * where it sent it, and a friend standing there takes the rest: the last
+ * cuts between two orcs, once each looked along its swings, were
+ * follow-throughs into the other's thigh.
+ */
+const FOLLOW_THROUGH = 0.3;
+/** How long it goes round you for, seconds, before it tries the swing again. */
+const HOLD_BACK = [0.3, 0.7] as const;
+
+// --- whom it fights ---------------------------------------------------------------
+//
+// You, most of the time. But anything of another side will do (see
+// `Faction`), and kobolds let out into the hall with greenskins about go for
+// them as readily as for you.
+
+/**
+ * How much nearer than whom it is fighting someone else of another side has
+ * to be, as a share of the distance, for it to turn on them instead: an orc
+ * with a kobold at its elbow does not leave it hacking at its legs while it
+ * goes after you across the room.
+ */
+const TURN_ON = 0.5;
+
+/**
+ * How long, seconds, it stays on whoever has just landed a blow on it,
+ * however much nearer something else of another side comes and whatever else
+ * lands one: an orc that you cut off the back of a kobold turns on you, and
+ * does not turn straight back because the kobold is still at its elbow, or
+ * has hacked at it again. Turning on each blow as it came, it spent the fight
+ * turning, and fought neither of you.
+ */
+export const GRUDGE = 3;
+
 /**
  * The furthest an edge comes round off your chest toward the part of you it
  * is after, radians.
@@ -581,7 +633,7 @@ const QUICK_ROUND = 0.25;
 // --- being hurt -----------------------------------------------------------------
 
 /** The least a cut has to take off it, health, to count as one it feels. */
-const FELT = 1;
+export const FELT = 1;
 
 // --- taunting -------------------------------------------------------------------
 
@@ -682,6 +734,13 @@ const ZERO = { x: 0, y: 0, z: 0 } as const;
  * being committed to anything.
  */
 const LOOSE: ReadonlySet<State> = new Set<State>(["close", "circle", "backoff", "taunt"]);
+
+/**
+ * The states in which it may take on someone else: loose on its feet, looking
+ * for whoever it lost, or not in a fight at all. A swing drawn back at one of
+ * you goes at that one.
+ */
+const CHOOSING: ReadonlySet<State> = new Set<State>([...LOOSE, "hunt", "waiting", "return"]);
 
 /** How a creature fights, which a bad enough wound can change. See `Temper`. */
 interface Mood {
@@ -785,7 +844,30 @@ export class Ai implements ArmInput {
      * one of yours, and round you.
      */
     quickSteps: 0, darts: 0, quickOuts: 0, quickDodges: 0, quickRounds: 0,
+    /**
+     * And with friends about: swings it let go of, drawing back, because a
+     * friend was in the way (see `inTheWay`), and steps it took round you to
+     * keep one out of its weapon's way (see `makeRoom`), and swings it
+     * checked as they went because one had come into the way.
+     */
+    heldBack: 0, madeRoom: 0, pulled: 0,
   };
+
+  /**
+   * Everyone in the fight, itself included: the ones on its own side are the
+   * friends it keeps out of the way of its blade (see `inTheWay`). Nobody,
+   * until whoever sets up the fight says otherwise.
+   */
+  company: readonly Combatant[] = [];
+  /** Whom it is fighting, or went for last: null until it has gone for anybody. See `choose`. */
+  private foeNow: Combatant | null = null;
+  /** Whoever last landed a blow on it, until it has turned on them: see `struckBy`. */
+  private provoker: Combatant | null = null;
+  /** Seconds it has left of staying on whoever it turned on for a blow: see `GRUDGE`. */
+  private grudge = 0;
+  private readonly _along = new THREE.Vector3();
+  private readonly _friend = new THREE.Vector3();
+  private readonly _other = new THREE.Vector3();
 
   private want = { yaw: 0.3, pitch: -0.15, reach: 0.6, roll: 0 };
 
@@ -1042,6 +1124,14 @@ export class Ai implements ArmInput {
   }
 
   /**
+   * Whom it is fighting, or went for last -- you, or something of another
+   * side -- or null if it has gone for nobody yet: for the fight panel.
+   */
+  get fighting(): Combatant | null {
+    return this.foeNow;
+  }
+
+  /**
    * The swing it is drawing back for or throwing, or null. For the harness:
    * nothing you are shown reads it.
    */
@@ -1050,7 +1140,12 @@ export class Ai implements ArmInput {
     return s === "windup" || s === "leap" || s === "strike" ? this.swing : null;
   }
 
-  /** Run once per fixed step, before the arm reads its input. */
+  /**
+   * Run once per fixed step, before the arm reads its input. `foe` is whom it
+   * fights when it has nobody else to choose from: you, in the game, and in
+   * a fight set up without `company` the only one there is. With company,
+   * it goes for whichever of another side it sees first (see `choose`).
+   */
   think(self: Combatant, foe: Combatant, t: Tuning, dt: number): void {
     if (self.dead) {
       this.state = "beaten";
@@ -1102,6 +1197,10 @@ export class Ai implements ArmInput {
     // same one either of them could cast, and it is also what makes a doorway
     // worth something: step into the light and the thing in the next room
     // starts moving. From here on `_foe` is where it believes you are.
+    //
+    // "You" being whoever it is fighting: see `choose`.
+    this.grudge = Math.max(0, this.grudge - dt);
+    foe = this.choose(self, foe);
     this.look(self, foe, dt);
     const toFoe = this._foe.clone().sub(this._self);
     const range = Math.hypot(toFoe.x, toFoe.z);
@@ -1230,7 +1329,7 @@ export class Ai implements ArmInput {
         // and show you its weapon first -- decided once, as it sets off.
         if (this.patience > 0 && this.showOff && range > outer * TAUNT_FAR) {
           this.showOff = false;
-          if (this.taunt(range, outer, false, 1)) break;
+          if (this.taunt(self, range, outer, false, 1)) break;
         }
         // Coming in to go round you, it answers your feet too. Pressing, it
         // has nothing to answer with but the swing it is already bringing.
@@ -1258,9 +1357,13 @@ export class Ai implements ArmInput {
         // From further off than it can reach, it comes in on a slant when there
         // is floor for one. The slant is checked every step, not once, so it
         // straightens up rather than walk into the side of a doorway.
-        const side = fwd > 0 && this.weave !== 0 && range < WEAVE_IN
-          && range > far * WEAVE_OUT && this.roomFor(self, 1, this.weave, this.pace * 0.5)
-          ? this.weave : 0;
+        // And with a friend inside the circle its weapon sweeps, it comes in
+        // on a slant away from them, or steps round you away from them.
+        const room = this.makeRoom(self);
+        const side = room !== 0 && this.roomFor(self, fwd, room, this.pace * 0.5) ? room
+          : fwd > 0 && this.weave !== 0 && range < WEAVE_IN
+            && range > far * WEAVE_OUT && this.roomFor(self, 1, this.weave, this.pace * 0.5)
+            ? this.weave : 0;
         this.detour(self, fwd, side);
         break;
       }
@@ -1272,7 +1375,7 @@ export class Ai implements ArmInput {
         this.guard();
         // You are on the floor: now and then it stands off and shows you its
         // weapon rather than come and finish it.
-        if (foe.fighter.down && this.taunt(range, outer, true)) break;
+        if (foe.fighter.down && this.taunt(self, range, outer, true)) break;
         if (this.lashOut(self, range, close)) break;
         if (this.leapAt(self, range)) break;
         if (this.punish(range, close, inner, outer)) break;
@@ -1280,7 +1383,7 @@ export class Ai implements ArmInput {
           // You have backed out of its circle. It shows you what it thinks of
           // that, now and then -- or comes after you, and carries on waiting
           // once it has you again.
-          if (this.taunt(range, outer)) break;
+          if (this.taunt(self, range, outer)) break;
           this.patience = Math.max(this.timer, 0.01);
           this.begin("close", 0);
           this.hold(1, 0);
@@ -1367,6 +1470,18 @@ export class Ai implements ArmInput {
         // something, which never gets there at all.
         const s = this.swing!;
         this.gauge(self, s);
+        // Not through a friend. One in the way of it, or come into the way
+        // since it began, and it lets the swing go and goes round you a
+        // moment instead, away from them. Looked at every step, with the aim
+        // as it is now: the swing is aimed at you as it draws back, and you,
+        // it and they all move. A leap is at you out of reach, and comes down
+        // where you are, not across anyone.
+        if (!s.leap && this.inTheWay(self, s, t, true)) {
+          this.tally.heldBack++;
+          this.circle(draw(HOLD_BACK));
+          this.guard();
+          break;
+        }
         this.want = {
           yaw: this.aimFrom.yaw + s.from.yaw + this.further.yaw,
           pitch: this.aimFrom.pitch + s.from.pitch + this.further.pitch,
@@ -1419,6 +1534,14 @@ export class Ai implements ArmInput {
           this.carryRound(self, s, range, t);
           break;
         }
+        // A friend come into the way of it as it goes: it checks the swing,
+        // and brings its guard up where the weapon is.
+        if (!s.leap && this.inTheWay(self, s, t, false)) {
+          this.tally.pulled++;
+          this.recover(self);
+          this.guard();
+          break;
+        }
         // Aim THROUGH the target, not at it. Sweeping to a point short of the
         // foe decelerates into the hit and lands a shove; the whole damage
         // model is built on speed at contact.
@@ -1448,7 +1571,7 @@ export class Ai implements ArmInput {
         if (this.stopped(STRIKE) || this.done(self, STRIKE, THERE.strike)) {
           const landed = foe.health < this.yoursBefore;
           const through = !landed && this.arrived(self, THERE.strike);
-          if (through && this.spinOn(range, far)) break;
+          if (through && this.spinOn(self, range, far)) break;
           if (landed || !this.carryOn(foe, range, close, through)) this.recover(self);
         }
         break;
@@ -1460,8 +1583,14 @@ export class Ai implements ArmInput {
         //
         // And then a moment more at the end of a run, or out of a spin: see
         // WINDED. Having let go of a swing because it hurt, it gives ground.
+        //
+        // And it steps out from beside a friend it has come too near.
         this.guard();
-        this.hold((range < close || this.flinched) && this.roomFor(self, -1, 0, 0.3) ? -1 : 0, 0);
+        {
+          const room = this.makeRoom(self);
+          this.hold((range < close || this.flinched) && this.roomFor(self, -1, 0, 0.3) ? -1 : 0,
+            room !== 0 && this.roomFor(self, 0, room, 0.3) ? room : 0);
+        }
         if (this.upAt < 0 && (this.stopped(RECOVER) || this.done(self, RECOVER, THERE.recover))) {
           this.upAt = this.clock;
         }
@@ -1851,12 +1980,14 @@ export class Ai implements ArmInput {
    * whole body carried on round after it on its heel, and the same edge
    * coming round at you again. See `Cut.spin`.
    */
-  private spinOn(range: number, far: number): boolean {
+  private spinOn(self: Combatant, range: number, far: number): boolean {
     const s = this.swing!;
     const spin = s.cut.spin;
     if (spin === undefined || s.leap || range > far * SPIN_FAR || !this.sighted || this.knocked) {
       return false;
     }
+    // Not with a friend anywhere the weapon would come round through.
+    if (this.makeRoom(self) !== 0) return false;
     if (Math.random() >= spin.chance) return false;
     this.whirl = Math.sign(s.to.yaw - s.from.yaw);
     this.whirlRoll = draw(spin.roll);
@@ -1906,7 +2037,9 @@ export class Ai implements ArmInput {
       - Math.atan2(-(this._foe.x - this._self.x), -(this._foe.z - this._self.z))) * this.whirl;
     const past = this.spun > Math.PI && this.bladeWas < 0 && b >= 0;
     this.bladeWas = b;
-    if (past || this.spun >= SPIN_MOST || this.stopped(STRIKE) || this.clock >= SPIN_TIME) {
+    // Or once a friend has come into the circle it is going round.
+    if (past || this.spun >= SPIN_MOST || this.stopped(STRIKE) || this.clock >= SPIN_TIME
+      || this.makeRoom(self) !== 0) {
       this.recover(self);
     }
   }
@@ -2139,6 +2272,251 @@ export class Ai implements ArmInput {
     this.begin("close", 0);
   }
 
+  /**
+   * Whom it fights this step, out of `company`, or `given` without any.
+   *
+   * Whoever it is fighting, while they live and it has them in sight --
+   * unless something else of another side it can see is a good deal nearer
+   * (see `TURN_ON`), and they have not just landed a blow on it (`GRUDGE`). Having lost them for longer than a pillar hides anyone,
+   * or having none, the nearest of another side it can see, near enough to
+   * notice; and if it can see nobody, whoever it was after, to look for.
+   * Only in the middle of nothing (see `CHOOSING`) -- but whoever lands a
+   * blow on it, it turns on as soon as it is free to (see `struckBy`).
+   */
+  private choose(self: Combatant, given: Combatant): Combatant {
+    if (this.company.length === 0) return given;
+    const now = this.foeNow;
+    const holding = now !== null && this.hostile(self, now);
+    // Something of another side has landed a blow on it: it turns on them,
+    // as soon as it is free to.
+    const provoker = this.provoker;
+    if (provoker !== null && (provoker === now || !this.hostile(self, provoker)
+      || (holding && this.grudge > 0))) {
+      this.provoker = null;
+    } else if (provoker !== null && (!holding || CHOOSING.has(this.state))) {
+      this.provoker = null;
+      this.retarget(provoker);
+      this.grudge = GRUDGE;
+      return provoker;
+    }
+    if (holding && !CHOOSING.has(this.state)) return now;
+    let seen: Combatant | null = null;
+    let nearest = NOTICE;
+    for (const c of this.company) {
+      if (!this.hostile(self, c)) continue;
+      const d = this.distanceTo(c);
+      if (d >= nearest || !self.sees(c)) continue;
+      seen = c;
+      nearest = d;
+    }
+    if (holding && (seen === null || seen === now || (this.lost < GLIMPSE
+      && (this.grudge > 0 || nearest >= TURN_ON * this.distanceTo(now))))) {
+      return now;
+    }
+    if (seen !== null) {
+      if (seen !== now) this.retarget(seen);
+      return seen;
+    }
+    // Nobody in sight, and whoever it was fighting dead: it has won, and goes
+    // home -- and whoever it was given is whom it notices next, as it would
+    // have with nobody else about.
+    if (now !== null) {
+      this.retarget(null);
+      if (this.engaged) this.giveUp();
+    }
+    if (this.hostile(self, given)) this.retarget(given);
+    return given;
+  }
+
+  /** Whether it would fight someone: alive, and of another side. */
+  private hostile(self: Combatant, c: Combatant): boolean {
+    return c !== self && !c.dead && c.fighter.side.team !== self.fighter.side.team;
+  }
+
+  /** How far off someone is, metres, across the floor. */
+  private distanceTo(c: Combatant): number {
+    const at = c.position(this._other);
+    return Math.hypot(at.x - this._self.x, at.z - this._self.z);
+  }
+
+  /**
+   * Turned on someone else, or on nobody: what it had read of the last one --
+   * their feet, their weapon, the opening their miss gave it -- is nothing to
+   * go on. What it sees of the next it reads from there, as it did of the
+   * last.
+   */
+  private retarget(to: Combatant | null): void {
+    const first = this.foeNow === null;
+    this.foeNow = to;
+    this.grudge = 0;
+    if (first) return;
+    this.threatened = false;
+    this.answerIn = -1;
+    this.readBack = false;
+    this.wasBack = false;
+    this.cameAt = -1;
+    this.sinceNear = Infinity;
+    this.closing = 0;
+    this.coming = 0;
+    this.yourMove = 0;
+    this.moveFor = 0;
+    this.answered = false;
+    this.giving = false;
+    this.meeting = false;
+    this.following = false;
+    this.baiting = false;
+    this.yourReach = 0;
+    this.opening = 0;
+    this.yoursKnocked = false;
+    this.drawn = false;
+    this.crowd = 0;
+    this.lost = Infinity;
+  }
+
+  /** Its friends: everyone on its own side still on their feet or down, but not dead. */
+  private friendsOf(self: Combatant): Combatant[] {
+    if (this.company.length === 0) return [];
+    const side = self.fighter.side.team;
+    return this.company.filter((c) => c !== self && !c.dead && c.fighter.side.team === side);
+  }
+
+  /**
+   * Whether a friend is where this swing would go from here, aimed as it is
+   * this step: drawing back, where the weapon is taken back to from wherever
+   * it is now, and then the swing, from there to where it ends and on through
+   * it (see `FOLLOW_THROUGH`); going, the rest of it from where the weapon is
+   * now. A friend whose body comes within reach of the weapon anywhere along
+   * that, give or take `CLEAR`, is in the way. A wind-up swung back into a
+   * friend's thigh cuts it as surely as the swing would have.
+   */
+  private inTheWay(self: Combatant, s: Swing, t: Tuning, drawing: boolean): boolean {
+    // Only a friend near enough for its weapon to reach any of them, arms and
+    // all, is worth looking along a swing for.
+    const reach = this.strikeReach + self.arm.pastStrike + CLEAR;
+    const friends = this.friendsOf(self).filter((friend) => {
+      const at = friend.position(this._friend);
+      return Math.hypot(at.x - this._self.x, at.z - this._self.z)
+        < reach + friend.fighter.build.hull.radius + friend.arm.reachLimits[1] + LIMB;
+    });
+    if (friends.length === 0) return false;
+    const a = self.arm.aim;
+    const [least, most] = self.arm.reachLimits;
+    const now = { yaw: a.yaw, pitch: a.pitch, reach: (a.reach - least) / Math.max(1e-6, most - least) };
+    const from = {
+      yaw: this.aimFrom.yaw + s.from.yaw + this.further.yaw,
+      pitch: this.aimFrom.pitch + s.from.pitch + this.further.pitch,
+      reach: s.from.reach + this.further.reach,
+    };
+    const to = { yaw: this.aimTo.yaw + s.to.yaw, pitch: this.aimTo.pitch + s.to.pitch, reach: s.to.reach };
+    const on = {
+      yaw: to.yaw + (to.yaw - from.yaw) * FOLLOW_THROUGH,
+      pitch: to.pitch + (to.pitch - from.pitch) * FOLLOW_THROUGH,
+      reach: to.reach,
+    };
+    if (drawing && this.friendAlong(self, friends, t, now, from, s.roll)) return true;
+    return this.friendAlong(self, friends, t, drawing ? from : now, to, s.roll)
+      || this.friendAlong(self, friends, t, to, on, s.roll);
+  }
+
+  /** Whether a friend is on any of the lines out through its weapon between two aims. */
+  private friendAlong(
+    self: Combatant, friends: readonly Combatant[], t: Tuning,
+    a: { yaw: number; pitch: number; reach: number },
+    b: { yaw: number; pitch: number; reach: number }, roll: number,
+  ): boolean {
+    for (let k = 0; k <= LOOK_ALONG; k++) {
+      const f = k / LOOK_ALONG;
+      if (this.friendOnLine(self, friends, t,
+        a.yaw + (b.yaw - a.yaw) * f, a.pitch + (b.pitch - a.pitch) * f,
+        a.reach + (b.reach - a.reach) * f, roll)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a friend is on the line out from where it stands, through its
+   * weapon's working point at this aim, to the tip -- seen from above, since
+   * a swing that went over one friend's head would come down on the next.
+   * Its body, and its arms and whatever else of it sticks out past its body:
+   * a swing that clears a friend's middle can still take the arm it is
+   * swinging with.
+   */
+  private friendOnLine(
+    self: Combatant, friends: readonly Combatant[], t: Tuning,
+    yaw: number, pitch: number, reach: number, roll: number,
+  ): boolean {
+    const p = self.arm.probeStrike(yaw, pitch, reach, roll, t, this._along);
+    let ex = p.x - this._self.x;
+    let ez = p.z - this._self.z;
+    const out = Math.hypot(ex, ez);
+    if (out < 1e-6) return false;
+    const to = (out + self.arm.pastStrike) / out;
+    ex *= to;
+    ez *= to;
+    for (const friend of friends) {
+      if (this.nearLine(friend.position(this._friend), ex, ez,
+        friend.fighter.build.hull.radius + CLEAR)) {
+        return true;
+      }
+      const limb = LIMB * friend.fighter.build.scale + CLEAR;
+      for (const part of friend.fighter.parts) {
+        if (!part.severed && this.nearLine(copy(this._friend, part.collider.translation()), ex, ez, limb)) {
+          return true;
+        }
+      }
+      const arm = friend.arm;
+      if (!arm.disarmed && (this.nearLine(copy(this._friend, arm.upper.translation()), ex, ez, limb)
+        || this.nearLine(copy(this._friend, arm.fore.translation()), ex, ez, limb)
+        || this.nearLine(arm.handPosition, ex, ez, limb))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether a point is within `r` of the line out from where it stands to
+   * `ex, ez` off it, seen from above.
+   */
+  private nearLine(at: THREE.Vector3, ex: number, ez: number, r: number): boolean {
+    const ax = at.x - this._self.x;
+    const az = at.z - this._self.z;
+    const u = Math.max(0, Math.min(1, (ax * ex + az * ez) / (ex * ex + ez * ez)));
+    return Math.hypot(ax - ex * u, az - ez * u) < r;
+  }
+
+  /**
+   * Which way round you it steps to make room for a friend inside the circle
+   * its weapon sweeps -- its reach to the tip, give or take `CLEAR` -- where
+   * its guard carried round as it turns after you, or a swing, or a
+   * follow-through, would meet them: away from the nearest, 1 to its right
+   * and -1 to its left, or 0 with no friend that near. A friend straight
+   * ahead of it or behind it, it goes round whichever way it was going.
+   */
+  private makeRoom(self: Combatant): number {
+    const friends = this.friendsOf(self);
+    if (friends.length === 0) return 0;
+    const reach = this.strikeReach + self.arm.pastStrike + CLEAR;
+    const yaw = self.fighter.yaw;
+    const rx = Math.cos(yaw);
+    const rz = -Math.sin(yaw);
+    let nearest = Infinity;
+    let side = 0;
+    for (const friend of friends) {
+      const a = friend.position(this._friend);
+      const dx = a.x - this._self.x;
+      const dz = a.z - this._self.z;
+      const d = Math.hypot(dx, dz);
+      if (d >= reach + friend.fighter.build.hull.radius || d >= nearest) continue;
+      nearest = d;
+      const across = dx * rx + dz * rz;
+      side = Math.abs(across) < 0.2 * d ? this.side : -Math.sign(across);
+    }
+    return side;
+  }
+
   /** Start going round you, and give it this long before it commits. */
   private circle(patience: number): void {
     this.stand();
@@ -2273,6 +2651,20 @@ export class Ai implements ArmInput {
    * held to the distance at which it would notice you -- and if it does not
    * find you, it gives up and goes home the way it came.
    */
+  /**
+   * Someone has landed a blow on it. One of another side it turns on, as soon
+   * as it is free to, whoever it was fighting -- unless it turned on someone
+   * else for a blow a moment ago (see `GRUDGE`): an orc hacking at you with a
+   * kobold at its back turns round to the kobold, and one busy with a kobold
+   * turns on you if you come up behind it and cut it. A friend's blade it
+   * forgives. Only with `company`: see `choose`.
+   */
+  struckBy(who: Combatant): void {
+    // A blow from whoever it is fighting already changes nothing -- least of
+    // all whom it means to turn on once it has finished its swing.
+    if (who !== this.foeNow) this.provoker = who;
+  }
+
   hear(at: THREE.Vector3, on: THREE.Vector3): void {
     if (this.engaged || (this.state !== "waiting" && this.state !== "return")) return;
     // Not at its post yet: it would have nowhere to go home to.
@@ -2419,6 +2811,20 @@ export class Ai implements ArmInput {
     }
 
     const fwd = range > outer ? 1 : range < inner ? -1 : 0;
+
+    // A friend inside the circle its weapon sweeps: the step is round you,
+    // away from them, before anything else it might have done with it.
+    const room = this.makeRoom(self);
+    if (room !== 0) {
+      const time = this.stride();
+      const move = this.findRoom(self, fwd, room, this.pace * time);
+      if (move !== null) {
+        if (move.side !== 0) this.side = move.side;
+        this.step = { fwd: move.fwd, side: move.side, time, settle: settle * 0.5 };
+        this.tally.madeRoom++;
+        return;
+      }
+    }
 
     if (fwd === 0 && Math.random() < WATCH) {
       this.step = { fwd: 0, side: 0, time: 0, settle: settle * 2 };
@@ -3041,10 +3447,15 @@ export class Ai implements ArmInput {
    * then it shows you its weapon (see `Display`), and not again for a while.
    */
   private taunt(
-    range: number, outer: number, standingOver = false, chance = this.mood.footwork.taunt,
+    self: Combatant, range: number, outer: number, standingOver = false,
+    chance = this.mood.footwork.taunt,
   ): boolean {
     const d = this.species.display;
     if (this.tauntRest > 0 || !this.sighted || this.yourMove > 0) return false;
+    // Not with a friend where its weapon would go: a display is a weapon
+    // swung about at nothing, and two of them standing over you on the
+    // floor, one showing you its axe, took the other's shins.
+    if (this.makeRoom(self) !== 0) return false;
     if (!standingOver && range < outer * TAUNT_OUT) return false;
     // You have only just got out of its reach: for something that leaps,
     // that is what a leap is for. Taunting then, it came after you with its
@@ -3231,6 +3642,10 @@ export class Ai implements ArmInput {
     this.comingIn = false;
     this.showOff = false;
     this.darting = false;
+    // Whom it was after, and whoever it bore a grudge against, are nobody now.
+    this.foeNow = null;
+    this.provoker = null;
+    this.grudge = 0;
     this.idle();
   }
 }
