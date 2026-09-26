@@ -232,19 +232,21 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
    `buildRig(overrides?, foeSpecies?, foeAt?)` (the player is always the
    swordsman at `SPAWN`), drives it with `rig.step(n, keys)`, `rig.fight(n)`,
    `rig.hold(n)`, `rig.pin(at)` or `rig.place(at)`, and reports with
-   `check(name, ok, detail)`, putting the measured numbers in `detail`. Then
-   add it to `GROUPS`, just above `run()`. Measure the thing itself: the
+   `check(name, ok, detail)`, putting the measured numbers in `detail`. A
+   rate, count or order of something the AI chooses at random is a
+   `tendency(name, ok, detail)` instead: give it enough samples that luck
+   alone sinks it on well under one seed in a hundred. Then add the function
+   to `GROUPS`, just above `run()`. Measure the thing itself: the
    README's five lessons "about the harness rather than the game" are about
    checks that passed because nothing happened, or because they leaned on a
    bug.
 5. Run `npm run typecheck` yourself. Run the harness (`npm run smoke`) the
    way CLAUDE.md says: through the `smoke-tester` agent, in the background.
    It runs the real modules against Rapier in Node for a few minutes, prints
-   `passed/total checks passed`, and exits non-zero on any failure. It can't
-   run a single group from the command line; to iterate on one, comment out
-   the other entries in `GROUPS`, and put them back before committing. Each
-   group rolls its own dice, so on its own it gives exactly what it gives in
-   the full run.
+   `passed/total checks passed`, and exits 1 when a rule fails and 2 when
+   only tendencies miss. `SMOKE_ONLY=<group> npm run smoke` runs just that
+   group, to iterate on it: each group rolls its own dice, so on its own it
+   gives exactly what it gives in the full run.
 6. The harness's dice are loaded: `tools/dice.ts` replaces `Math.random` with
    a seeded generator, so the same code gives the same result on every run,
    and running it again tells you nothing new. The seed is printed at the top
@@ -254,10 +256,12 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
    check that follows a fight starts from wherever the fight left things, so a
    change that rolls differently, or moves anything a fight touches, deals the
    rest of that group different dice, and a check that fails on some dice can
-   turn over without being broken. Read the numbers in a failure's detail, and
-   run the same seed without your change, and your change on a few other
-   seeds, before deciding a failure is yours; don't loosen a threshold to get
-   a pass.
+   turn over without being broken. A rule that fails (`FAIL`) is a bug on any
+   seed. A tendency that misses (`MISS`) may be the dice: `npm run
+   smoke:seeds -- --groups <group> --against HEAD` runs its group on ten
+   seeds with your change and without it, and says whether it misses more
+   often with it. Don't loosen a threshold to get a pass; a tendency luck
+   sinks too often needs more samples.
 7. If the feel changed, say what to try in the browser (`npm run dev`). The
    harness measures; it can't feel.
 
