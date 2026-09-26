@@ -258,7 +258,7 @@ export const SWORD: Weapon = {
   span: SWORD_SPAN,
   mass: REFERENCE_MASS,
   bite: "edge",
-  minCutSpeed: 2.0,
+  minCutSpeed: 1.35,
   sharpness: 1,
   parts: [{
     shape: "box",
@@ -369,10 +369,10 @@ export const AXE: Weapon = {
   bite: "edge",
   // An edge on that much mass still has to be travelling to open anything, and
   // the axe is rarely travelling slowly.
-  minCutSpeed: 2.2,
+  minCutSpeed: 1.3,
   // A broad edge spreads the blow over more of the wound than a sword's does.
   // It hardly matters: the axe gets it all back and more in heft.
-  sharpness: 0.85,
+  sharpness: 0.94,
   parts: [
     {
       shape: "capsule", halfThick: 0.021, halfLen: AXE_HAFT_END / 2, halfWidth: 0.021,
@@ -476,10 +476,10 @@ export const SPEAR: Weapon = {
   bite: "point",
   // A point concentrates a small force into a few square millimetres, so it
   // opens a wound at a speed an edge would only bruise at.
-  minCutSpeed: 1.4,
+  minCutSpeed: 1.0,
   // And it is the one weapon here that does not need a swing behind it. A
-  // thrust that lands is worth three times the same energy spread along an edge.
-  sharpness: 3.2,
+  // thrust that lands is worth twice the same energy spread along an edge.
+  sharpness: 2.13,
   parts: [
     {
       shape: "capsule", halfThick: 0.017, halfLen: SPEAR_SHAFT_LEN / 2, halfWidth: 0.017,
@@ -555,11 +555,11 @@ export const HATCHET: Weapon = {
   span: HATCHET_SPAN,
   mass: 0.7,
   bite: "edge",
-  // Small and keen: it opens a cut a little slower than a sword does, and a
+  // Small and keen: it opens a cut slower than a sword does, and a
   // short, thin edge driven into a shin puts all of a small blow into a
   // small cut.
-  minCutSpeed: 1.8,
-  sharpness: 1.3,
+  minCutSpeed: 0.8,
+  sharpness: 1.25,
   parts: [
     {
       shape: "capsule", halfThick: 0.014, halfLen: HATCHET_HAFT_END / 2, halfWidth: 0.014,
@@ -638,10 +638,10 @@ export const CLUB: Weapon = {
   bite: "blunt",
   rebound: 0.4,
   // A slow club only pushes; one coming at walking pace already bruises.
-  minCutSpeed: 2.2,
+  minCutSpeed: 1.45,
   // Its blow is spread over a hand's breadth of you rather than a line, but
   // there is so much of it that it breaks what it lands on anyway.
-  sharpness: 0.9,
+  sharpness: 0.97,
   parts: [
     {
       shape: "capsule", halfThick: 0.032, halfLen: CLUB_HANDLE_END / 2 + 0.06, halfWidth: 0.032,

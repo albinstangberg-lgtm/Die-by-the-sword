@@ -666,6 +666,8 @@ export class Arm {
   private readonly _preLin = new THREE.Vector3();
   private readonly _preAng = new THREE.Vector3();
   private readonly _preQuat = new THREE.Quaternion();
+  /** The weapon's centre of mass at the snapshot, which `_preLin` is the velocity of. */
+  private readonly _preCom = new THREE.Vector3();
   private readonly _tipPos = new THREE.Vector3();
   private readonly _tipVel = new THREE.Vector3();
   private readonly _probeHand = new THREE.Vector3();
@@ -1860,10 +1862,12 @@ export class Arm {
   private snapshotBlade(): void {
     const p = this.blade.translation();
     const r = this.blade.rotation();
+    const c = this.blade.worldCom();
     const lv = this.blade.linvel();
     const av = this.blade.angvel();
     this._prePos.set(p.x, p.y, p.z);
     this._preQuat.set(r.x, r.y, r.z, r.w);
+    this._preCom.set(c.x, c.y, c.z);
     this._preLin.set(lv.x, lv.y, lv.z);
     this._preAng.set(av.x, av.y, av.z);
   }
@@ -1885,6 +1889,10 @@ export class Arm {
     const bp = this.blade.translation();
     this._tipPos.set(bp.x + r.x, bp.y + r.y, bp.z + r.z);
 
+    // The tip's velocity is the centre of mass's plus the spin about it --
+    // see `velocityAt` for why not the spin about the grip.
+    const c = this.blade.worldCom();
+    r.set(this._tipPos.x - c.x, this._tipPos.y - c.y, this._tipPos.z - c.z);
     const lv = this.blade.linvel();
     const av = this.blade.angvel();
     this._tipVel.set(
@@ -1927,11 +1935,20 @@ export class Arm {
     return out.set(bp.x + out.x, bp.y + out.y, bp.z + out.z);
   }
 
-  /** Blade velocity at a world point, from the pre-step snapshot. */
+  /**
+   * Blade velocity at a world point, from the pre-step snapshot.
+   *
+   * Measured from the weapon's centre of mass, not its origin at the grip:
+   * Rapier's `linvel` is the velocity of the centre of mass, and the spin
+   * adds to it only about that. Measured from the grip, every point was
+   * given the centre of mass's swing a second time -- the spin times the
+   * half metre or more from the hand out to it, 11 m/s at 20 rad/s on the
+   * sword, all of it along the swing.
+   */
   velocityAt(point: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-    const rx = point.x - this._prePos.x;
-    const ry = point.y - this._prePos.y;
-    const rz = point.z - this._prePos.z;
+    const rx = point.x - this._preCom.x;
+    const ry = point.y - this._preCom.y;
+    const rz = point.z - this._preCom.z;
     const lv = this._preLin;
     const av = this._preAng;
     return out.set(
@@ -2843,14 +2860,23 @@ export class Arm {
     const fp = this.fore.translation();
     const lv = this.fore.linvel();
     const av = this.fore.angvel();
+    // A body's linvel is its centre of mass's, and the weapon's is out along
+    // it from the hand: it leaves at the forearm's velocity THERE, which is
+    // the hand's plus the spin about it. Worked out rather than asked of
+    // Rapier, since a body that has just changed type is no time to trust
+    // its mass (below).
+    const com = new THREE.Vector3()
+      .copy(weaponMassProperties(this.weapon, this.weaponMass).com)
+      .applyQuaternion(q)
+      .add(hand);
 
     this.blade.setBodyType(this.phys.rapier.RigidBodyType.Dynamic, true);
     this.blade.setTranslation({ x: fp.x + hand.x, y: fp.y + hand.y, z: fp.z + hand.z }, true);
     this.blade.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
     this.blade.setLinvel({
-      x: lv.x + (av.y * hand.z - av.z * hand.y),
-      y: lv.y + (av.z * hand.x - av.x * hand.z),
-      z: lv.z + (av.x * hand.y - av.y * hand.x),
+      x: lv.x + (av.y * com.z - av.z * com.y),
+      y: lv.y + (av.z * com.x - av.x * com.z),
+      z: lv.z + (av.x * com.y - av.y * com.x),
     }, true);
     this.blade.setAngvel({ x: av.x, y: av.y, z: av.z }, true);
     this.blade.resetForces(true);

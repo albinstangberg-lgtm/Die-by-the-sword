@@ -176,6 +176,16 @@ brackets.
     `updateSceneQueries()`; do the same wherever you move things and cast
     before the next step. [The world's rays see nothing before it has
     stepped]
+14. **A point's velocity is the centre of mass's plus the spin about it.**
+    `linvel()` is the velocity of a body's centre of mass, not of its origin,
+    so a point's velocity is `linvel() + angvel() × (point − worldCom())`. A
+    weapon's origin is its grip and its centre of mass is 0.54 m up a sword,
+    0.79 m up an axe, so measuring from the origin once added about 11 m/s at
+    20 rad/s to every blow. Every speed threshold in the game (cut thresholds,
+    `DAMAGE_PER_MS`, balance, clash knocks, how the AI reads a swing, the
+    ogre's `heave`) is tuned against the honest speeds; don't reintroduce the
+    old measurement.
+    [A body's velocity is its centre of mass's]
 
 ## Collision groups
 
@@ -251,7 +261,7 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
 | A weapon is as hard to roll in the hand as to swing | Rapier left to add up a multi-part body's inertia (rule 4) |
 | A blade passes through a thin post | no CCD on that body |
 | A fast cut scores almost no damage | velocity read after the step instead of the snapshot |
-| A spinning blade's measured speed looks wrong | `Arm.velocityAt` and `Arm.sampleTip` measure from the grip, not the weapon's centre of mass; see "Bodies and forces" in the reference |
+| A turning weapon's speeds come out too high | a point's velocity measured from the body's origin, not its centre of mass (rule 14) |
 | A limb shoots toward its anchor on a reset or a draw | a joint created across a gap |
 | A fighter ends up a metre from where it was put | the hull was moved on its own |
 | Something posed shoves the room or launches props | a kinematic body meeting more than hostile blades, or not placed before its first step |
