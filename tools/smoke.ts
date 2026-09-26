@@ -10,8 +10,11 @@
  * blocked. If the second case ever stops failing, the mechanic is gone.
  *
  *   npm run smoke
+ *   SMOKE_SEED=7 npm run smoke    # other dice: see dice.ts
  */
 
+// First, so that nothing imported below rolls a die before they are loaded.
+import { reseed, SEED } from "./dice";
 import * as THREE from "three";
 import { createPhysics, makeSides, type PhysicsWorld } from "../src/core/physics";
 import {
@@ -6752,123 +6755,141 @@ async function theNewKeysAreWhereTheySay(): Promise<void> {
     `two taps ${twice}, held first ${held}, too far apart ${slow}, Q between ${between}, three taps ${thrice}`);
 }
 
+/**
+ * Every group of checks, in the order they run. Each rolls its own dice (see
+ * `reseed`), so adding, dropping or moving one leaves the rest as they were.
+ */
+const GROUPS: (() => Promise<void>)[] = [
+  freeArmTracks,
+  reachesAtEveryExtension,
+  blockedBladeDefeatsTheArm,
+  edgeRollTracks,
+  survivesAbuse,
+  thinPostIsHittable,
+  damageCurveIsHonest,
+  limbsComeOff,
+  severingTakesChildrenWithIt,
+  resetRebuildsCleanly,
+  aRealSwingSevers,
+  aBladeStopsOnABody,
+  aHitSaysHowHardItWas,
+  theOpponentClosesAndSwings,
+  theOpponentPlaysByTheSameRules,
+  theOpponentCanHurtYou,
+  cuttingTheArmDisarms,
+  bladesIgnoreTheirOwnerButNotTheFoe,
+  deathDropsTheBody,
+  theTrunkWalksWithTheLegs,
+  aDeadBodyGoesLimp,
+  aLostArmIsHeld,
+
+  theControlsAreWhereTheySay,
+  jumpingLeavesTheGround,
+  airControlIsWeakerThanGround,
+  aDoubleTapIsAQuickStep,
+  aLegSweepCanBeJumped,
+  weaponsAreToldApartByPhysics,
+  theAxeIsHarderToSwing,
+  theBestiaryScalesHonestly,
+  eachSpeciesCanFight,
+  swingsAreReadOffTheArm,
+  alliesShareAnArenaWithoutCuttingEachOther,
+  resetPutsSeveredLimbsBackOn,
+  everyMovingPartIsInterpolated,
+  theTestingAreaIsAHallAndFourRooms,
+  anOpponentWaitsUntilItSeesYou,
+  anOpponentLooksWhereItLastSawYou,
+  thePenOpensOnTwoOrcs,
+  severingBleeds,
+
+  theArmKeepsOutOfItsOwnChest,
+  aFlickDoesNotSnapTheArm,
+  aRaisedArmDoesNotTurnOver,
+  slowInputIsUntouched,
+  theChestLeadsTheArm,
+  theFeetStayPlantedThenStep,
+  theKneesBendLikeAPersons,
+  stoppingPutsTheFeetDown,
+  turningOnTheSpotSteps,
+  theLegsGoTheWayTheBodyDoes,
+  theBodyAgreesWithItsProbes,
+  thePostureIsInterpolated,
+
+  theWeaponsWeighWhatTheyShould,
+  theGripKeepsTheEdge,
+  theWristKeepsTheLine,
+  noGripSpinsUnderAbuse,
+
+  oneBlowThreeBodies,
+  aKnockedDownFighterGetsUp,
+  aKnockdownGoesLimp,
+  aStaggerTakesTheSwingOffIt,
+  realBlowsAreWeighed,
+  theDummySwingsWhenStruck,
+  knockdownsDoNotWearTheBodyOut,
+  oneSwingIsOneBlow,
+  aCorpseLiesStill,
+  aDroppedWeaponIsNotKicked,
+
+  footworkAsksTheStone,
+  anOpponentMovesBetweenSwings,
+  anOpponentGetsOutOfTheWay,
+  anOpponentMovesInAndOut,
+  weaponsKnockEachOther,
+  crowdingItDoesNotStopIt,
+  theOrcComesAfterYouThroughTheAir,
+  aMissRunsIntoTheNextSwing,
+  itsGuardIsWhereItsLastSwingLeftIt,
+  itDrawsBackOnTheMove,
+  aMissCanCarryItRound,
+  itMeetsASwingWithItsWeapon,
+  itHopsClearAndFlinches,
+  aCutLegLamesYou,
+  badlyHurtItFightsLikeIt,
+  itTauntsYouFromOutOfReach,
+  theyQuickStepToo,
+
+  theOtherArmHoldsStill,
+  theSwordGoesOnYourBack,
+  aFreeHandTakesThings,
+  fGoesAndGetsIt,
+  aLeverIsPulledByHand,
+  aShieldStopsABlade,
+  theShieldArmIsSteered,
+  theShieldGoesOnYourBackToo,
+  aShieldOnYourBackStopsACutFromBehind,
+  whatYouCutOffYouCanCarryOff,
+  whatYouHoldYouCanThrow,
+  theOrcsAxeCanBeWielded,
+  everyWeaponCanBeWielded,
+  aCrouchGetsLow,
+  aVaultGoesOver,
+  aClimbGoesUp,
+  theStonesAndTheRailAreJumped,
+  theNewcomersScaleHonestly,
+  aClubSendsYouFlying,
+  theNewcomersCloseAndCut,
+  everyLookFadesWithItsBody,
+  theNewKeysAreWhereTheySay,
+];
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
-  await freeArmTracks();
-  await reachesAtEveryExtension();
-  await blockedBladeDefeatsTheArm();
-  await edgeRollTracks();
-  await survivesAbuse();
-  await thinPostIsHittable();
-  await damageCurveIsHonest();
-  await limbsComeOff();
-  await severingTakesChildrenWithIt();
-  await resetRebuildsCleanly();
-  await aRealSwingSevers();
-  await aBladeStopsOnABody();
-  await aHitSaysHowHardItWas();
-  await theOpponentClosesAndSwings();
-  await theOpponentPlaysByTheSameRules();
-  await theOpponentCanHurtYou();
-  await cuttingTheArmDisarms();
-  await bladesIgnoreTheirOwnerButNotTheFoe();
-  await deathDropsTheBody();
-  await theTrunkWalksWithTheLegs();
-  await aDeadBodyGoesLimp();
-  await aLostArmIsHeld();
-
-  await theControlsAreWhereTheySay();
-  await jumpingLeavesTheGround();
-  await airControlIsWeakerThanGround();
-  await aDoubleTapIsAQuickStep();
-  await aLegSweepCanBeJumped();
-  await weaponsAreToldApartByPhysics();
-  await theAxeIsHarderToSwing();
-  await theBestiaryScalesHonestly();
-  await eachSpeciesCanFight();
-  await swingsAreReadOffTheArm();
-  await alliesShareAnArenaWithoutCuttingEachOther();
-  await resetPutsSeveredLimbsBackOn();
-  await everyMovingPartIsInterpolated();
-  await theTestingAreaIsAHallAndFourRooms();
-  await anOpponentWaitsUntilItSeesYou();
-  await anOpponentLooksWhereItLastSawYou();
-  await thePenOpensOnTwoOrcs();
-  await severingBleeds();
-
-  await theArmKeepsOutOfItsOwnChest();
-  await aFlickDoesNotSnapTheArm();
-  await aRaisedArmDoesNotTurnOver();
-  await slowInputIsUntouched();
-  await theChestLeadsTheArm();
-  await theFeetStayPlantedThenStep();
-  await theKneesBendLikeAPersons();
-  await stoppingPutsTheFeetDown();
-  await turningOnTheSpotSteps();
-  await theLegsGoTheWayTheBodyDoes();
-  await theBodyAgreesWithItsProbes();
-  await thePostureIsInterpolated();
-
-  await theWeaponsWeighWhatTheyShould();
-  await theGripKeepsTheEdge();
-  await theWristKeepsTheLine();
-  await noGripSpinsUnderAbuse();
-
-  await oneBlowThreeBodies();
-  await aKnockedDownFighterGetsUp();
-  await aKnockdownGoesLimp();
-  await aStaggerTakesTheSwingOffIt();
-  await realBlowsAreWeighed();
-  await theDummySwingsWhenStruck();
-  await knockdownsDoNotWearTheBodyOut();
-  await oneSwingIsOneBlow();
-  await aCorpseLiesStill();
-  await aDroppedWeaponIsNotKicked();
-
-  await footworkAsksTheStone();
-  await anOpponentMovesBetweenSwings();
-  await anOpponentGetsOutOfTheWay();
-  await anOpponentMovesInAndOut();
-  await weaponsKnockEachOther();
-  await crowdingItDoesNotStopIt();
-  await theOrcComesAfterYouThroughTheAir();
-  await aMissRunsIntoTheNextSwing();
-  await itsGuardIsWhereItsLastSwingLeftIt();
-  await itDrawsBackOnTheMove();
-  await aMissCanCarryItRound();
-  await itMeetsASwingWithItsWeapon();
-  await itHopsClearAndFlinches();
-  await aCutLegLamesYou();
-  await badlyHurtItFightsLikeIt();
-  await itTauntsYouFromOutOfReach();
-  await theyQuickStepToo();
-
-  await theOtherArmHoldsStill();
-  await theSwordGoesOnYourBack();
-  await aFreeHandTakesThings();
-  await fGoesAndGetsIt();
-  await aLeverIsPulledByHand();
-  await aShieldStopsABlade();
-  await theShieldArmIsSteered();
-  await theShieldGoesOnYourBackToo();
-  await aShieldOnYourBackStopsACutFromBehind();
-  await whatYouCutOffYouCanCarryOff();
-  await whatYouHoldYouCanThrow();
-  await theOrcsAxeCanBeWielded();
-  await everyWeaponCanBeWielded();
-  await aCrouchGetsLow();
-  await aVaultGoesOver();
-  await aClimbGoesUp();
-  await theStonesAndTheRailAreJumped();
-  await theNewcomersScaleHonestly();
-  await aClubSendsYouFlying();
-  await theNewcomersCloseAndCut();
-  await everyLookFadesWithItsBody();
-  await theNewKeysAreWhereTheySay();
+  console.log(`seed ${SEED}: SMOKE_SEED=${SEED} npm run smoke repeats this run exactly`);
+  // What the game makes once and keeps -- the textures every body shares, made
+  // the first time one is dressed -- rolls dice for three.js's uuids as it is
+  // made. Made here, it takes none of the first group's, so a group rolls the
+  // same wherever it runs: first, last, or on its own.
+  await buildRig();
+  for (const group of GROUPS) {
+    reseed(group.name);
+    await group();
+  }
 
   console.log(
     `\n${checks - failures}/${checks} checks passed` +
-    (failures ? `  \x1b[31m(${failures} failed)\x1b[0m` : "  \x1b[32mOK\x1b[0m"),
+    (failures ? `  \x1b[31m(${failures} failed)\x1b[0m` : "  \x1b[32mOK\x1b[0m") +
+    `  seed ${SEED}`,
   );
   process.exit(failures ? 1 : 0);
 }

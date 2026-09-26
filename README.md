@@ -2564,6 +2564,24 @@ minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
 
+The dice the game rolls are loaded there. The AI rolls `Math.random()` for
+nearly everything it decides, a body rolls for the way it falls when it dies
+and a severed limb for its spin, and a check that follows a fight starts from
+wherever the fight left things: with real dice the same code failed one check
+on one run and four on the next. `tools/dice.ts` puts a seeded generator in
+its place before anything else is loaded, and starts it again at the head of
+every group of checks, from the seed and the group's name. The same code gives
+the same result on every run, to the last digit of every measurement, and a
+group rolls the same wherever it runs: first, last, or on its own. The seed is
+printed at the top of the log and on its last line, and `SMOKE_SEED=7 npm run
+smoke` rolls another set. Most checks pass whatever the dice. A few measure
+something the dice decide often enough that on some seeds they don't, and the
+default seed is one on which every check passes. So a check that fails after a
+change has either been broken by it or been dealt different dice by it
+(anything that changes what is rolled, or when, or how anything in a fight
+moves, deals the rest of its group differently), and the same check on a
+handful of other seeds, with and without the change, says which.
+
 It also drives a real scripted swing all the way through to a severed limb,
 takes a fighter apart and checks that a reset puts it back together — measuring
 the joint anchor rather than the limb, because an arm attached to nothing still
