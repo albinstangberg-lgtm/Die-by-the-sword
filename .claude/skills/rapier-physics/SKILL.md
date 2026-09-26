@@ -15,9 +15,9 @@ anything in `src/game/arm.ts`.
 ## Check every Rapier call against 0.14
 
 The project is locked to `@dimforge/rapier3d-compat` 0.14.0. Most examples on
-the web are for newer versions (0.21 by late 2026), and some well-known calls
-are missing or named differently in 0.14. Confirm a call in the installed type
-definitions before using it:
+the web are for newer versions (the newest was 0.21 in September 2026), and
+some well-known calls are missing or named differently in 0.14. Confirm a call
+in the installed type definitions before using it:
 
 ```bash
 grep -rn "configureMotorVelocity" node_modules/@dimforge/rapier3d-compat --include=*.d.ts
@@ -27,12 +27,14 @@ grep -rn "configureMotorVelocity" node_modules/@dimforge/rapier3d-compat --inclu
 catch a wrong idea of what a call does, so read the doc comment in the `.d.ts`
 as well.
 
-Missing from 0.14, though newer docs use them: typed motors and limits on ball
+Missing from 0.14, though newer docs use them: typed motors on ball
 (spherical) joints, `setMotorMaxForce`, the `JointAxis` enum, `PidController`,
 `RigidBody.velocityAtPoint`, `JointData.revoluteWithAxes`,
-`ImpulseJoint.setLocalFrame1/2`, `setAdditionalPgsIterations`,
-`world.maxCcdSubsteps`, soft bodies, voxels and compound shapes. The game gets
-round the first three through Rapier's raw joint set.
+`ImpulseJoint.setLocalFrame1/2`, `setAdditionalPgsIterations`, soft bodies,
+voxels and compound shapes. The game drives a ball joint's limits and motors
+through Rapier's raw joint set (no version gives a ball joint typed limits),
+uses the raw axis numbers in place of `JointAxis`, and, with no force limit on
+a motor, bounds its torque by capping the speed it asks for.
 [references/rapier-0.14-api.md](references/rapier-0.14-api.md) shows how, lists
 the 0.14 calls the game relies on, and names the ones that examples often get
 wrong.
@@ -43,7 +45,7 @@ wrong.
 |---|---|
 | `src/core/physics.ts` | `createPhysics`: the world (gravity from tuning, `timestep = STEP`, 16 solver iterations for the stiff arm), the one `EventQueue`, and the collision groups (`GROUP`, `groups()`, `makeSides()`) |
 | `src/core/loop.ts` | the fixed 60 Hz accumulator: `STEP`, at most 5 steps per frame |
-| `src/core/interpolate.ts` | `Interpolator`, the only thing that places a rigid body's mesh |
+| `src/core/interpolate.ts` | `Interpolator`, which places the mesh of every rigid body but the exceptions in rule 10 |
 | `src/main.ts` | the order of one step (`fixed`), `registerBodies`, and the reset (`input.onReset`) |
 | `src/game/arm.ts` | the sword arm: upper arm, forearm and weapon bodies; shoulder, elbow and wrist joints and their factories; the linear and angular drives; the grip's raw motors; the blade snapshot; stowing, severing and reset |
 | `src/game/drive.ts` | `stablePD`, an angular PD capped by each axis's inertia |
@@ -62,15 +64,19 @@ wrong.
 
 `fixed()` in `src/main.ts` runs every 1/60 s:
 
-1. Everyone acts: `player.act(...)`, then each foe's `ai.think(...)` and
+1. Queued one-shot actions run (`perform`), and `pickup.step` walks the body
+   toward whatever it is going to pick up. Anything input asks for that adds
+   or removes a joint, such as sheathing, taking hold or letting go, is queued
+   and done here, between two steps, never in an event handler.
+2. Everyone acts: `player.act(...)`, then each foe's `ai.think(...)` and
    `combatant.act(...)`. The drives run here. The arm clears last step's
    forces, moves the shoulder joint's anchor to where the posture put the
    shoulder, and adds this step's forces and torques; the hull gets its
    velocity; the kinematic legs get their next pose. Mouse movement is read
    here, once per step, not once per frame.
-2. `arena.gate.step(dt)` gives the gate its next kinematic position.
-3. `interp.capture()`, `phys.step()`, `interp.commit()`.
-4. `arena.lever.update()` (a lever pulled far enough catches and opens the
+3. `arena.gate.step(dt)` gives the gate its next kinematic position.
+4. `interp.capture()`, `phys.step()`, `interp.commit()`.
+5. `arena.lever.update()` (a lever pulled far enough catches and opens the
    gate), `items.update()`, each arm's `updateDerived()`, then
    `impacts.update(now)`, which drains the contact events.
 
@@ -90,8 +96,8 @@ brackets.
 
 1. **The clamp is the game.** Don't make the sword arm kinematic, place it by
    IK, or raise the force clamp to make it track better: a blocked blade has
-   to fall behind the mouse. IK only computes the target pose. The smoke check
-   "blocked blade defeats the arm" guards this, and README.md, "Deliberate
+   to fall behind the mouse. IK only computes the target pose. The harness's
+   "blocked blade defeats the arm" checks guard this, and README.md, "Deliberate
    behaviours", lists the lag, the planted sword and being pushed by your own
    swing as intended.
 2. **Forces stay until cleared.** Rapier keeps `addForce` and `addTorque` from
@@ -109,16 +115,18 @@ brackets.
    arm]
 4. **Give a multi-part body its mass yourself.** Rapier 0.14 moves each
    collider's inertia to the shared centre of mass with the wrong sign, so a
-   weapon built from parts rolls like a pole. Weapon colliders have density 0
-   and the weapon body gets `setAdditionalMassProperties` from
+   weapon built from parts gets inertia about its own length that no rod has:
+   as hard to roll in the hand as to swing end over end. Weapon colliders have
+   density 0 and the weapon body gets `setAdditionalMassProperties` from
    `weaponMassProperties`. Do the same for any new multi-collider body whose
    rotation matters. [Rapier adds up a body's inertia the wrong way round]
 5. **Something very light needs the joint's own motor.** A sword has about
    0.0002 kg·m² about its length, and no explicit torque on that is both stable
    and strong. The grip is the wrist joint's motor instead: a force-based
-   velocity servo, which Rapier solves implicitly, with its torque bounded by a
-   capped target speed. [Something light enough can only be held by an
-   implicit drive]
+   velocity servo, which Rapier solves implicitly. Its torque is about
+   `factor` × (the speed it asks for − the speed it has), so with the asked
+   speed capped, a weapon wedged in stone gets at most `factor` × the cap.
+   [Something light enough can only be held by an implicit drive]
 6. **Kinematic bodies.** They are created at the origin, so put them in place
    with `setTranslation` and `setRotation` before their first step, then move
    them with `setNextKinematicTranslation` and `setNextKinematicRotation`
@@ -150,14 +158,15 @@ brackets.
    arrive too late to measure a hit]
 10. **Only the Interpolator draws rigid bodies.** Add a new body and its mesh to
     `registerBodies` in `main.ts`. A mesh written anywhere else loses its
-    interpolation and judders above 60 Hz. The posed legs and the ghost hand
-    are the deliberate exceptions. [A mesh placed twice is a mesh that is not
-    interpolated]
+    interpolation and judders above 60 Hz. The deliberate exceptions are the
+    posed legs, the ghost hand, and a downed body's hips and legs, which
+    `Ragdoll.pose` places with its own easing; registering those would place
+    them twice. [A mesh placed twice is a mesh that is not interpolated]
 11. **Fixed step only.** Stiff PD drives explode under a variable timestep.
     Don't change `world.timestep` or step with a frame's `dt`.
-12. **CCD on anything fast and thin.** The weapon and the forearm have
-    `enableCcd(true)`; without it a fast tip passes straight through the thin
-    post.
+12. **CCD on anything fast and thin.** The weapon, the sword forearm and,
+    once a shield is on it, the other forearm have `enableCcd(true)`; without
+    it a fast tip passes straight through the thin post.
 13. **Rays see the world as it was at the last step.** Rapier updates what a
     ray can hit as it steps, so a ray cast before the first step finds no
     walls, and after anything is moved outright (a reset, the gate shut
@@ -189,10 +198,11 @@ to whom depends on the whole line-up. Use the filter for the part's role:
 | `bladeFilter` | a weapon being swung: meets stone, props, every other blade and enemy bodies, but not its owner or allies |
 | `cuttableFilter` | the sweep's rays: what counts as flesh |
 | `shieldFilter`, `backShieldFilter` | a shield on the arm, and one slung on the back |
-| `inertBladeFilter` | a weapon nobody is swinging: floor, walls and other blades only |
+| `inertBladeFilter` | a weapon nobody is swinging: floor, walls, props and other blades only |
 | `hullFilter` | the invisible walking capsule: meets the world, props and every other hull; blades pass through it |
-| `hitOnlyFilter` | kinematic parts that exist only to be cut |
-| `groundFilter`, `sightFilter` | the foot probe, and the line-of-sight ray |
+| `hitOnlyFilter` | kinematic parts that exist only to be cut, and the trunk's colliders while a vault, a climb or getting up carries the hull through stone |
+| `groundFilter` | the downward probe that decides whether the feet are on something |
+| `sightFilter` | rays that should find stone only: line of sight, the step and ledge probes, and where a throw can go |
 
 Scenery, the gate included, is `groups(GROUP.WORLD, GROUP.WORLD | GROUP.PROP |
 ALL_COMBATANTS)` (`arena.ts`, `gate.ts`). Something that should meet nothing
@@ -209,19 +219,21 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
 3. Put a feel knob in `src/tuning.ts`. Give any other number a name and a
    comment saying why it is that number, as the surrounding code does.
 4. Add a check to `tools/smoke.ts`: an `async function` that builds a rig with
-   `buildRig(overrides?, species?, at?)`, drives it with `rig.step(n, keys)`,
-   `rig.fight(n)`, `rig.hold(n)`, `rig.pin(at)` or `rig.place(at)`, and reports
-   with `check(name, ok, detail)`, putting the measured numbers in `detail`.
-   Then call it from `run()`. Measure the thing itself: the README's last five
-   lessons are about checks that passed because nothing happened, or because
-   they leaned on a bug.
+   `buildRig(overrides?, foeSpecies?, foeAt?)` (the player is always the
+   swordsman at `SPAWN`), drives it with `rig.step(n, keys)`, `rig.fight(n)`,
+   `rig.hold(n)`, `rig.pin(at)` or `rig.place(at)`, and reports with
+   `check(name, ok, detail)`, putting the measured numbers in `detail`. Then
+   call it from `run()`. Measure the thing itself: the README's five lessons
+   "about the harness rather than the game" are about checks that passed
+   because nothing happened, or because they leaned on a bug.
 5. Run `npm run typecheck` yourself. Run the harness (`npm run smoke`) the
    way CLAUDE.md says: through the `smoke-tester` agent, in the background.
    It runs the real modules against Rapier in Node for a few minutes, prints
    `passed/total checks passed`, and exits non-zero on any failure. It can't
    run a single group; to iterate on one, comment out the other calls in
    `run()`, and put them back before committing.
-6. The AI rolls unseeded `Math.random()`, and a physics check that follows a
+6. The AI, the way a body falls when it dies and the spin of a severed dummy
+   limb all use unseeded `Math.random()`, and a physics check that follows a
    fight starts from wherever the fight left things, so the same code can fail
    different checks on different runs. Read the numbers in a failure's
    detail, run it again, and compare with a run without your change before
@@ -235,9 +247,11 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
 |---|---|
 | A part flips direction every step, or buzzes at its torque clamp | explicit gains above the inertia bound; use `stablePD` |
 | A body accelerates for ever; a corpse crawls or flies | forces not cleared (rule 2) |
-| A weapon or forearm spins at hundreds of rad/s | Rapier left to add up a multi-part body's inertia, or a roll drive near a straight elbow |
+| A weapon or forearm spins at hundreds of rad/s | a drive on the arm's roll about its own length near a straight elbow, where that roll weighs almost nothing; or an explicit torque on something as light as a weapon's roll (rule 5) |
+| A weapon is as hard to roll in the hand as to swing | Rapier left to add up a multi-part body's inertia (rule 4) |
 | A blade passes through a thin post | no CCD on that body |
 | A fast cut scores almost no damage | velocity read after the step instead of the snapshot |
+| A spinning blade's measured speed looks wrong | `Arm.velocityAt` and `Arm.sampleTip` measure from the grip, not the weapon's centre of mass; see "Bodies and forces" in the reference |
 | A limb shoots toward its anchor on a reset or a draw | a joint created across a gap |
 | A fighter ends up a metre from where it was put | the hull was moved on its own |
 | Something posed shoves the room or launches props | a kinematic body meeting more than hostile blades, or not placed before its first step |

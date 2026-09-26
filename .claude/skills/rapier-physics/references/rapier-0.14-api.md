@@ -32,9 +32,9 @@ The types are in `node_modules/@dimforge/rapier3d-compat/`:
 | `pipeline/event_queue.d.ts` | `EventQueue`, `ActiveEvents`, `TempContactForceEvent` |
 | `rapier_wasm3d.d.ts` | the raw WASM layer, including `RawImpulseJointSet` and `RawJointAxis` |
 
-Every call takes plain `{ x, y, z }` and `{ x, y, z, w }` objects, not three.js
-vectors. The code converts at the boundary, reusing module-level temporaries
-rather than allocating in the step.
+Every call takes an object with `x`, `y` and `z` (and `w` for a rotation), so
+a three.js `Vector3` or `Quaternion` can be passed as it is. What comes back is
+a plain object, not a three.js one.
 
 ## World and stepping
 
@@ -87,8 +87,16 @@ hull.setLinvel({ x: 1, y: hull.linvel().y, z: 0 }, true);
   (needed before its first step, since it is created at the origin), and
   `setNextKinematicTranslation`/`setNextKinematicRotation` to move it, which
   gives it the velocity that pushes dynamic bodies.
-- There is no `velocityAtPoint` in 0.14. The arm works out a point's velocity
-  as `linvel + angvel × r` (see `Arm.drive`).
+- There is no `velocityAtPoint` in 0.14. A point's velocity is
+  `linvel() + angvel() × (point − worldCom())`: `linvel()` is the velocity of
+  the centre of mass, not of the body's origin (`translation()`). `Arm.drive`
+  gets the hand right because the forearm's centre of mass is its origin.
+  `Arm.velocityAt` and `Arm.sampleTip` measure from `blade.translation()`, the
+  grip, while a weapon's centre of mass is out along it (0.54 m on the sword,
+  0.79 m on the axe), so while the weapon turns the speeds they report are off
+  by its spin times that distance. Every hit speed and damage number the game
+  has been tuned on came from them, so correcting that is a change of its own,
+  with re-tuning.
 - `world.removeRigidBody(body)` also removes its colliders and every joint
   attached to it. A handle to anything removed is dead: drop it, and drop any
   Interpolator entry that reads it (`registerBodies` rebuilds the list).
@@ -182,9 +190,11 @@ world.removeImpulseJoint(elbow, true); // gone for good: rebuild it from its fac
   mass of the two joined bodies only, and nothing hung off them. The ragdoll
   uses `ForceBased` with gains worked out from the anatomy, so they mean a
   torque per radian and per rad/s, as given.
-- Motors in 0.14 take no force limit (`setMotorMaxForce` came later). A
-  velocity servo is limited anyway if its target speed is capped: with the
-  force-based model its torque is at most `factor` times the target speed.
+- Motors in 0.14 take no force limit (`setMotorMaxForce` came later), and
+  neither does the raw joint set. A velocity servo can be bounded anyway: with
+  the force-based model its torque is about `factor` × (target speed − actual
+  speed), so with the target capped, a joint held still gets at most
+  `factor` × the cap, and more only if something drives it backwards.
 - `world.getImpulseJoint(handle)` tells you whether a joint still exists before
   you remove it again (`ragdoll.ts` does this).
 
@@ -291,7 +301,7 @@ if (withNormal) void withNormal.normal;
 | `RAPIER.ActiveHooks.MODIFY_SOLVER_CONTACTS` | doesn't exist; only `FILTER_CONTACT_PAIRS` and `FILTER_INTERSECTION_PAIRS` |
 | `RAPIER.JointAxis.AngX` | not exported; the raw axis numbers are 3, 4 and 5 |
 | `spherical.configureMotorVelocity(...)` | not on ball joints in 0.14; use the raw joint set |
-| `body.velocityAtPoint(p)` | not in 0.14; `linvel + angvel × r` |
+| `body.velocityAtPoint(p)` | not in 0.14; `linvel() + angvel() × (p − worldCom())` |
 | `@dimforge/rapier3d` imports | this project uses `@dimforge/rapier3d-compat` (the WASM is inlined, and `RAPIER.init()` is required) |
 | `<RigidBody>`, `useRapier()` | React Three Fiber's wrapper; this game has no React |
 
@@ -303,15 +313,19 @@ Compared with 0.21, the newest release at the time of writing:
   `configureMotorModel`), `setMotorMaxForce` on joints, the `JointAxis` enum,
   `PidController` and `world.createPidController`, `RigidBody.velocityAtPoint`,
   `JointData.revoluteWithAxes`, `ImpulseJoint.setLocalFrame1/2`,
-  `setAdditionalPgsIterations`, `world.maxCcdSubsteps`, soft bodies, voxels and
-  compound shapes.
+  `setAdditionalPgsIterations`, `world.maxCcdSubsteps` (0.14 has it as
+  `world.integrationParameters.maxCcdSubsteps`), soft bodies, voxels and
+  compound shapes. A ball joint still has no typed limits in 0.21, so those
+  stay on the raw joint set.
 - Removed later: `world.queryPipeline` and `world.updateSceneQueries()` (scene
   queries moved to the broad phase), `world.numAdditionalFrictionIterations`
   and the PGS solver switches, `IntegrationParameters.minIslandSize`,
   `TempContactManifold.solverContactFriction/Restitution`, and
   `RigidBody.effectiveWorldInvInertiaSqrt`/`invPrincipalInertiaSqrt`.
 
-Upgrading would let the raw joint calls become typed ones, and could change
-how the solver and the motors feel. Check `weaponMassProperties` against
-Rapier's own numbers again too (the smoke check "the weapons weigh what they
-should" compares them); nothing here says the inertia sign has been fixed.
+Upgrading would let the ball joints' motor calls become typed ones, and could
+change how the solver and the motors feel. Check `weaponMassProperties` against
+what the new Rapier adds up for a body built from the same parts with real
+densities; nothing here says the inertia sign has been fixed. The harness's
+`theWeaponsWeighWhatTheyShould` can't tell: the weapon's colliders have
+density 0, so it only sees the numbers the game set.
