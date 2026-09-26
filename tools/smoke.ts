@@ -4226,11 +4226,14 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
   // the floor it is committed to the line it jumped on and to where you were
   // when it jumped, so stepping aside is the answer: which has to be true, or
   // it is just an axe you cannot avoid.
-  const still = await leapTrials(10, false);
+  // Thirty stood still for: its chop lands about three times in five, and on
+  // luck alone ten of them fell under two in five on about one seed in
+  // thirty. Thirty do on about one in two hundred.
+  const still = await leapTrials(30, false);
   const aside = await leapTrials(10, true);
   const leapt = still.filter((t) => t.leapt);
   const lowest = Math.min(...leapt.map((t) => t.rose));
-  check("back out of its reach and it leaps at you", leapt.length >= 7 && lowest > 0.2,
+  check("back out of its reach and it leaps at you", leapt.length >= 0.7 * still.length && lowest > 0.2,
     `${leapt.length} of ${still.length} times; its feet left the floor by at least ` +
     `${(lowest * 100).toFixed(0)}cm`);
   const inAir = leapt.filter((t) => t.inAir).length;
@@ -4255,12 +4258,19 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
   let closest = 99;
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
+  // Up to its first swing, which is the end of its first time. After that it
+  // has had you in reach, and may leap: on one seed its first chop floored
+  // you, it backed off, and came back through the air.
   for (let i = 0; i < 60 * 4; i++) {
     fresh.fight(1);
-    if (fresh.ai.committed?.leap) jumpedIn = true;
     fresh.player.position(me);
     fresh.foe.position(it);
     closest = Math.min(closest, Math.hypot(me.x - it.x, me.z - it.z));
+    const swing = fresh.ai.committed;
+    if (swing !== null) {
+      jumpedIn = swing.leap;
+      break;
+    }
   }
   check("but it walks up to you the first time", !jumpedIn && closest < 2.2,
     `${jumpedIn ? "leapt" : "no leap"}; closed to ${closest.toFixed(2)} m`);
