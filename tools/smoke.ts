@@ -21,7 +21,7 @@ import {
   BLOCK, buildArena, CRATE, DUMMY_AT, GATEWAYS, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, POSTS, RAIL, ROOMS,
   SPAWN as GAME_SPAWN, STONES, THIN_POST, type Arena, type GatedRoom,
 } from "../src/game/arena";
-import { gateHeard, ROSTER, spawnOf } from "../src/game/roster";
+import { gateHeard, ROSTER, spawnOf, type Occupant } from "../src/game/roster";
 import { interact, Items, promptFor, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
 import { SLUNG, SLUNG_TURN } from "../src/game/shield";
@@ -36,7 +36,7 @@ import {
 import {
   AXE, CLUB, HATCHET, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon,
 } from "../src/game/weapons";
-import { Ai, type Swing } from "../src/game/ai";
+import { Ai, FELT, type Swing } from "../src/game/ai";
 import { emptyBlow, judgeBlow, judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -1803,7 +1803,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
     `over ${axes.length} swings, ${sword.toFixed(2)}s for the sword over ${swords.length}`);
 }
 
-async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
+async function aBladeCutsEveryoneButItsOwner(): Promise<void> {
   console.log("\nthree fighters, two teams, one set of collision groups -- and the game's nine");
   const sides = makeSides([0, 1, 1]);
   const [you, orc, goblin] = sides;
@@ -1818,8 +1818,10 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
     canCut(you, orc) && canCut(you, goblin), "player -> orc, player -> goblin");
   check("theirs reach you", canCut(orc, you) && canCut(goblin, you),
     "orc -> player, goblin -> player");
-  check("but not each other", !canCut(orc, goblin) && !canCut(goblin, orc),
-    "the orc's axe passes through the goblin");
+  // Friendly fire: an ally caught by a blade is cut like anyone else, and
+  // keeping out of each other's way is theirs to see to.
+  check("and each other: an ally's blade cuts as well as anyone's", canCut(orc, goblin) && canCut(goblin, orc),
+    "orc -> goblin, goblin -> orc");
   check("and nobody cuts themselves",
     !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
 
@@ -1830,10 +1832,16 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
   const [me, ...them] = roster;
   const meets = (a: number, b: number) => ((a >>> 16) & (b & 0xffff)) !== 0 && ((b >>> 16) & (a & 0xffff)) !== 0;
   const pairs = them.flatMap((a, i) => them.filter((_, j) => j !== i).map((b) => [a, b] as const));
-  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and not one another`,
-    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => !canCut(a, b))
+  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and one another`,
+    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => canCut(a, b))
       && roster.every((s) => !canCut(s, s)),
-    `${them.length} against you, ${pairs.length} pairs of them that must not cut`);
+    `${them.length} against you, and ${pairs.length} pairs of them`);
+  // Sides are the fight's business now, not the bits': twenty fighters on
+  // twenty sides fit as well as two sides do.
+  const many = makeSides(Array.from({ length: 20 }, (_, i) => i));
+  check("and twenty fighters fit, on as many sides as there are of them",
+    many.every((a, i) => many.every((b, j) => canCut(a, b) === (i !== j))),
+    `${many.length} fighters, each on a side of its own`);
   // Bodies still meet every other body, and weapons every other weapon, but
   // never their own: "everyone but me" with three bits of six each.
   const everyone = roster.flatMap((a, i) => roster.map((b, j) => [a, b, i === j] as const));
@@ -2160,29 +2168,43 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
 /**
  * The whole line-up, as the game has it -- you and everything behind the four
  * gates (see roster.ts) -- in one arena, and a step that drives them all as
- * the game's does.
+ * the game's does. Or another line-up, on the same side as each other.
  */
-async function buildRoster(youAt: THREE.Vector3) {
+async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROSTER) {
   const tuning: Tuning = { ...DEFAULTS };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   const arena = buildArena(phys, scene, targets);
-  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
+  const sides = makeSides([0, ...line.map(() => 1)]);
   const you = new Combatant(phys, scene, youAt, sides[0], tuning, targets, SWORDSMAN, "you", "your");
-  const foes = ROSTER.map((o, i) => {
+  const foes = line.map((o, i) => {
     const combatant = new Combatant(phys, scene, spawnOf(o), sides[i + 1],
       tuning, targets, o.species, o.name, `${o.name}'s`);
     combatant.fighter.yaw = o.facing;
     return { combatant, ai: new Ai(o.species), room: o.room };
   });
+  const everyone = [you, ...foes.map((f) => f.combatant)];
+  for (const f of foes) f.ai.company = everyone;
   const impacts = new Impacts(phys, scene, targets, tuning);
   let cutsOnYou = 0;
+  let hurtYou = 0;
+  // A blade cuts whoever it lands on, and one of them caught by another's is
+  // cut like anyone else: a cut is a blow it would feel (`FELT`), and a weapon
+  // at its guard brushing a friend's arm as they go through a doorway side by
+  // side is only a touch.
   let cutsAmongThem = 0;
+  let touchesAmongThem = 0;
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
-      if (you.receive(i)) cutsOnYou++;
-      else if (foes.some((o) => o.combatant.receive(i))) cutsAmongThem++;
+      const yours = you.health;
+      if (you.receive(i)) { cutsOnYou++; hurtYou += yours - you.health; return; }
+      for (const o of foes) {
+        const was = o.combatant.health;
+        if (!o.combatant.receive(i)) continue;
+        if (was - o.combatant.health >= FELT) cutsAmongThem++; else touchesAmongThem++;
+        return;
+      }
     });
   }
   phys.world.updateSceneQueries();
@@ -2194,7 +2216,10 @@ async function buildRoster(youAt: THREE.Vector3) {
     /** Everything that waits in one room. */
     in: (room: GatedRoom) => foes.filter((f) => f.room === room),
     get cutsOnYou() { return cutsOnYou; },
+    /** Health taken off you, all told. */
+    get hurtYou() { return hurtYou; },
     get cutsAmongThem() { return cutsAmongThem; },
+    get touchesAmongThem() { return touchesAmongThem; },
     step(n = 1) {
       for (let k = 0; k < n; k++) {
         you.act(still, NO_KEYS, tuning, STEP);
@@ -2261,9 +2286,13 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     through >= 0 && found >= 0 && swung,
     `both in the hall after ${(through / 60).toFixed(1)}s, both fighting after ` +
     `${(found / 60).toFixed(1)}s; swung: ${swung}`);
-  check("two of them on one side, and not one cut between them",
-    world.cutsOnYou > 0 && world.cutsAmongThem === 0,
-    `${world.cutsOnYou} cuts on you, ${world.cutsAmongThem} among the ${world.foes.length + 1} of you`);
+  // A friend is as easily cut as you are, and how seldom they cut each other
+  // is `friendsComeAtYouFromTwoSides`'s to weigh: nine seconds of this is
+  // one roll of the dice.
+  tendency("two of them on one side, and hardly a cut between them",
+    world.cutsOnYou > 0 && world.cutsAmongThem <= 1,
+    `${world.cutsOnYou} blows on you, ${world.cutsAmongThem} cuts among them ` +
+    `(and ${world.touchesAmongThem} touches)`);
 
   // Heard, and nobody there: you down the entrance, round the corner from
   // the gateway. They go and look, find nothing, and go home again.
@@ -2285,6 +2314,81 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     looked && left > 2 && back.every((d) => d < 0.4) && orcs.every((f) => f.ai.outlook === "waiting"),
     `went ${left.toFixed(1)} m; back to within ${Math.max(...back).toFixed(2)} m of their posts, ` +
     orcs.map((f) => `"${f.ai.outlook}"`).join(" and "));
+}
+
+/**
+ * Friends that come at you together. A blade cuts whoever it lands on, a
+ * friend as readily as you, so each keeps its friends out of the circle its
+ * own weapon sweeps -- stepping round you away from them, which brings them
+ * at you from two sides rather than one -- and looks along a swing and on
+ * through it, before letting it go and as it goes (see `Ai.makeRoom` and
+ * `Ai.inTheWay`). What they cut is you.
+ *
+ * Out in the hall's east half, you standing your ground with your guard up
+ * and them coming at you together from the east: two orcs abreast, two one
+ * behind the other, and three goblins abreast. Clear of the stone all round,
+ * and to the south most of all: a weapon is laid out that way when it is put
+ * down, and an orc put down a metre from the wall started the fight with its
+ * axe in it. Your health is put back every step, so that each fight runs its
+ * length.
+ */
+async function friendsComeAtYouFromTwoSides(): Promise<void> {
+  console.log("\nfriends together: a blade cuts whoever it lands on, and they keep out of each other's way");
+  const at = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const packs = [
+    { who: [ORC, ORC], from: [[4, -0.7], [4, 0.7]] },
+    { who: [ORC, ORC], from: [[3.5, 0], [5, 0]] },
+    { who: [GOBLIN, GOBLIN, GOBLIN], from: [[4, -1.2], [4, 0], [4, 1.2]] },
+  ] as const;
+  const seconds = 25;
+  let onYou = 0;
+  let hurt = 0;
+  let among = 0;
+  let touches = 0;
+  // How far apart round you two of them are, radians, each step both are at
+  // you: the pairs only, since the nearest two of three are nearer than any
+  // two.
+  const apart: number[] = [];
+  for (const pack of packs) {
+    const line: Occupant[] = pack.who.map((species, i) => ({
+      species,
+      room: "pen",
+      at: new THREE.Vector3(at.x + pack.from[i][0], 0, at.z + pack.from[i][1]),
+      facing: Math.PI / 2,
+      name: `${species.name} ${i + 1}`,
+    }));
+    const world = await buildRoster(at, line);
+    world.you.fighter.yaw = -Math.PI / 2;
+    const you = world.you.position(new THREE.Vector3());
+    const p = new THREE.Vector3();
+    for (let i = 0; i < 60 * seconds && !world.you.dead; i++) {
+      world.step(1);
+      world.you.health = world.you.maxHealth;
+      if (world.foes.length !== 2 || !world.foes.every((f) => f.ai.outlook === "fighting")) continue;
+      const [a, b] = world.foes.map((f) => {
+        f.combatant.position(p);
+        return Math.atan2(p.x - you.x, p.z - you.z);
+      });
+      apart.push(Math.abs(wrap(a - b)));
+    }
+    onYou += world.cutsOnYou;
+    hurt += world.hurtYou;
+    among += world.cutsAmongThem;
+    touches += world.touchesAmongThem;
+  }
+  const middle = [...apart].sort((a, b) => a - b)[Math.floor(apart.length / 2)] ?? 0;
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(0)}deg`;
+  // Over forty seeds of these fights: never more than one cut among them,
+  // against 112 to 233 blows on you. Before they looked out for each other,
+  // nine seconds of the pen's two orcs landed eleven to twenty-five blows
+  // on each other.
+  tendency("they cut you, and hardly ever each other: fifty blows on you for every cut among them",
+    onYou >= 60 && among * 50 <= onYou,
+    `${onYou} blows on you (${hurt.toFixed(0)} health), ${among} cuts among them ` +
+    `and ${touches} touches, over ${packs.length} fights of ${seconds}s`);
+  tendency("and two of them come at you from two sides, not shoulder to shoulder",
+    middle >= 1.0,
+    `${deg(middle)} apart round you, at the median`);
 }
 
 async function severingBleeds(): Promise<void> {
@@ -6976,13 +7080,14 @@ const GROUPS: (() => Promise<void>)[] = [
   theBestiaryScalesHonestly,
   eachSpeciesCanFight,
   swingsAreReadOffTheArm,
-  alliesShareAnArenaWithoutCuttingEachOther,
+  aBladeCutsEveryoneButItsOwner,
   resetPutsSeveredLimbsBackOn,
   everyMovingPartIsInterpolated,
   theTestingAreaIsAHallAndFourRooms,
   anOpponentWaitsUntilItSeesYou,
   anOpponentLooksWhereItLastSawYou,
   thePenOpensOnTwoOrcs,
+  friendsComeAtYouFromTwoSides,
   severingBleeds,
 
   theArmKeepsOutOfItsOwnChest,

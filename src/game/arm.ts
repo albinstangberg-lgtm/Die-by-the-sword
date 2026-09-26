@@ -2151,6 +2151,11 @@ export class Arm {
     }
   }
 
+  /** How far the weapon goes on past its percussion point, out to its tip, metres. */
+  get pastStrike(): number {
+    return this.weapon.span * (1 - this.strikePoint);
+  }
+
   /**
    * Where this arm's percussion point -- the part of the weapon that does the
    * work -- would end up for a given aim.

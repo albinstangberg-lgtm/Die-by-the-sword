@@ -298,13 +298,15 @@ swing faster, with the edge leading, and connect on the right part of the weapon
 ### A sword stops where it lands
 
 A blade collides with a body the way it collides with stone and with another
-blade: the other team's bodies, and the practice dummy. A cut lands on the first
-thing it meets and stops there. An arm held across a chest takes the blow the
-chest would have taken, a shield takes it before either, and a blade that meets
-a hip does not carry on into the ribs. An ally's body it still passes through,
-and so does a weapon nobody is swinging — in the hand of someone lying on the
-floor, or on an arm that has come off: it lies on the stone and meets other
-blades, and bodies step over it.
+blade: anybody's body but its owner's, and the practice dummy. A cut lands on
+the first thing it meets and stops there. An arm held across a chest takes the
+blow the chest would have taken, a shield takes it before either, and a blade
+that meets a hip does not carry on into the ribs. Whose side the body is on
+does not come into it: an orc's axe cuts the orc beside it as readily as it
+cuts you (see [beside a friend](#beside-a-friend)). A weapon nobody is swinging
+passes through bodies — in the hand of someone lying on the floor, or on an arm
+that has come off: it lies on the stone and meets other blades, and bodies step
+over it.
 
 For a long time it was the other way round, and for a good reason. Modelling
 flesh as something a blade collides with means the solver brakes the blade the
@@ -1558,7 +1560,29 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Seventy-three things the physics taught us
+### Beside a friend
+
+A blade cuts whoever it lands on, and two of them fighting you together could
+cut each other as easily as you. They keep out of each other's way:
+
+- **Each keeps its friends out of the circle its weapon sweeps.** It steps
+  round you away from one that is inside it, before anything else it might do
+  with its feet, comes in on a slant away from one, and steps out from beside
+  one while its guard comes back up after a swing. Two of them end up coming
+  at you from two sides, not shoulder to shoulder.
+- **It looks along a swing before it lets it go, and as it goes.** Every step
+  of the wind-up and of the swing it looks along the rest of it — where the
+  weapon is taken back to, the swing itself, and on past its end, where an
+  axe thrown through you carries — for a friend's body or arms. One in the
+  way, and it lets the swing go and goes round you a moment instead; one come
+  into it as it goes, and it checks it.
+- **It does not spin, or show you its weapon, with a friend in reach.**
+
+So it is rare, and it happens: two orcs, or three goblins, that fight you for
+a while cut each other now and then. And a friend in the way is a swing that
+is not thrown: put one of them between you and the other.
+
+## Seventy-six things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2225,10 +2249,11 @@ set of bits that nobody else's set sits inside. Every fighter's body is three
 of six body bits now, and its weapon three of six weapon bits — there are
 twenty ways to pick three of six, and no three sits inside another — so a
 filter of the three it has not got meets every other three and never its own.
-Which side a weapon cuts comes out of the same bits: yours all have the first
-bit and theirs never do, so every one of theirs has a bit that nobody on your
-side has, and a filter of the bits your side lacks catches all of their side
-and none of yours. Fifteen bits hold eleven fighters, one against ten.
+Which side a weapon cut came out of the same bits, then: yours all had the
+first bit and theirs never did, so every one of theirs had a bit that nobody
+on your side had, and a filter of the bits your side lacked caught all of
+their side and none of yours. Fifteen bits held eleven fighters, one against
+ten.
 
 **A vault that rises from its first step never gets a hand on the top.** The
 first vault drove the body along one curve from where it stood, up, over and
@@ -2290,6 +2315,42 @@ high, put you down two fifths more often. A throw had it right all along: it lea
 palm's speed about the forearm's centre of mass. The blade speeds quoted
 elsewhere in this document were measured about the grip, and most are half as
 high again as the blade was really going.
+
+**Friendly fire took bits away.** "Everyone's but mine" was always the easy
+half of the collision filters; "their side's and not mine" was the hard half.
+Every fighter needed a bit that nobody on any other side had, the threes had
+to be searched for, and a third side could not always be fitted in at all. A
+blade cuts whoever it lands on now, so which side anyone is on is the
+opponents' business — who they fight, and who they fight beside — and not the
+filters', and twenty threes of six are twenty fighters, on as many sides as
+they like.
+
+**Two that each swing when their moment comes cut each other as often as they
+cut you.** Let out of the pen together with friendly fire and nothing else,
+the two orcs landed eleven to twenty-five blows on each other in nine seconds,
+as many as on you. Looking along a swing once, before it was thrown, took most
+of that away and not the rest: the aim follows you while the weapon goes back,
+you and they both move, and the blade goes on past where the arm sent it. It
+is looked along every step of the wind-up and of the swing now, on past its
+end by a third of the swing again, for a friend's arms as well as its body —
+an arm swinging an axe sticks out a metre past the body swinging it — and a
+swing a friend has come into is checked. Even then most of what was left was
+not a swing at all: an axe held out at guard, carried round into a friend's
+hip as the orc turned after you. So each keeps its friends out of the circle
+its weapon sweeps, and does not spin or flourish its weapon with one inside
+it. Over forty seeds of three twenty-five-second fights — two orcs abreast,
+two in file, three goblins — they cut each other once at most, against 112 to
+233 blows on you, and the two orcs came at you 90 to 153 degrees apart round
+you where they had come 24 to 111.
+
+**An opponent put down with its back to a wall starts the fight with its
+weapon in it.** An arm is laid out the way a fighter faces when it is made,
+and that is along −Z, whichever way it is turned a moment later. The harness
+put an orc down a metre north of the hall's south wall, turned to face you,
+and its axe was already through the stone behind it: it spent twenty-five
+seconds pulling at it, and its friend, fighting you alone, made the pair look
+shoulder to shoulder in two runs of forty. The fights with friends in them are
+out in the middle of the floor.
 
 ## Tuning
 
@@ -2362,8 +2423,11 @@ Some things look like bugs and are not:
 - **Swinging pushes you around.** A 420N drive against an 82kg body moves it, so
   a hard swing walks you half a metre off your mark. In mid-air, with nothing to
   brace against, it moves you considerably further.
-- **The orc and the goblin never cut each other.** Their weapons pass through
-  their own team. Friendly fire would be excellent and it is not here yet.
+- **They can cut each other.** A blade cuts whoever it lands on, and two of
+  them fighting you together keep out of each other's way rather than being
+  kept from cutting each other (see [beside a friend](#beside-a-friend)). Now
+  and then one does not, and a friend in the way of a swing is a swing that is
+  not thrown.
 - **Backing into a wall fades you out.** The camera sits three metres behind
   you and a wall that close leaves it inside the stone, looking at the outside
   of the room. It is pulled in to the wall instead, and your own body — then,
@@ -2579,7 +2643,8 @@ src/
                      takes hold of and pulls down until it catches
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing
-                     more; and what it does about a noise it hears
+                     more; what it does about a noise it hears; and keeping
+                     out of its friends' way
     cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
@@ -2824,7 +2889,7 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. A thrown
+Rounds and a reason to be in the rooms. A thrown
 axe that cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually
