@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import type { PhysicsWorld, Side } from "../core/physics";
-import { disposeTree, handMesh, jointBall, shellMesh, stumpCap } from "./skin";
+import { disposeTree, jointBall, shellMesh, stumpCap } from "./skin";
+import { dressArm, handFor } from "./look";
 import type { WoundEnd } from "./blood";
 
 import type { Tuning } from "../tuning";
@@ -60,6 +61,33 @@ import {
  * twelve.
  */
 export const POLE = { back: 1.0, down: 0.45, right: 0.25 };
+
+/**
+ * Tip a unit pole further under the arm as its aim rises above level, in place.
+ *
+ * The elbow goes to whichever side of the shoulder-to-hand line the pole is
+ * on, so an aim pointing straight AWAY from the pole leaves it no side at all,
+ * and an aim passing near there sends it over the top of the arm to the other
+ * one. Hung behind and below the hand, `POLE` points away from a spot in front
+ * of the chest, a little across it and 24 degrees up: almost straight above
+ * the guard. Raised through there the whole arm turned over -- the elbow swung
+ * up over the forearm, fifteen degrees in a step of an unhurried raise, the
+ * blade dipped from upright to below level, and the edge rolled half a turn.
+ *
+ * So above level the pole tips down by as far as the aim has risen, and a hand
+ * going up never gets any nearer that spot than it is at level, where the elbow
+ * already turned no faster than it does anywhere else. Overhead the pole hangs
+ * straight down: the elbow stays under the raised arm and the weapon leans back
+ * over the head, ready to come down. At and below level nothing moves -- every
+ * swing was tuned there.
+ */
+export function tipPole(pole: THREE.Vector3, pitch: number): THREE.Vector3 {
+  const flat = Math.hypot(pole.x, pole.z);
+  if (pitch <= 0 || flat < 1e-9) return pole;
+  const fall = Math.min(Math.PI / 2, Math.atan2(-pole.y, flat) + pitch);
+  const s = Math.cos(fall) / flat;
+  return pole.set(pole.x * s, -Math.sin(fall), pole.z * s);
+}
 
 /**
  * The shoulder drive runs softer than the wrist. It is steering a lighter
@@ -507,7 +535,7 @@ export class Arm {
   /** The scabbard the weapon goes into, if this weapon has one: a sword does. */
   private scabbard: THREE.Object3D | null = null;
   /** The hand, which rides the weapon while it is held and the forearm while it is not. */
-  private handMeshObj!: THREE.Mesh;
+  private handMeshObj!: THREE.Object3D;
   /**
    * The inside of the hand, riding the forearm: where something the hand
    * picks up is held. A plain node, so what hangs from it keeps its shape.
@@ -779,7 +807,7 @@ export class Arm {
 
     this.wristJoint = this.makeWristJoint();
 
-    this.buildMeshes(fighter.palette.skin);
+    this.buildMeshes();
     scene.add(this.group);
     if (weapon === SWORD) this.buildScabbard();
   }
@@ -1057,14 +1085,15 @@ export class Arm {
     // which way the edge faces through a swing, and it was tuned against the
     // hull: hung off a turning chest instead it presented the flat, and cut
     // quality in a real sweep fell by half. The posture moves the shoulder;
-    // the clearance pass below keeps the elbow out of the ribs.
+    // the clearance pass below keeps the elbow out of the ribs. Raised above
+    // level it tips under the arm, so the arm never turns over on the way up.
     const torsoYaw = this.fighter.yaw;
     const right = this._refA.set(Math.cos(torsoYaw), 0, -Math.sin(torsoYaw));
     const back = this._refC.set(Math.sin(torsoYaw), 0, Math.cos(torsoYaw));
-    const pole = this._refB.set(0, -POLE.down, 0)
+    const pole = tipPole(this._refB.set(0, -POLE.down, 0)
       .addScaledVector(right, POLE.right)
       .addScaledVector(back, POLE.back)
-      .normalize();
+      .normalize(), pitch);
     // A guided hand hangs its elbow its own way, and the roll -- the edge the
     // mouse asked for -- is not what it is doing.
     const hang = this.guidePole;
@@ -1198,13 +1227,13 @@ export class Arm {
    * grip does not flick between them. Only when that one would run past what
    * a forearm can turn is it given up for the nearest to square -- a regrip,
    * swung through at the twist's own speed. A point has no edge to present,
-   * and is held square.
+   * and is held square, and so is a club, which has none either.
    */
   private twistFor(
     bladeDir: THREE.Vector3, neutral: THREE.Vector3, steady: boolean, advance: boolean,
   ): number {
     const last = steady ? 0 : this.twistTarget;
-    if (this.weapon.bite === "point") return 0;
+    if (this.weapon.bite !== "edge") return 0;
 
     const asked = this._tb.copy(this._askedEdge)
       .addScaledVector(bladeDir, -this._askedEdge.dot(bladeDir));
@@ -1920,8 +1949,11 @@ export class Arm {
   // Presentation
   // -------------------------------------------------------------------------
 
-  private buildMeshes(skinColour: number): void {
-    const skin = new THREE.MeshStandardMaterial({ color: skinColour, roughness: 0.65 });
+  private buildMeshes(): void {
+    // Its own materials, the same as the body's: the body fades out when the
+    // camera is pushed into it, and this arm must not go with it.
+    const wardrobe = this.fighter.wardrobe.copy(this.fighter.palette);
+    const skin = wardrobe.skin;
     const upper = this.build.segment.upperArm;
     const fore = this.build.segment.foreArm;
 
@@ -1929,16 +1961,17 @@ export class Arm {
     // the hand, so the limb tapers from -Y to +Y and the hand goes at +foreHalf.
     this.upperMesh = shellMesh(skin, {
       from: upper.radius * 1.06, to: upper.radius * 0.84,
-      length: upper.length, belly: 1.05,
+      length: upper.length, belly: 1.09, peak: 0.45,
     });
     this.foreMesh = shellMesh(skin, {
       from: fore.radius, to: fore.radius * 0.68,
-      length: fore.length, belly: 1.05,
+      length: fore.length, belly: 1.1, peak: 0.3,
     });
 
-    const elbow = jointBall(fore.radius * 1.15, skin);
+    const elbow = jointBall(fore.radius * 1.05, skin);
     elbow.position.y = this.upperHalf;
     this.upperMesh.add(elbow);
+    dressArm(wardrobe, this.upperMesh, this.foreMesh, { upper, fore });
 
     this.group.add(this.upperMesh, this.foreMesh);
 
@@ -1950,7 +1983,7 @@ export class Arm {
     // rides the weapon rather than the forearm, so a turn of the grip turns
     // the hand with it: the forearm is drawn round, and its own twist along
     // its length would not show anyway.
-    const hand = this.handMeshObj = handMesh(fore.radius * 1.22, skin);
+    const hand = this.handMeshObj = handFor(fore.radius * 1.22, wardrobe, skin);
     this.bladeMesh.add(hand);
     // And the inside of the hand, on the forearm, for anything held in it
     // that is not the weapon.
@@ -2912,6 +2945,9 @@ export class Arm {
     g.add(own);
     this.scabbardBlade = own;
     this.fighter.chest.add(g);
+    // It rides the body's back, so it fades with the body, not with this arm:
+    // the camera backed up against a wall looks straight through it.
+    this.fighter.wardrobe.adopt(g);
     this.scabbard = g;
   }
 
@@ -2964,13 +3000,20 @@ export class Arm {
 
   /**
    * What the arm itself puts behind its weapon, kg: both segments while it is
-   * driving the weapon, nothing once it hangs limp or has been cut off. A
-   * loose weapon arrives on its own.
+   * driving the weapon, and whatever of its body the creature swinging it
+   * throws in after them (see `heave`) -- nothing once it hangs limp or has
+   * been cut off. A loose weapon arrives on its own.
    */
   get armBehind(): number {
     if (this.limp || this.severedAt !== null) return 0;
-    return this.upper.mass() + this.fore.mass();
+    return this.upper.mass() + this.fore.mass() + this.heave;
   }
+
+  /**
+   * How much of its body, kg, the creature this arm belongs to puts behind a
+   * blow as well as the arm: see `Species.heave`. Nothing, for most things.
+   */
+  heave = 0;
 
   /**
    * Rewrite a drive's push about one bone's own length.

@@ -14,8 +14,9 @@ them — and makes a cut look like one. Since then the body has learned to get
 out of its own arm's way: the chest turns ahead of a swing, the shoulder slides
 round the ribs, the head watches the blade, the feet step under a turn, the arm
 no longer goes straight through the chest to get across it, the forearm twists
-to keep the edge where you put it, and the wrist bends to keep the blade
-pointing where you aimed. And a blow now lands with its weight: the swing that
+to keep the edge where you put it, the wrist bends to keep the blade pointing
+where you aimed, and a hand raised overhead keeps its elbow under it instead of
+turning the arm over. And a blow now lands with its weight: the swing that
 puts a goblin on the floor does not move an orc. And nothing tells you what is
 coming any more: an opponent makes each swing up as it throws it, aimed at
 whatever of you is there, and the only warning is its weapon going back.
@@ -43,10 +44,38 @@ clear, lets go of a swing when a cut hurts, limps on a cut leg — as you do —
 fights differently once it is badly hurt, and shows you its weapon from out of
 its reach.
 
+And nothing just walks up to you. A double tap of W, S, Q or E is a quick step
+that way — twice walking pace for under a fifth of a second, then a moment's
+rest — and everyone has it: an opponent closes the last of the gap with one as
+its weapon goes back, straight in or on a slant round your side, goes straight
+back out after swinging, and gets out of the way of your swing with one. The
+goblin is never still; the orc hardly ever bothers.
+
+And at the far end of the orc's hall there is a gate, with a lever on the wall
+beside it. F goes to the lever as it goes to anything, and the hand takes hold
+of the handle and pulls it down — jointed to the bar, the arm's own clamped
+drive against the lever's spring — until it catches. The gate grinds up into
+the gatehouse over it, and the two orcs in the pen behind it hear it go and
+come out to see why.
+
+And there are two more things to fight, with no room of their own yet: a
+kobold, a little over a metre of scaly, skittish thing with a hatchet, and an
+ogre, two and a half metres of it with an iron-bound oak club that cuts
+nothing at all. It hits you and you go flying. Put `?spawn=kobold,ogre` on the
+address, or either one alone, and they wait for you at the north end of the
+training room (see [The bestiary](#the-bestiary)). Everyone has a face now, too, and something
+on: your tunic, bracers and boots, the orc's harness and tusks, the goblin's
+rags, the kobold's horns and tail, the ogre's hide — none of it ever hit by
+anything, and all of it fading with the body when the camera is backed into a
+wall. And going over a wall or up onto a ledge is a body doing it: the vault
+springs off the near side, plants a hand on the top and swings the legs round
+over it, and the climb hangs off the edge, heaves the chest over and brings a
+knee up onto it.
+
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 373 checks, no browser needed
+npm run smoke    # headless physics harness — 431 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -62,12 +91,13 @@ npm run build    # production bundle
 | **A / D** | turn (arrow keys also work) |
 | **Shift** | with A / D: turn on your heel — three and a half times as fast, enough to carry a swing on round with you |
 | **Q / E** | sidestep |
+| **W W, S S, Q Q, E E** | double tap: a quick step that way — a metre or so in under a fifth of a second, then a moment's rest before the next |
 | **Space** | jump — or, with **W** held at a ledge, climb it |
 | **V** | vault whatever is in front of you, if it is waist high |
 | **C** | hold to crouch |
 | **X** | sword on your back, and back in your hand — or, holding an opponent's weapon, take it up and fight with it, and put it up again |
 | **Z** | shield on your back, and back on your arm |
-| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
+| **F** | go and pick up what is nearby — a potion, a shield, a piece of an opponent, their weapon — or pull the lever beside the pen's gate; sword on your back first; F again, or any key, calls it off. With something in your hand: put it in your bag |
 | **G** | let go of what is in your hand — in the middle of a swing, throw it |
 | **H** | drink a potion — takes a free hand |
 | **B** | open and close the inventory |
@@ -88,7 +118,8 @@ shoulder allows — and it belongs under your fingers.
 Right-drag is modal: while the button is down, horizontal mouse travel rolls the
 edge instead of sweeping the arm sideways. Vertical travel still aims, so you
 never lose height control while setting your edge. The HUD says `ROLLING` while
-it's live.
+it's live. It is also how you guard over your head: raised, the blade stands up
+over your hand, and rolled to the left it lies across your head.
 
 Left-drag is the same kind of switch for the other hand: while it is down, the
 mouse and the wheel move the off arm, and the sword holds where you left it.
@@ -333,8 +364,9 @@ it falls the way the blow sent it — over its feet if it was hit high, onto its
 back if its legs were taken. It lies there most of a second, pulls itself
 together, is driven back up round its feet the way it is walked — by its
 velocity, never placed — and takes its weapon back up to the guard. Only the
-sideways part of a blow counts: one straight down drives a body into the floor,
-and the floor pushes back.
+sideways part of a blade's blow counts: one straight down drives a body into
+the floor, and the floor pushes back. A club is another matter (see
+[Sent flying](#sent-flying)).
 
 The same swing — your sword, 8 m/s into the upper chest:
 
@@ -362,6 +394,39 @@ kilos it went into.
 The practice dummy takes a blow like a punching bag, through its middle
 wherever it lands, and its mount drags, so it rocks and settles inside half a
 second.
+
+### Sent flying
+
+A blade goes in and stops, and what a body takes from it is what a blow that
+sticks can give. The ogre's club does not stick. Three things set it apart
+from a blade of the same weight and speed, all in
+[`balance.ts`](src/game/balance.ts):
+
+- **it comes back off you.** Oak bound in iron rebounds, and a blow that
+  bounces gives the body more than one that stays: along the line it drove in
+  on, the body is sent (1 + rebound) times as fast as a sticking blow would
+  send it, and the club's `rebound` is 0.4. Square on, at the same weight and
+  speed, a club throws a body at 3.84 m/s where a blade throws it at 2.74.
+- **it takes you where it was going.** Its speed across the body goes with the
+  body too, as far as rough wood and iron studs can grip — never faster than
+  six tenths of what it presses in with — so a club that glances off drags a
+  body at 0.28 m/s where a square one throws it at 3.84.
+- **coming up, it lifts you.** A blade's blow counts only along the floor,
+  since one straight down drives a body into the floor and the floor pushes
+  back. A club's upward part is lift, and a body lifted has nothing under it to
+  step out of the rest with, so lift counts against balance as a shove does.
+
+And the ogre puts itself behind it: a tenth of its 317 kilos, on top of its arm
+and the club, makes 54 kilos of blow, against 11 behind the orc's axe and 5.6
+behind your sword. When that puts you down, all of you goes together — the
+chest, the hips, the legs, the arm and the sword in it are all given the same
+kick — so you go up and over as one body, rather than having your chest
+snatched out from under your legs. Swung up through you in the harness's cell,
+it puts you on the floor half a dozen times in under a minute, throwing you
+as far as three to six metres, and you get up again with everything still on.
+In half a minute of an ordinary fight it floors you five to eight times and
+takes more than half your health. A kobold's hatchet has yet to put anybody
+down.
 
 ### Weapons meeting
 
@@ -759,6 +824,30 @@ your hand, if the hand is free to take it. The fight does not stop while it
 is open, and the mouse is still your arm: looking in your bag in the middle
 of a fight costs what it costs.
 
+### Pulling the lever
+
+The lever beside the pen's gate is taken hold of rather than taken. **F** goes
+to it as it goes to anything — the body walks over and turns square to the
+wall, and the hand goes up for the handle under the arm's own drive — and once
+the hand is within three centimetres of it, it takes hold: a joint between the
+hand and the bar, made where the hand has got to, so that it has nothing to
+pull together. Then the hand's ghost is taken down the arc the handle goes
+round, and on past the bottom, and the arm follows it as it follows anything.
+The lever is two kilos of iron on a pin, sprung up against its stop, and it
+takes about thirty newtons at the handle to bring it down to the catch. The arm
+pays that in lag — the hand trails its ghost by five to seven centimetres all
+the way down — and the body leans into it. Just over half a second after the
+hand takes hold, the lever is past the catch and stays down, the hand lets go
+of it, and the gate beside it starts to go up.
+
+Nothing throws it but a hand. A blade goes through it, as it goes through the
+door frames — a lever an axe could hook, or knock over in the middle of a
+fight, is one more thing to go wrong at the height a weapon is carried — and
+it is the sword hand that pulls it, so the sword has to be on your back first,
+as for anything F does. Let go of short of the catch — a key of your own, a
+blow — and it springs back up to its stop, and nothing opens. Once it is down
+it stays down, and the gate stays up, until a reset.
+
 ### Crouching
 
 Hold **C** and the hips sink 38 centimetres, the chest tips forward over them,
@@ -784,6 +873,17 @@ into the edge. A wall is no ledge, and a pillar is no ledge: there is nothing
 on top of either to stand on. The training room has a ledge in its south-west
 corner, a metre and a half up, and a crate against it to go up by in two.
 
+And it goes up the way a body does. It takes hold of the edge and hangs off
+it with its feet still on the face, pulls itself up until its hips are at the
+top, throws its chest out over the edge, and brings one knee up onto it, then
+the other foot, and stands. The knee stays down and the foot tucked under the
+hips until the hips have come up past the top, so the legs stay out of the
+face on the way: the harness lets neither go more than two centimetres into
+the stone. The poses are keyed to landmarks along the way up — the hands on
+the edge, the hips level with the top, the body clear of it, standing — the
+same landmarks the body is driven through, so it is where its pose says it is
+at every one of them.
+
 ### Vaulting
 
 **V** goes over something between knee and chest high, rather than up onto it.
@@ -796,26 +896,36 @@ planted on the top on the way. The hall's block is vaultable, and the training
 room has a low wall along its west side to practise on — **Space** with **W**
 there climbs onto it instead.
 
+The body runs in level and springs from just short of the near side, rather
+than rising off its first step. The other hand goes down flat on the top as it
+comes over the edge, and the body turns on it: hips skimming the top, knees
+tucked, the legs swung round over it to the side, then unwinding on the far
+side to come down on both feet, still leaning into the way it was going. A
+hand with a sword in it lifts the sword clear, as it does on a climb. The
+harness holds it to what it looks like: the legs never more than two
+centimetres into the stone all the way over, the hips within half a metre of
+the top and turned, and the planted hand on it.
+
 ## The testing area
 
-Three rooms, and the point of them is that they are not one room.
+Four rooms, and the point of them is that they are not one room.
 
 ```
-        ┌───────────────────────────┐
-        │          THE HALL         │           ┌───────────────┐
-        │           an orc          │   door    │   THE CELL    │
-        │  a low beam, a block and  ├───────────┤   a goblin,   │
-        │        a thin post        │           │  and nothing  │
-        │                           │           │     else      │
-        └────────────┐   ┌──────────┘           └───────────────┘
-                     │   │ door
-        ┌────────────┘   └──────────┐
-        │     THE TRAINING ROOM     │
-        │   the practice dummy and  │
-        │        four pillars       │
-        │                           │
-        └───────────────────────────┘
-               you start here
+                              ┌───────────────────────────┐
+  ┌───────────────┐           │          THE HALL         │           ┌───────────────┐
+  │    THE PEN    │   gate    │           an orc          │   door    │   THE CELL    │
+  │   two orcs,   ├───────────┤  a low beam, a block and  ├───────────┤   a goblin,   │
+  │  and nothing  │   lever   │        a thin post        │           │  and nothing  │
+  │     else      │           │                           │           │     else      │
+  └───────────────┘           └────────────┐   ┌──────────┘           └───────────────┘
+                                           │   │ door
+                              ┌────────────┘   └──────────┐
+                              │     THE TRAINING ROOM     │
+                              │   the practice dummy and  │
+                              │        four pillars       │
+                              │                           │
+                              └───────────────────────────┘
+                                     you start here
 ```
 
 You start in the training room with the practice dummy and four pillars — and
@@ -826,6 +936,20 @@ the door is the hall, which holds the orc and the scenery a big swing gets
 caught on. East out of the hall is the cell, which holds the goblin and
 nothing at all, because a spear's reach is the whole argument and a cluttered
 room would answer it for you.
+
+West out of the hall, across it from the cell's door and on the same line, is
+the pen, and the pen has a gate. Two orcs wait in it — the second orc and the
+third, as the fight panel has them, told apart by what they wear — and nothing
+else, because what two of them at once is like is the whole of it. You open
+the gate yourself, with the lever on the hall's side of the wall a pace north
+of it (see [Pulling the lever](#pulling-the-lever)), when you want to find
+out. Shut, the gate is a wall: timber and iron that stops a blade, a body and
+a line of sight the way stone does, so the orcs behind it neither see you nor
+come for you, and you do not see them. Opened, it is winched up in a little
+over three seconds into the gatehouse built over the doorway to take it — the
+walls have no roof, and a gate wound up out of one would stand in the air —
+and the doorway is a doorway like the others. It comes down again only with a
+reset.
 
 Walls change what an opponent can know, and that turns out to be the whole of
 the layout:
@@ -862,9 +986,23 @@ orc's hall and along the other side of the wall, and it walked most of the way
 across its hall toward you, into the stone, and gave up there — wherever there
 was — and waited against the wall.
 
+**The gate going up is heard.** Standing at the lever you are a pace north of
+the doorway, where nobody in the pen can see you through it, so sight alone
+would leave the two orcs waiting at their posts with the gate wide open until
+you walked in front of it. But a gate grinding up is a noise, and anything
+within ten metres of it that is not already after you goes to see: to the
+gateway, on out the far side of it from where it stood, and a look round
+from there — the same search it makes where it last saw you. It learns nothing
+of you by the noise. The ray it always casts decides whether it finds you,
+and from the doorway you are three paces off and in plain sight; if you have
+gone, it gives up and walks home, and waits there with the gate open behind it.
+The fight panel says `looking` while it is looking, and `fighting` once it has
+seen you. The goblin is twenty metres off, through the stone, and hears
+nothing.
+
 ## The bestiary
 
-Three creatures, and not one of them has a stat block. A species is **a size, a
+Five creatures, and not one of them has a stat block. A species is **a size, a
 weapon, and the shapes of swing its arm knows** — everything that makes an orc
 feel like an orc falls out of the physics those three imply.
 
@@ -873,6 +1011,8 @@ feel like an orc falls out of the physics those three imply.
 | **you / the swordsman** | 1.85m, 82kg | sword, 1.4kg | the reference. Every number in this project was tuned against this figure. |
 | **the orc** | 2.11m, 147kg | axe, 3.65kg | slow, enormous, committed to everything it starts |
 | **the goblin** | 1.37m, 32kg | spear, 1.05kg | outreaches you, and does nothing else well |
+| **the kobold** | 1.11m, 16kg | hatchet, 0.7kg | at your knees, never still, and gone before you can answer |
+| **the ogre** | 2.52m, 317kg | club, 6kg | slow, and does not need to be quick: it hits you and you go flying |
 
 (Masses are the walking body — the hull that does the shoving. Arms and weapons
 are separate bodies on top.)
@@ -880,7 +1020,8 @@ are separate bodies on top.)
 Bodies are one set of human proportions multiplied by a length scale and a
 thickness scale. Lengths go with the scale, thicknesses with scale × girth, and
 mass with volume — so a goblin at 0.74 weighs a third of you and an orc at 1.14
-nearly twice. That cube law is doing real work: it is why an orc shrugs off a
+nearly twice, a kobold at 0.6 a fifth, and an ogre at 1.36, built thick, nearly
+four times. That cube law is doing real work: it is why an orc shrugs off a
 cut that fells a goblin, and it is geometry rather than a difficulty setting.
 
 Two things are derived from that mass, at different rates, and the gap between
@@ -897,12 +1038,58 @@ Nor do you knock one over. The same mass is what a blow has to move, and
 nothing you can swing moves 173 kilos (see [Weight](#weight)). A goblin, you
 can put on the floor.
 
+The kobold and the ogre are the same two laws at the two ends of them. A
+kobold carries 19 health to your 100 and a neck one clean cut goes through; it
+lives by never being where you swung — it skitters, darts in and out again,
+hops clear of most of what comes at it, and lets go of its own swing when you
+cut it — and by going for your legs. An ogre carries 387, with joints only
+two and a half times as hard as yours, so its arm still comes off; but nothing
+here puts it on the floor, and its club puts you there (see
+[Sent flying](#sent-flying)). Neither has a room yet. `?spawn=kobold`,
+`?spawn=ogre` or `?spawn=kobold,ogre` on the address puts them at the north end
+of the training room, facing you; there are six fighters' worth of collision
+slots and the rooms already hold five, so while two of them are there the pen
+stands empty.
+
 The one number a species declares that its size does not explain is `grit`, a
-strength multiplier, and exactly one creature needs it. A goblin's spear is a
-metre of lever; at the strength its shoulders imply, the arm's torque budget
-cannot hold the shaft on line while the hand accelerates, and every thrust
-arrived rotating and landed flat. A wiry thing that is strong for its size is
-both the obvious answer and the true one.
+strength multiplier, and the two smallest creatures need it. A goblin's spear
+is a metre of lever; at the strength its shoulders imply, the arm's torque
+budget cannot hold the shaft on line while the hand accelerates, and every
+thrust arrived rotating and landed flat. A kobold's hatchet hung off an arm
+that short and landed too slowly to bite. A wiry thing that is strong for its
+size is both the obvious answer and the true one.
+
+And one creature declares `heave`: how much of its own body it throws in
+behind a blow after its arm. Only the ogre does, a tenth of itself.
+
+### What they look like
+
+Every body is the same tapered shells laid over the same capsules
+([`skin.ts`](src/game/skin.ts)), and those are shaped like limbs now: a calf is
+fullest up by the knee, a forearm by the elbow. Past its size and its
+colours, what tells one creature from another is its **look**
+([`look.ts`](src/game/look.ts)) — a face, what it wears, and what it is made
+of:
+
+| | face | wears |
+|---|---|---|
+| **you** | a nose, a brow, a chin, ears, cropped hair | a tunic belted over breeches, bracers, boots |
+| **the swordsman** | the same, under a steel cap with a nasal | the same, and plates on the shoulders |
+| **the orc** | a heavy brow, a flat nose, a jaw thrust out, tusks, pointed ears, a topknot | a leather harness over a bare chest, bracers, boots |
+| **the goblin** | a long nose, big ears, yellow eyes that catch the light | rags and a sash, bare clawed feet |
+| **the kobold** | a snout, teeth, horns swept back, frills, scales | a hide round its middle, a tail, clawed feet |
+| **the ogre** | a wide flat nose, an underslung jaw, short tusks, a topknot | a gut, a hide round its middle, clawed feet |
+
+The surfaces are made rather than painted: cloth has a weave, leather a grain,
+skin is mottled and a kobold's is scaled, each one grey, shading whatever
+colour it is laid on, and its own bump map. They are built from numbers
+rather than drawn on a canvas, so the headless harness builds them as happily
+as a browser does. None of it is anything a blade finds: it hangs off the meshes that are
+already placed, so a head that comes off takes its ears and its helm with it,
+and all of it fades with the body when the camera is backed into a wall. The
+weapons have been given the same care — a sword blade faceted to a ridge and a
+point, with a crossguard, a cord-bound grip and a wheel pommel, and an axe
+head that thins to its edge.
 
 ### The weapons
 
@@ -924,11 +1111,23 @@ hand. Almost everything that distinguishes them falls out of that.
   the axe's; the butt behind the hand balances the head in front of it and
   brings that down by a third. Swung side on it is still a broom handle. Driven
   down its own length it is the most dangerous thing in the room.
+- **The hatchet** is the axe made small: 0.7kg over forty centimetres, most of
+  it in a head that thins to its edge. There is too little of it to carry the
+  arm round after it, so it goes where the kobold's arm puts it, and what
+  little there is bites keener than a sword's edge — but only at the head.
+- **The club** is 6kg of oak with iron bands and studs round its head, 4.6 of
+  it in the last half metre. It is the one weapon here that does not bite: it
+  lands the same whichever way it is turned, the forearm does not twist to put
+  an edge on line, and it never takes anything off anyone — forty blows leave
+  an arm on that two cuts of your sword take off. Its damage is what it does
+  to your health, and what it does to where you are standing.
 
 Four things a weapon declares rather than derives, because they describe the
-shape of its business end and a mass never can: which axis bites (an edge, or a
-point), where along itself its leverage is, how fast it has to be moving to do
-anything, and how concentrated that bite is.
+shape of its business end and a mass never can: which axis bites (an edge, a
+point, or none of it — blunt), where along itself its leverage is, how fast it
+has to be moving to do anything, and how concentrated that bite is. A blunt
+one declares a fifth, how far it comes back off what it hits (see
+[Sent flying](#sent-flying)).
 
 ### Swings, made up as they are thrown
 
@@ -1256,6 +1455,51 @@ comes any sooner than a reaction time after.
 | **orc** | a quarter, with an axe | never | never | never | a fifth: beats the floor | gets angry |
 | **goblin** | hardly ever | two in three | a third | four in five | now and then: shakes its spear | gets away |
 
+### Quick steps
+
+A double tap of a movement key throws you that way at twice walking pace for
+under a fifth of a second — a metre or so, at your size — and the next cannot
+start until seven tenths of a second after this one did. It goes where it set
+off, whatever the keys do after. It is from the floor only, on feet that are
+your own: a jump off one takes off at the keys' own pace, and a cut leg takes
+its share off it, as it does off a walk. The tap is tight — two presses of the
+same key, the first let go of within a fifth of a second and the second down
+within a quarter of a second of that, nothing else pressed between — because
+the keys are tapped all the time to edge in and out of reach, and a quick step
+nobody asked for costs a fight. One asked for a moment too soon, still resting
+or still in the air, waits that moment rather than be lost.
+
+It is everyone's, on the same flag and the same rest:
+
+- **In with a swing.** Its moment come and you not quite in its reach, an
+  opponent may close the last of the gap with a quick step as its weapon goes
+  back — straight in from further off, or on a slant round your side from
+  where it goes round you — and swing from where it lands, once it has turned
+  back square to you. The weapon going back is still the tell; the step is
+  how fast what follows arrives.
+- **Out after it.** Giving ground after a swing, the first step back may be a
+  quick one; and after a swing it quick-stepped in to throw, it goes straight
+  back out as readily as it quick-steps at all.
+- **Out of the way.** A step out of the way of your swing may be a quick one,
+  and in the first fifth of a second it has gone twice as far as a step goes.
+- **Round you**, now and then: a flick round your side and out of its circle,
+  and back in on the next step.
+
+| | quick steps | in with a swing |
+|---|---|---|
+| **swordsman** | two in five of its steps out of the way, or out of reach | nearly half the time |
+| **orc** | one in ten: a heavy thing throwing its weight about | one in seven |
+| **goblin** | seven in ten — nine, badly hurt | three in five |
+
+Against someone standing still they are no deadlier for it. Over at least
+thirty-two forty-second fights each, the swordsman left you 41 health of 100 on average
+where it used to leave 38, the orc 43 where it left 39, and the goblin 81
+where it left 77 — no worse, within what that many fights can tell apart.
+Against the harness's player that walks straight in swinging, the swordsman is
+as dangerous as it was. The goblin, out of reach again the moment it has
+thrust, is not: it costs that player a couple of points more a bout, and
+killed it in four bouts of forty, where it used to kill it in none of twenty.
+
 ### Steps have weight
 
 A step used to be at full pace the moment the key went down and stopped dead
@@ -1292,7 +1536,7 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Sixty-three things the physics taught us
+## Seventy-one things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -1740,6 +1984,16 @@ holding it. About one run of the harness in a hundred found a corpse fourteen
 metres from where it fell, without a blow having landed on it. A weapon nobody
 is swinging stops meeting bodies now.
 
+**A quick step stretches the shoulder by its speed, not by its start.** The
+first quick steps took the harness's opponent's hand eleven centimetres past
+where its arm ends, where walking takes it five. Easing the step up to pace
+three times as slowly changed nothing. The drive damps the hand against its
+speed through the world, not past the shoulder, so a body going at twice
+walking pace leaves its hand behind by twice as much for as long as it goes,
+and the shoulder, a soft joint, gives. It is yours as much as theirs, and the
+check that an opponent's arm never exceeds its reach measures quick steps on
+their own now, against a bound yours is held to as well.
+
 And five about the harness rather than the game:
 
 **A test can pass for years for the wrong reason.** `aimBladeAt` corrected its
@@ -1904,6 +2158,72 @@ apart now, and what they come to together is compared: 147 points with the
 shield and 161 without, where the code before gives 160 and 181. The ratio and
 the one cut in twelve allowed to catch the rim are what they were.
 
+**A pole the hand can point away from leaves the elbow no side.** The elbow
+hangs toward a pole, and goes to whichever side of the shoulder-to-hand line the
+pole is on. Set behind and below the hand, the pole points away from a spot in
+front of the chest, a little across it and twenty-four degrees up — almost
+straight above the guard — and a hand raised through there had no side for its
+elbow: it went over the top of the forearm, fifteen degrees in one step of an
+unhurried raise, while the blade dipped from upright to below level on its way
+up, and a sweep across at that height rolled the edge thirteen degrees in a
+step. Bending the pole a little cannot get rid of that spot. The elbow hangs
+under the arm wherever a hand is held low and went over it wherever one was
+held high, so somewhere between the two it has no side; only where can change.
+Above level the pole now tips down by as far as the hand has risen, so a hand
+going up gets no nearer that spot than it is at level, and overhead the pole
+hangs straight down: the spot is straight up, where no aim goes. Raised, the
+elbow stays under the arm and the weapon leans back over the head; at and below
+level nothing moved. What leaned on the arm going over the top went with it. A
+guard over the head is the blade rolled across it now, which an axe meets more
+often than it met the old one, and the orc's overhead, measured again, is
+thrown on a new edge.
+
+**The world's rays see nothing before it has stepped.** Rapier finds what a ray
+hits in a structure it brings up to date as it steps, so a ray cast before the
+first step finds no walls at all — and every opponent looks before the first
+step. That never mattered while you started twenty metres from anybody. It
+mattered once the harness put you beside the lever: the pen's two orcs, the
+shut gate between you, noticed you on their very first thought and were at the
+gate before it had moved. Anything moved outright between steps is the same:
+a reset shuts the gate, and until the world steps a ray still finds it up. The
+rays are brought up to date by hand now, before the first step and after every
+reset.
+
+**The fifth fighter was one bit too many.** Every fighter had three collision
+bits of its own — body, weapon, hull — which left room for four in sixteen, and
+the pen's two orcs made five. But no hull ever needed telling from another:
+every hull bumps into every other, whoever's side it is on, and nothing meets
+its own colliders anyway. The hulls share one bit now, and at two bits a
+fighter there is room for six.
+
+**A vault that rises from its first step never gets a hand on the top.** The
+first vault drove the body along one curve from where it stood, up, over and
+down, so it was climbing from the moment it set off — and the hand that was to
+go down on the top was still more than half a metre short of it as the body
+went over. A body does not rise until it springs. It runs in level now, takes
+off just short of the near side, and the hand has something to go down on.
+
+**A knee brought up in front of a body hanging off a wall is a knee in the
+wall.** The first climb brought a knee up as soon as the hands had the edge,
+the way a climb is usually drawn, and the knee went twenty centimetres into
+the face. The knee stays down and the foot tucked under the hips until the
+hips are up past the top now, and the harness measures the legs' own colliders
+against the stone for the whole of both moves, not just the hull.
+
+**Easing a foot down to the floor put it through the edge.** Between a posed
+leg and one standing on the top, the leg was eased from the one's angles to the
+other's, and halfway there it described a leg that was neither, whose foot was
+in the stone. A key that puts a foot down now takes its angles from the pose
+beside it, so between the two only how much of the leg the floor has changes.
+
+**Reach is measured at the height of what you swing at.** Every creature
+measures how far its weapon reaches level with your chest, and for everything
+up to now that was where it swung. A kobold swings at your legs half the time,
+and measured at your chest, with its short arm reaching up for it, its reach
+came out at half a metre: it stood on your toes to swing, and hacked at you on
+the way back as much as on the way through. Reach is measured now at whichever
+of your head, your middle and your legs a creature goes for most.
+
 ## Tuning
 
 Everything in the panel is live and saves to your browser. The four that matter:
@@ -1939,13 +2259,16 @@ hit.
 
 Movement adds `step ease` — how long the feet take to get to walking pace and
 to stop, everyone's — `pivot speed`, how fast Shift and a turn take you round
-on your heel, everyone's too, `jump height` and `air control`. Presets: **heavy** (a sword that
+on your heel, everyone's too, `quick step` and `quick step rest`, how fast a
+double tap throws you as a multiple of walking pace and how long until the
+next, everyone's as well, `jump height` and `air control`. Presets: **heavy** (a sword that
 fights you), **rigid** (a robot arm — useful as a control), **noodle** (too weak
 to lift it). Try `rigid` for ten seconds to hear what the mechanic sounds like
 when you take the clamp away.
 
 The arm's knobs drive your arm only. An orc's force budget is its own, scaled
-from its size. The world's — gravity, the impact knobs and step ease — are everyone's.
+from its size. The world's — gravity, the impact knobs, step ease, the pivot
+and the quick step — are everyone's.
 
 ## Deliberate behaviours
 
@@ -2105,12 +2428,36 @@ Some things look like bugs and are not:
 - **A badly hurt orc stops waiting.** A badly hurt goblin stops coming.
 - **The orc beats the floor with its axe.** You are out of its reach; it is
   telling you what it thinks of that.
+- **Tapping W twice throws you a metre.** Two short taps of the same key, close
+  together. A key held, tapped slowly, or with another between is a walk.
+- **It comes at you from the side.** A quick step in on a slant lands it round
+  your side and turned off you, and it squares up before it swings. Turn to
+  meet it.
+- **Your arm trails a quick step.** Anybody's does. The hand is damped against
+  its speed through the world, and a body going at twice walking pace leaves it
+  behind for a moment.
+- **F does nothing at the lever with your sword drawn.** The hand that pulls it
+  is the sword hand. X first, as for anything F does.
+- **The lever takes a moment, and your hand lags it.** It is sprung, and the
+  arm pulls it down against the spring under the same clamp as a swing. The
+  body leans in to do it.
+- **Your sword goes straight through the lever.** It is scenery to a blade,
+  like the door frames. Only a hand moves it.
+- **Let go of the lever halfway and it springs back up.** A blow, or a key of
+  your own, and the gate stays shut. It only stays down once it has caught.
+- **The gate does not come down again.** Once the lever has caught, the gate is
+  up until a reset.
+- **Two orcs come out when the gate goes up, though they never saw you.** They
+  heard it. They come to look, and from the doorway you are in plain sight.
+- **Pull the lever and walk away, and they go back in.** They look round the
+  gateway, find nobody, and walk home to wait by the open gate.
 
 ## Structure
 
 ```
 src/
-  main.ts            wiring, camera, who is in which room
+  main.ts            wiring, camera, who is in which room, and who comes when
+                     asked for (`?spawn=`)
   tuning.ts          every constant that shapes the feel
   core/
     loop.ts          fixed 60Hz accumulator
@@ -2120,13 +2467,22 @@ src/
   input/input.ts     pointer lock, accumulated deltas
   game/
     arm.ts           THE MECHANIC — read this one first
-    weapons.ts       sword, axe, spear: masses, leverage, what bites, and inertia
-    species.ts       the bestiary — a size, a weapon, the shapes of swing it knows
+    weapons.ts       sword, axe, spear, hatchet, club: masses, leverage, what
+                     bites -- or, for a club, how far it comes back off you --
+                     and inertia
+    species.ts       the bestiary — a size, a weapon, the shapes of swing it
+                     knows, and what it looks like
+    look.ts          faces, clothes, harness, helm, tail and claws: what a
+                     creature wears over its shells, and the woven, grained,
+                     mottled and scaled surfaces they are made of
     anatomy.ts       one set of proportions, scaled to any body
     fighter.ts       torso, locomotion, the jump, the climb and the vault, feet
                      that stay planted and step round a turn, a stride that goes
                      the way the body does, legs that bend into a crouch or a
                      stoop, and a body that can be knocked over and get back up
+    traverse.ts      the vault and the climb as a body does them: poses keyed
+                     to the landmarks along the way, and how fast it goes
+                     between them
     posture.ts       how the trunk carries the arm: lead, girdle, lean, gaze,
                      how far a crouch sinks it and a stoop bows it over, the
                      hips and chest walking with the legs whichever way they
@@ -2143,18 +2499,26 @@ src/
                      of them and throwing them
     remains.ts       what comes off a body, and the weapon a dead hand lets go of
     inventory.ts     the bag: potions, and pieces of other people put in it
-    pickup.ts        F: walking over, getting down to it, and reaching for it
+    pickup.ts        F: walking over, getting down to it, and reaching for it --
+                     or taking hold of a lever and pulling it down
     clearance.ts     keeping the arm out of its own chest and hips
     motion.ts        the two filters: intent that must not lag, bodies that should
-    arena.ts         three rooms built to be hit, the doors between them, a
-                     ledge to climb, and where the things lying about go
+    arena.ts         four rooms built to be hit, the doors between them, a
+                     ledge to climb, the pen's gate and the gatehouse over it,
+                     and where the things lying about go
+    gate.ts          the pen's gate, winched up into its gatehouse, and the
+                     lever on the wall beside it: a sprung bar on a pin that a
+                     hand takes hold of and pulls down until it catches
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
-    ai.ts            the opponent's brain — mouse deltas and your keys, nothing more
+    ai.ts            the opponent's brain — mouse deltas and your keys, nothing
+                     more; and what it does about a noise it hears
     cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
-    balance.ts       what a blow does to a body that has to stay on its feet
-    skin.ts          the visible body: tapered shells over the capsules
+    balance.ts       what a blow does to a body that has to stay on its feet,
+                     and how far a club sends one that cannot
+    skin.ts          the visible body: tapered shells over the capsules, full
+                     where the muscle is
     blood.ts         droplets, and the two faces a cut leaves behind
     impacts.ts       contact events -> impact quality; gold sparks off stone, red off flesh
     targets.ts       collider -> name registry
@@ -2164,7 +2528,7 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 373 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 431 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
@@ -2176,19 +2540,28 @@ hovers roughly where it belongs — jumps a fighter and measures where it lands,
 round slower than a sword on the same arm and the same command, shows that a
 spear held by the butt swings markedly less far than a choked-up one, and runs
 half a minute of live fight against each species to check it closes, swings,
-lands cuts, and never exceeds the reach of its own arm.
+lands cuts, and never exceeds the reach of its own arm. It holds the vault and
+the climb to what they look like — legs out of the stone, a hand on the top,
+the chest over the edge — puts a club and a blade of the same weight through
+the same body to check the club throws it further and lifts it, has the ogre
+swing up through you until it has floored you six times or most of a minute
+has gone and checks you got up whole, and fades every creature to check
+nothing it wears is left hanging in front of the camera.
 
 It also holds the layout to its claims: that each subject is in its own room,
 that a wall stops a line of sight and a doorway does not, that an opponent
 which cannot see you neither moves nor swings — and that walking into its room
-starts a fight. And it takes a joint apart to check that the cut reports two
+starts a fight; that the pen's gate, shut, stops a line of sight and the step
+probe as the walls do, and is a doorway once it is up. And it takes a joint apart to check that the cut reports two
 faces to bleed from, that both are attached to something that is placed every
 frame, and that the droplets fall, land and go.
 
 And it holds the body to its claims: that the same cross-body sweep that went
 twenty centimetres into the old rigid chest now stays out of it at three
 heights, and a flick only grazes it; that nothing pushes on an arm at rest; that
-the original flick no longer spins the forearm; that a drag reaches the ghost
+the original flick no longer spins the forearm; that either hand raised from
+its guard to overhead keeps its elbow under the arm, and the sword goes up with
+it rather than dipping; that a drag reaches the ghost
 with no lag at all and a flick arrives within a few frames; that the chest is
 more than half turned before the hand crosses it while the hips lag behind;
 that planted feet do not skate, step one at a time, and end up under the hips;
@@ -2324,6 +2697,24 @@ first shape of swing, a thrust from a spear's distance, landing every time as
 itself and cutting; that nothing spins in your hand under the same ten seconds
 of abuse; and that X puts it up again.
 
+And the lever and the pen: that with the sword drawn F goes nowhere and the
+prompt says to put it up; that F walks you over to the lever and the hand goes
+up to within a couple of centimetres of the handle, and nothing moves the
+lever until the hand has hold of it; that the hand stays on the bar, jointed
+there to within a millimetre, the whole way down, the body leaning in and the
+arm never flailing; that the lever catches and stays down and the hand lets go
+of it, and the gate starts up about half a second later and is clear of its
+doorway in under four; that a lever that is down is not offered again; that a
+reset puts it up and shuts the gate; and that let go of halfway, it springs
+back up and nothing opens. That the game's five fit in the collision groups,
+every weapon reaching whoever it should and nobody else, and every hull still
+bumping into every other. And, with all five in one arena: that behind the
+shut gate the pen's two hold their posts, facing it, within noticing distance
+of you and unable to see you; that the gate going up is heard in the pen and
+not in the cell; that they come out through the gateway, find you, and swing,
+without a cut between them; and that with nobody to find, they look, give it
+up, and go home.
+
 ## Stack
 
 TypeScript · Vite · three.js · [Rapier](https://rapier.rs) (Rust→WASM).
@@ -2334,8 +2725,10 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. A thrown axe that
-cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
+A room each for the kobold and the ogre: there are collision slots for six
+fighters and the rooms hold five, so placing both means more slots or an
+empty pen. Rounds and a reason to be in the rooms. Friendly fire. A thrown
+axe that cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually
 wants. Blood that stays on the

@@ -35,6 +35,12 @@ export interface ShellSpec {
   length: number;
   /** Fullness at mid-span: 1 is a straight taper, 1.1 a muscled limb. */
   belly?: number;
+  /**
+   * Where along it, 0 at the -Y end and 1 at the +Y, that fullness is
+   * greatest: the middle if omitted. A calf is fullest up by the knee, a
+   * forearm by the elbow.
+   */
+  peak?: number;
   radial?: number;
 }
 
@@ -50,6 +56,9 @@ export function shellGeometry(spec: ShellSpec): THREE.LatheGeometry {
   const length = Math.max(spec.length, 1e-3);
   const belly = spec.belly ?? 1;
   const half = length / 2;
+  // Bend the bulge's sine so it peaks where it is asked to.
+  const peak = Math.min(0.9, Math.max(0.1, spec.peak ?? 0.5));
+  const bend = Math.log(0.5) / Math.log(peak);
 
   // The caps have to fit inside the length. A pelvis is shorter than two of
   // its own radii, and two full hemispheres there would meet and turn inside
@@ -68,7 +77,7 @@ export function shellGeometry(spec: ShellSpec): THREE.LatheGeometry {
     const t = i / SHAFT_STEPS;
     const eased = t * t * (3 - 2 * t);
     const r = (spec.from + (spec.to - spec.from) * eased)
-      * (1 + (belly - 1) * Math.sin(Math.PI * t));
+      * (1 + (belly - 1) * Math.sin(Math.PI * t ** bend));
     pts.push(new THREE.Vector2(r, yA + (yB - yA) * t));
   }
   for (let i = 0; i <= CAP_STEPS; i++) {

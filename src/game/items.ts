@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type RAPIER from "@dimforge/rapier3d-compat";
 import type { Combatant } from "./combatant";
+import type { Lever } from "./gate";
 import { buildShieldMesh, SHIELD } from "./shield";
 import { discardStandIn, Piece, piecesOf } from "./remains";
 
@@ -27,17 +28,19 @@ import { discardStandIn, Piece, piecesOf } from "./remains";
  *   a weapon     whatever an opponent's hand still had hold of when it was
  *                cut off or died: the orc's axe. The hand lets go of it as
  *                you take it
+ *   the lever    on the hall's wall, beside the pen's gate. Nothing is taken:
+ *                the hand takes hold of it and pulls it down (see gate.ts)
  *
- * The last two are physical, unlike the rest -- they fell there, and they
- * lie where they came to rest -- so where one is is asked of its bodies each
- * step. And they are not put away as they are taken: they stay in the hand
- * that took them, until F puts them in the bag, or G lets go of them -- which
- * is a throw, if the hand was swinging: see `letGo`. From the bag they come
- * back out into the hand. A weapon held can be taken up, with X, and fought
- * with: see `wield`.
+ * Remains and weapons are physical, unlike the rest -- they fell there, and
+ * they lie where they came to rest -- so where one is is asked of its bodies
+ * each step. And they are not put away as they are taken: they stay in the
+ * hand that took them, until F puts them in the bag, or G lets go of them --
+ * which is a throw, if the hand was swinging: see `letGo`. From the bag they
+ * come back out into the hand. A weapon held can be taken up, with X, and
+ * fought with: see `wield`. The lever is physical too, and stays where it is.
  */
 
-export type ItemKind = "potion" | "shield" | "rack" | "remains" | "weapon";
+export type ItemKind = "potion" | "shield" | "rack" | "remains" | "weapon" | "lever";
 
 /** Kept in the hand once taken, rather than put away: a piece of somebody, or their weapon. */
 export function holds(item: Item): boolean {
@@ -60,11 +63,14 @@ export interface Item {
   readonly face: number | null;
   /**
    * Gone from where it lay -- until a reset puts it back. For the rack: its
-   * shield is off it. For remains and weapons: in a hand, or in a bag.
+   * shield is off it. For remains and weapons: in a hand, or in a bag. For
+   * the lever: pulled down, and caught there.
    */
   taken: boolean;
   /** For remains and weapons: the bodies it is made of, and whose they were. */
   readonly piece?: Piece;
+  /** For the lever: the lever. */
+  readonly lever?: Lever;
 }
 
 /** How far from the middle of a body a hand can take something off the floor, metres at human scale. */
@@ -169,6 +175,14 @@ export class Items {
     this.homes.set(mesh, {
       parent: mesh.parent!, position: mesh.position.clone(), quaternion: mesh.quaternion.clone(),
     });
+  }
+
+  /**
+   * Something the arena put there that F can go to, which keeps itself up to
+   * date: the lever (see gate.ts). Never lifted, never carried off.
+   */
+  add(item: Item): void {
+    if (!this.items.includes(item)) this.items.push(item);
   }
 
   /**
@@ -556,6 +570,8 @@ export class Items {
    * Remains taken leave the world; put down, they come back into it.
    */
   setTaken(item: Item, taken: boolean): void {
+    // A lever says for itself whether it is down: see `Lever.reset`.
+    if (item.lever) return;
     item.taken = taken;
     if (item.piece) {
       if (this.carried?.piece !== item.piece) item.piece.setPresent(!taken);
@@ -566,11 +582,12 @@ export class Items {
   /**
    * Everything back where it was. Remains go back into the world, wherever
    * they are, for the reset that follows to put back on whoever lost them --
-   * so this goes first -- and are not lying about any more.
+   * so this goes first -- and are not lying about any more. The lever is the
+   * arena's to put back up, with its gate.
    */
   reset(): void {
     while (this.leaving.length) this.arrive(this.leaving[0].piece);
-    for (const item of this.items) item.taken = false;
+    for (const item of this.items) if (!item.lever) item.taken = false;
     this.putBack();
     this.holder = null;
     for (const item of this.items) this.setTaken(item, false);
@@ -678,13 +695,17 @@ export function refusal(who: Combatant, item: Item): string | null {
         return arm ? null : "no arm to strap it to";
       }
       return who.carriesShield ? null : "the rack is empty";
+    case "lever":
+      return item.taken ? "the lever is down" : null;
   }
 }
 
 /**
  * What taking it does, once a hand has it: a potion in the bag, a piece of
  * somebody or their weapon kept in the hand, a shield on the arm, a shield
- * off the arm -- or the back -- and back on the rack.
+ * off the arm -- or the back -- and back on the rack. A lever is not taken
+ * but pulled, and a hand pulling one is `Pickup`'s: asked here, with no hand
+ * on it, it is thrown over outright, and swings down on its own spring.
  */
 export function take(who: Combatant, items: Items, item: Item): Outcome {
   const no = refusal(who, item);
@@ -710,8 +731,14 @@ export function take(who: Combatant, items: Items, item: Item): Outcome {
       who.unequipShield();
       items.setTaken(item, false);
       return { ok: true, text: "hung the shield on the rack" };
+    case "lever":
+      item.lever?.throwOver();
+      return { ok: true, text: PULLED };
   }
 }
+
+/** What pulling the lever down did, in the HUD's words. */
+export const PULLED = "you pull the lever down";
 
 /**
  * Take whatever is nearest, within an arm's reach, at once: the rules, with
@@ -748,7 +775,8 @@ export function promptFor(who: Combatant, items: Items): string | null {
   const item = inRange(who, items);
   if (!item) return null;
   const verb = item.kind === "rack" && item.taken ? "hang your shield on the rack"
-    : item.kind === "rack" ? "take the shield" : `take ${item.name}`;
+    : item.kind === "rack" ? "take the shield"
+      : item.kind === "lever" ? `pull ${item.name}` : `take ${item.name}`;
   const no = refusal(who, item);
   if (no === null) return `F — ${verb}`;
   // Only the one refusal that says what to do about it.
@@ -759,7 +787,7 @@ export function promptFor(who: Combatant, items: Items): string | null {
 function canHold(who: Combatant, item: Item): boolean {
   const l = who.fighter.offLimb;
   const arm = l.shoulderOn && l.elbowOn;
-  if (item.kind === "potion" || holds(item)) return true;
+  if (item.kind === "potion" || item.kind === "lever" || holds(item)) return true;
   if (item.kind === "rack" && item.taken) return who.carriesShield;
   return arm && !who.carriesShield;
 }

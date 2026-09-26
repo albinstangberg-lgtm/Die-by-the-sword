@@ -256,8 +256,7 @@ export class Impacts {
     const closingSpeed = Math.abs(normalComponent);
     const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
 
-    arm.biteDirection(this._edge);
-    const edgeAlign = Math.abs(this._edge.dot(this._n));
+    const edgeAlign = this.alignment(arm);
 
     return {
       quality: classify(closingSpeed, edgeAlign, hit.alongBlade),
@@ -289,6 +288,17 @@ export class Impacts {
       blade: arm.bladeCollider.handle,
       time: now,
     };
+  }
+
+  /**
+   * How squarely the weapon's biting axis met the surface, 0..1, against
+   * the contact normal just measured in `_n`. A club has no biting axis --
+   * it lands as hard whichever way round it is -- and always meets square.
+   */
+  private alignment(arm: Arm): number {
+    if (arm.weapon.bite === "blunt") return 1;
+    arm.biteDirection(this._edge);
+    return Math.abs(this._edge.dot(this._n));
   }
 
   /** Drain this step's contact events. Call right after `world.step()`. */
@@ -467,8 +477,7 @@ export class Impacts {
     const tangentSpeed = Math.sqrt(Math.max(0, this._v.lengthSq() - normalComponent ** 2));
 
     // How squarely the weapon's own biting axis met the surface.
-    arm.biteDirection(this._edge);
-    const edgeAlign = Math.abs(this._edge.dot(this._n));
+    const edgeAlign = this.alignment(arm);
 
     // Where along the weapon — project the contact into weapon-local space,
     // again from the pre-step snapshot so all three measurements agree.

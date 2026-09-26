@@ -36,6 +36,15 @@ import type { Impact } from "./impacts";
  *
  * Only the sideways part of a blow counts against balance. A blow straight
  * down drives a body into the floor, and the floor pushes back.
+ *
+ * All of that is a blade's blow, which goes in and stops. A club's does not
+ * (see `Weapon.rebound`): its head comes back off the body it lands on,
+ * which hands over up to twice the momentum along the line it drove in on,
+ * and rough oak that hard against a body does not slide off it either, so
+ * most of the club's speed across the body goes with the body too. The body
+ * goes the way the club was going -- and if that was up, up: the floor
+ * pushes back on a blow driving a body down into it, but nothing holds a
+ * body down on it. That is what being sent flying is.
  */
 
 /** A boot on stone. */
@@ -55,6 +64,21 @@ const BUDGE = 0.15;
  * rigid, and a neck and a pair of knees give.
  */
 const LEVER = 0.5;
+/**
+ * How much of a club's speed across a body goes with the body, against the
+ * rebound's along the line it drove in on: rough wood and iron studs, and
+ * enough force behind them that they do not slide -- up to what friction
+ * lets them, `GRIP_OAK` times what the blow drives in along the line. A
+ * glancing club cannot drag a body along any faster than it presses on it.
+ */
+const CARRY = 0.85;
+const GRIP_OAK = 0.6;
+/**
+ * A body thrown upward has nothing under it to step out of the blow with:
+ * this much of the lift counts against its balance as a shove along the
+ * floor would.
+ */
+const LIFT_TOPPLE = 1;
 
 /** What a blow did, weakest first. */
 export type Knock = "none" | "shove" | "stagger" | "down";
@@ -67,6 +91,17 @@ export interface Blow {
   speed: number;
   /** What is left once they have: horizontal, world, m/s. */
   knock: THREE.Vector3;
+  /**
+   * The whole body's change of velocity, world, m/s, before its feet take
+   * any of it: `speed` of it, and which way. What shoves a body lying on
+   * the floor, where there are no feet to take anything.
+   */
+  push: THREE.Vector3;
+  /**
+   * How fast it throws the body up off the floor, m/s: the upward part of
+   * a club's blow (see `Weapon.rebound`). A blade's never does.
+   */
+  lift: number;
   /** Which way along the ground it drives: a horizontal unit vector, world. */
   dir: THREE.Vector3;
   /** How hard it tried to put the body over, as a speed to step out of, m/s. */
@@ -83,7 +118,7 @@ export interface Blow {
 
 export function emptyBlow(): Blow {
   return {
-    effect: "none", mass: 0, speed: 0, knock: new THREE.Vector3(),
+    effect: "none", mass: 0, speed: 0, knock: new THREE.Vector3(), push: new THREE.Vector3(), lift: 0,
     dir: new THREE.Vector3(), topple: 0, severity: 0, over: 1,
   };
 }
@@ -130,7 +165,11 @@ export function judgeBlow(
   impact: Impact, body: Footing, gravity: number, froude: number, out: Blow,
 ): Blow {
   out.mass = body.mass;
+  out.lift = 0;
+  const rebound = impact.weapon.rebound ?? 0;
+  if (rebound > 0) return carried(impact, body, gravity, froude, rebound, out);
   out.speed = blowSpeed(impact.blowMass, body.mass, impact.closingSpeed);
+  out.push.copy(impact.into).multiplyScalar(out.speed);
 
   // Along the ground: the line the blow drives in on, or failing that -- a
   // chop from straight above -- the way the blade was travelling.
@@ -145,7 +184,51 @@ export function judgeBlow(
     flat = 0;
   }
 
-  const sideways = out.speed * flat;
+  return settle(impact, body, gravity, froude, out.speed * flat, 0, out);
+}
+
+/**
+ * A club's blow: it comes back off the body along the line it drove in on,
+ * handing over up to twice the momentum there, and carries the body with it
+ * across that line -- so the body goes the way the club was going, and up
+ * if it was coming up. See `Weapon.rebound`.
+ */
+function carried(
+  impact: Impact, body: Footing, gravity: number, froude: number, rebound: number, out: Blow,
+): Blow {
+  const v = impact.bladeVelocity;
+  const into = impact.into;
+  const along = v.x * into.x + v.y * into.y + v.z * into.z;
+  const share = blowSpeed(impact.blowMass, body.mass, 1);
+  // Along the line it drove in on, bounced; across it, carried, as far as
+  // friction will.
+  const n = Math.max(0, along) * (1 + rebound) * share;
+  const ax = v.x - into.x * along;
+  const ay = v.y - into.y * along;
+  const az = v.z - into.z * along;
+  const across = Math.hypot(ax, ay, az);
+  const t = across > 1e-6 ? Math.min(CARRY * share * across, GRIP_OAK * n) / across : 0;
+  const dx = into.x * n + ax * t;
+  const dy = into.y * n + ay * t;
+  const dz = into.z * n + az * t;
+  out.push.set(dx, dy, dz);
+  out.speed = Math.hypot(dx, dy, dz);
+  const flat = Math.hypot(dx, dz);
+  if (flat > 1e-6) out.dir.set(dx / flat, 0, dz / flat); else out.dir.set(0, 0, 0);
+  // The floor holds up a body driven down into it; nothing holds one down.
+  out.lift = Math.max(0, dy);
+  return settle(impact, body, gravity, froude, flat, out.lift, out);
+}
+
+/**
+ * The rest of judging a blow, once it is known how fast it sends the body
+ * along the floor and up off it: what the feet take, what is left, and
+ * whether that staggers the body or puts it down.
+ */
+function settle(
+  impact: Impact, body: Footing, gravity: number, froude: number,
+  sideways: number, lift: number, out: Blow,
+): Blow {
   const net = body.grounded ? Math.max(0, sideways - footing(gravity)) : sideways;
   out.knock.copy(out.dir).multiplyScalar(net);
 
@@ -157,7 +240,7 @@ export function judgeBlow(
   out.topple = net * (1 + LEVER * Math.abs(off));
 
   const balance = balanceSpeed(body.build, gravity, froude);
-  out.severity = balance > 0 ? out.topple / balance : 0;
+  out.severity = balance > 0 ? (out.topple + LIFT_TOPPLE * lift) / balance : 0;
   out.effect = out.severity >= 1 ? "down"
     : out.severity >= STAGGER ? "stagger"
       : net >= BUDGE ? "shove" : "none";
