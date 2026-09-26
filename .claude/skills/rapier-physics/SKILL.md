@@ -131,7 +131,7 @@ brackets.
    with `setTranslation` and `setRotation` before their first step, then move
    them with `setNextKinematicTranslation` and `setNextKinematicRotation`
    (`pushKinematic` in `fighter.ts`). Nothing can push one back, so the posed
-   body parts meet only hostile blades (`hitOnlyFilter`), and a weapon nobody
+   body parts meet only other fighters' blades (`hitOnlyFilter`), and a weapon nobody
    is swinging switches to `inertBladeFilter` so they don't meet that either:
    a posed foot once fired a dropped spear across the room at 17 m/s. The gate
    is the one kinematic body that meets everything, as architecture does, and
@@ -176,26 +176,43 @@ brackets.
     `updateSceneQueries()`; do the same wherever you move things and cast
     before the next step. [The world's rays see nothing before it has
     stepped]
+14. **A point's velocity is the centre of mass's plus the spin about it.**
+    `linvel()` is the velocity of a body's centre of mass, not of its origin,
+    so a point's velocity is `linvel() + angvel() × (point − worldCom())`. A
+    weapon's origin is its grip and its centre of mass is 0.54 m up a sword,
+    0.79 m up an axe, so measuring from the origin once added about 11 m/s at
+    20 rad/s to every blow. Every speed threshold in the game (cut thresholds,
+    `DAMAGE_PER_MS`, clash knocks, how the AI reads a swing) is tuned against
+    the honest speeds, and the balance model judges a blow at `REACTION`
+    times its speed (`balance.ts`), the units its footing, balance and the
+    ogre's `heave` were set in; don't reintroduce the old measurement.
+    [A body's velocity is its centre of mass's]
 
 ## Collision groups
 
 Rapier keeps a collider's membership in the top 16 bits and its filter in the
 bottom 16, and two colliders touch only if each one's membership is in the
 other's filter. `physics.ts` spends the bits on `WORLD` (0x1), `PROP` (0x2)
-and one bit that every walking hull shares (0x4), then two per fighter: body
-and blade. That allows `MAX_FIGHTERS = 6`, and `makeSides` throws past it; a
-new kind of part that needs telling apart costs bits, so reuse a role below if
-one fits. Build every value with `groups(membership, filter)` or take it from a
+and one bit that every walking hull shares (0x4), then six body bits and six
+blade bits. Each fighter's body is a different three of the six body bits and
+its weapon a different three of the six blade bits, and a filter of the three
+it has not got meets every other fighter and never itself. There are twenty
+threes of six, so twenty fighters, and `makeSides` throws past that. A new kind
+of part that needs telling apart costs bits, so reuse a role below if one
+fits. Build every value with `groups(membership, filter)` or take it from a
 `Side`; never write one as a bare number. [The fifth fighter was one bit too
-many]
+many; The ninth fighter needed fewer bits each, not more]
 
-`makeSides(teams)` builds everyone's filters at once, because who is hostile
-to whom depends on the whole line-up. Use the filter for the part's role:
+`makeSides(teams)` builds everyone's filters at once. Friendly fire is on: a
+blade cuts every body but its owner's, whoever's side it is on, and
+`Side.team` is allegiance only, which the AI reads (`Ai.company`) and the
+filters do not. [Friendly fire took bits away] Use the filter for the part's
+role:
 
 | `Side` filter | Used for |
 |---|---|
 | `bodyFilter` | hittable body parts: trunk, head, arms |
-| `bladeFilter` | a weapon being swung: meets stone, props, every other blade and enemy bodies, but not its owner or allies |
+| `bladeFilter` | a weapon being swung: meets stone, props, every other blade and every other body, but not its owner |
 | `cuttableFilter` | the sweep's rays: what counts as flesh |
 | `shieldFilter`, `backShieldFilter` | a shield on the arm, and one slung on the back |
 | `inertBladeFilter` | a weapon nobody is swinging: floor, walls, props and other blades only |
@@ -222,22 +239,36 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
    `buildRig(overrides?, foeSpecies?, foeAt?)` (the player is always the
    swordsman at `SPAWN`), drives it with `rig.step(n, keys)`, `rig.fight(n)`,
    `rig.hold(n)`, `rig.pin(at)` or `rig.place(at)`, and reports with
-   `check(name, ok, detail)`, putting the measured numbers in `detail`. Then
-   call it from `run()`. Measure the thing itself: the README's five lessons
-   "about the harness rather than the game" are about checks that passed
-   because nothing happened, or because they leaned on a bug.
+   `check(name, ok, detail)`, putting the measured numbers in `detail`. A
+   rate, count or order of something the AI chooses at random is a
+   `tendency(name, ok, detail)` instead: give it enough samples that luck
+   alone sinks it on well under one seed in a hundred. Then add the function
+   to `GROUPS`, just above `run()`. Measure the thing itself: the
+   README's five lessons "about the harness rather than the game" are about
+   checks that passed because nothing happened, or because they leaned on a
+   bug.
 5. Run `npm run typecheck` yourself. Run the harness (`npm run smoke`) the
    way CLAUDE.md says: through the `smoke-tester` agent, in the background.
    It runs the real modules against Rapier in Node for a few minutes, prints
-   `passed/total checks passed`, and exits non-zero on any failure. It can't
-   run a single group; to iterate on one, comment out the other calls in
-   `run()`, and put them back before committing.
-6. The AI, the way a body falls when it dies and the spin of a severed dummy
-   limb all use unseeded `Math.random()`, and a physics check that follows a
-   fight starts from wherever the fight left things, so the same code can fail
-   different checks on different runs. Read the numbers in a failure's
-   detail, run it again, and compare with a run without your change before
-   deciding a failure is yours; don't loosen a threshold to get a pass.
+   `passed/total checks passed`, and exits 1 when a rule fails and 2 when
+   only tendencies miss. `SMOKE_ONLY=<group> npm run smoke` runs just that
+   group, to iterate on it: each group rolls its own dice, so on its own it
+   gives exactly what it gives in the full run.
+6. The harness's dice are loaded: `tools/dice.ts` replaces `Math.random` with
+   a seeded generator, so the same code gives the same result on every run,
+   and running it again tells you nothing new. The seed is printed at the top
+   of the log and on its last line, and `SMOKE_SEED=<n> npm run smoke` repeats
+   a run exactly, or rolls other dice. The AI, the way a body falls when it
+   dies and the spin of a severed dummy limb all roll them, and a physics
+   check that follows a fight starts from wherever the fight left things, so a
+   change that rolls differently, or moves anything a fight touches, deals the
+   rest of that group different dice, and a check that fails on some dice can
+   turn over without being broken. A rule that fails (`FAIL`) is a bug on any
+   seed. A tendency that misses (`MISS`) may be the dice: `npm run
+   smoke:seeds -- --groups <group> --against HEAD` runs its group on ten
+   seeds with your change and without it, and says whether it misses more
+   often with it. Don't loosen a threshold to get a pass; a tendency luck
+   sinks too often needs more samples.
 7. If the feel changed, say what to try in the browser (`npm run dev`). The
    harness measures; it can't feel.
 
@@ -251,10 +282,10 @@ place. An invisible collider still blocks a ray, so give every ray a filter.
 | A weapon is as hard to roll in the hand as to swing | Rapier left to add up a multi-part body's inertia (rule 4) |
 | A blade passes through a thin post | no CCD on that body |
 | A fast cut scores almost no damage | velocity read after the step instead of the snapshot |
-| A spinning blade's measured speed looks wrong | `Arm.velocityAt` and `Arm.sampleTip` measure from the grip, not the weapon's centre of mass; see "Bodies and forces" in the reference |
+| A turning weapon's speeds come out too high | a point's velocity measured from the body's origin, not its centre of mass (rule 14) |
 | A limb shoots toward its anchor on a reset or a draw | a joint created across a gap |
 | A fighter ends up a metre from where it was put | the hull was moved on its own |
-| Something posed shoves the room or launches props | a kinematic body meeting more than hostile blades, or not placed before its first step |
+| Something posed shoves the room or launches props | a kinematic body meeting more than other fighters' blades, or not placed before its first step |
 | A mesh judders on a fast monitor | the mesh is written outside the Interpolator |
 | A joint motor can't lift what it joins | Rapier's acceleration-based motors scale by the two joined bodies only; `ragdoll.ts` uses force-based motors with torques worked out from the anatomy |
 | Two springs on a ball joint circle each other | Rapier reads a ball joint's angles off its quaternion; use a velocity servo on a proper error, as `Arm.applyGrip` does |

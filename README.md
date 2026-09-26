@@ -77,7 +77,7 @@ knee up onto it.
 ```
 npm install
 npm run dev      # http://localhost:5173
-npm run smoke    # headless physics harness — 435 checks, no browser needed
+npm run smoke    # headless physics harness — 444 checks, no browser needed
 npm run build    # production bundle
 ```
 
@@ -286,6 +286,11 @@ damage = (closing speed − threshold) × bite alignment² × sweet spot
   pace. Without it a spear thrust arriving at 4 m/s scored two points of damage
   and the goblin was decoration.
 
+All of it comes to 1.47 points of damage per metre a second past the threshold,
+for a sword's edge square on at its percussion point — the number that put the
+damage back where it was once a weapon's speed was measured about its centre of
+mass (see *A body's velocity is its centre of mass's*, below).
+
 There is no light attack or heavy attack. The only way to raise the number is to
 swing faster, with the edge leading, and connect on the right part of the weapon
 — which is to say, to actually cut properly.
@@ -293,13 +298,15 @@ swing faster, with the edge leading, and connect on the right part of the weapon
 ### A sword stops where it lands
 
 A blade collides with a body the way it collides with stone and with another
-blade: the other team's bodies, and the practice dummy. A cut lands on the first
-thing it meets and stops there. An arm held across a chest takes the blow the
-chest would have taken, a shield takes it before either, and a blade that meets
-a hip does not carry on into the ribs. An ally's body it still passes through,
-and so does a weapon nobody is swinging — in the hand of someone lying on the
-floor, or on an arm that has come off: it lies on the stone and meets other
-blades, and bodies step over it.
+blade: anybody's body but its owner's, and the practice dummy. A cut lands on
+the first thing it meets and stops there. An arm held across a chest takes the
+blow the chest would have taken, a shield takes it before either, and a blade
+that meets a hip does not carry on into the ribs. Whose side the body is on
+does not come into it: an orc's axe cuts the orc beside it as readily as it
+cuts you (see [beside a friend](#beside-a-friend)). A weapon nobody is swinging
+passes through bodies — in the hand of someone lying on the floor, or on an arm
+that has come off: it lies on the stone and meets other blades, and bodies step
+over it.
 
 For a long time it was the other way round, and for a good reason. Modelling
 flesh as something a blade collides with means the solver brakes the blade the
@@ -382,7 +389,7 @@ The orc does not have a stagger resistance. It has 173 kilos. It is also why
 *committed to everything it starts* is literal: a stagger is the only way to
 take a swing off something once it has begun, nothing you can swing moves an
 orc that far, and a goblin's thrust you can knock clean out of it. The other way
-round, the orc's axe staggers you about one blow in three and now and then puts
+round, the orc's axe staggers you about one blow in ten and now and then puts
 you on the floor, and the goblin's spear, with under three kilos behind it, has
 never moved anyone.
 
@@ -418,17 +425,16 @@ from a blade of the same weight and speed, all in
   back. A club's upward part is lift, and a body lifted has nothing under it to
   step out of the rest with, so lift counts against balance as a shove does.
 
-And the ogre puts itself behind it: a tenth of its 317 kilos, on top of its arm
-and the club, makes 54 kilos of blow, against 11 behind the orc's axe and 5.6
-behind your sword. When that puts you down, all of you goes together — the
+And the ogre puts itself behind it: a quarter of its 317 kilos, on top of its
+arm and the club, makes 102 kilos of blow, against 11 behind the orc's axe and
+5.6 behind your sword. When that puts you down, all of you goes together — the
 chest, the hips, the legs, the arm and the sword in it are all given the same
 kick — so you go up and over as one body, rather than having your chest
 snatched out from under your legs. Swung up through you in the harness's cell,
-it puts you on the floor half a dozen times in under a minute, throwing you
-as far as three to six metres, and you get up again with everything still on.
-In half a minute of an ordinary fight it floors you five to eight times and
-takes more than half your health. A kobold's hatchet has yet to put anybody
-down.
+it puts you on the floor half a dozen times in under a minute, throwing you as
+far as three to six metres, and you get up again with everything still on. In
+half a minute of an ordinary fight it floors you five to eight times and takes
+more than half your health. A kobold's hatchet has yet to put anybody down.
 
 ### Weapons meeting
 
@@ -540,13 +546,22 @@ on a waist that bends, the legs simulated, the neck hanging on a range. But it
 is not a dead one. It goes over **braced**: soft motors in the waist, hips and
 knees hold it more or less straight, so it goes over as a body rather than
 folding up where it stood, and they let go a quarter of a second after it lands.
-Then it lies limp. Before it gets up it **pulls itself together** on the same
-motors — the waist straightens under the chest and a knee draws up — and then
-the ragdoll is taken apart, and what gets up is the hull: the chest, which
-never stopped being it, with the hips and legs drawn out of how they lay into
-the living pose over the first quarter of a second, so nothing jumps. The
-walking capsule stays off until it is on its feet, since lying along the chest
-it would come back on half in the floor.
+Then it lies limp — you as much as anything you knock down.
+
+It gets up **only off the floor**: once it has come down and lain still there,
+never in the air however long it has been over, nor while it is still rolling.
+Then it **pulls itself together** on the same motors — the waist straightens
+under the chest and a knee draws up — and the ragdoll is taken apart, and what
+gets up is the hull: the chest, which never stopped being it, with the hips
+and legs drawn out of how they lay into the living pose over the first quarter
+of a second, so nothing jumps. It **rolls up onto its feet into a crouch**,
+bowed over them with its knees up, and stands up out of it: a second and a
+fifth at your size, upright a little over halfway through, so the last of it
+is a body straightening its legs rather than one still coming round. Face down,
+the crouch comes later — its knees go forward, and forward is the floor. It
+used to be two thirds of a second of the whole body turning up stiff about its
+feet: a plank stood on its end. The walking capsule stays off until it is on
+its feet, since lying along the chest it would come back on half in the floor.
 
 Down, it is still a body. The hips on the floor can be cut, a blow to it moves
 the piece it lands on and drags the rest after it, and knocked flat again on
@@ -1554,7 +1569,50 @@ be sidestepped. The orc has the same jump, and uses it (see
 It also means a hard swing in mid-air visibly shoves you sideways. A 420N drive
 against an 82kg body moves it, and in the air there is no friction to argue.
 
-## Seventy-two things the physics taught us
+### Beside a friend
+
+A blade cuts whoever it lands on, and two of them fighting you together could
+cut each other as easily as you. They keep out of each other's way:
+
+- **Each keeps its friends out of the circle its weapon sweeps.** It steps
+  round you away from one that is inside it, before anything else it might do
+  with its feet, comes in on a slant away from one, and steps out from beside
+  one while its guard comes back up after a swing. Two of them end up coming
+  at you from two sides, not shoulder to shoulder.
+- **It looks along a swing before it lets it go, and as it goes.** Every step
+  of the wind-up and of the swing it looks along the rest of it — where the
+  weapon is taken back to, the swing itself, and on past its end, where an
+  axe thrown through you carries — for a friend's body or arms. One in the
+  way, and it lets the swing go and goes round you a moment instead; one come
+  into it as it goes, and it checks it.
+- **It does not spin, or show you its weapon, with a friend in reach.**
+
+So it is rare, and it happens: two orcs, or three goblins, that fight you for
+a while cut each other now and then. And a friend in the way is a swing that
+is not thrown: put one of them between you and the other.
+
+### Sides
+
+Everything in the rooms is on a side (`Faction`, in
+[`species.ts`](src/game/species.ts)): the orcs, the goblins and the ogre are
+greenskins, and the kobolds are on their own, against the greenskins as much as
+against you. Each goes for whichever of another side it sees first, you or one
+of them, and then:
+
+- **It keeps on whoever it is fighting** while it has them in sight, unless
+  something else of another side comes a good deal nearer — half the distance
+  — when it turns on that instead.
+- **It turns on whoever lands a blow on it**, as soon as it has finished the
+  swing it is in, and stays on them for three seconds whatever else lands on
+  it. Cut an orc that is busy with a kobold and you have its attention.
+- **Having killed whatever it was fighting**, with nothing else in sight, it
+  goes home.
+
+Let the kobolds out while the orcs are loose in the hall and they go for each
+other. The fight panel says whom one is fighting when it is not you. Fish
+people and wildlife, when they come, are a side each.
+
+## Seventy-eight things the physics taught us
 
 Findings from building this, kept because each one cost real debugging time and
 each is a trap anyone rebuilding this would fall into.
@@ -2221,10 +2279,11 @@ set of bits that nobody else's set sits inside. Every fighter's body is three
 of six body bits now, and its weapon three of six weapon bits — there are
 twenty ways to pick three of six, and no three sits inside another — so a
 filter of the three it has not got meets every other three and never its own.
-Which side a weapon cuts comes out of the same bits: yours all have the first
-bit and theirs never do, so every one of theirs has a bit that nobody on your
-side has, and a filter of the bits your side lacks catches all of their side
-and none of yours. Fifteen bits hold eleven fighters, one against ten.
+Which side a weapon cut came out of the same bits, then: yours all had the
+first bit and theirs never did, so every one of theirs had a bit that nobody
+on your side had, and a filter of the bits your side lacked caught all of
+their side and none of yours. Fifteen bits held eleven fighters, one against
+ten.
 
 **A vault that rises from its first step never gets a hand on the top.** The
 first vault drove the body along one curve from where it stood, up, over and
@@ -2253,6 +2312,89 @@ and measured at your chest, with its short arm reaching up for it, its reach
 came out at half a metre: it stood on your toes to swing, and hacked at you on
 the way back as much as on the way through. Reach is measured now at whichever
 of your head, your middle and your legs a creature goes for most.
+
+**A body's velocity is its centre of mass's.** Rapier's `linvel()` is how fast
+a body's centre of mass is going, and a point on it goes at that plus the spin
+about the centre of mass. Every speed on a weapon — where a blow landed, how
+fast the tip was going — was worked out with the spin about the grip instead,
+where the weapon's body has its origin, and a sword's centre of mass is 54
+centimetres up the blade, an axe's 79. So every point of a turning weapon was
+given its centre of mass's swing a second time: eleven metres a second on the
+sword at 20 rad/s, all of it along the swing. Across every blow in the harness
+the blades had arrived at about two thirds of the speed they were scored at,
+and the slowest "hits" were mostly a blade resting on something while the arm
+turned. Measured honestly, the same swings did half the damage, cut a third
+less often and shoved a third less hard, and an opponent saw a third of the
+cuts coming at it. Everything set against those speeds was fitted again to the
+same seven thousand blows on flesh, nine hundred clashes and eighty-nine
+thousand looks at a blade coming: each weapon's threshold and bite, so that as
+many of its blows get past the one and it does as much in all (a spear, whose
+point barely turns in a thrust, lost least, and now draws blood more often and
+less each time); when a weapon is knocked aside, and how hard; when an opponent
+reads a swing, stops one or leads it. Balance was put back the way damage was,
+with one number: a body takes a blow at one and a half times the speed its
+momentum hands it (`REACTION` in [`balance.ts`](src/game/balance.ts)), the
+speed everything in the balance model was set against — what planted feet soak
+up, what budges a body, how far a shove carries it, when it staggers or goes
+down, and what a club throws it up with. Fitting the Froude number alone, as
+was tried first, left the feet soaking up the same speed of every blow, a
+bigger share of a slower one: an orc's axe rocked you about half as often as
+it had, a swordsman's hardly ever, and the ogre, given a quarter of itself
+behind its club where it had a tenth so that its upswing still lifted you as
+high, put you down two fifths more often. A throw had it right all along: it leaves at the
+palm's speed about the forearm's centre of mass. The blade speeds quoted
+elsewhere in this document were measured about the grip, and most are half as
+high again as the blade was really going.
+
+**Friendly fire took bits away.** "Everyone's but mine" was always the easy
+half of the collision filters; "their side's and not mine" was the hard half.
+Every fighter needed a bit that nobody on any other side had, the threes had
+to be searched for, and a third side could not always be fitted in at all. A
+blade cuts whoever it lands on now, so which side anyone is on is the
+opponents' business — who they fight, and who they fight beside — and not the
+filters', and twenty threes of six are twenty fighters, on as many sides as
+they like.
+
+**Two that each swing when their moment comes cut each other as often as they
+cut you.** Let out of the pen together with friendly fire and nothing else,
+the two orcs landed eleven to twenty-five blows on each other in nine seconds,
+as many as on you. Looking along a swing once, before it was thrown, took most
+of that away and not the rest: the aim follows you while the weapon goes back,
+you and they both move, and the blade goes on past where the arm sent it. It
+is looked along every step of the wind-up and of the swing now, on past its
+end by a third of the swing again, for a friend's arms as well as its body —
+an arm swinging an axe sticks out a metre past the body swinging it — and a
+swing a friend has come into is checked. Even then most of what was left was
+not a swing at all: an axe held out at guard, carried round into a friend's
+hip as the orc turned after you. So each keeps its friends out of the circle
+its weapon sweeps, and does not spin or flourish its weapon with one inside
+it. Over forty seeds of three twenty-five-second fights — two orcs abreast,
+two in file, three goblins — they cut each other once at most, against 112 to
+233 blows on you, and the two orcs came at you 90 to 153 degrees apart round
+you where they had come 24 to 111.
+
+**An opponent put down with its back to a wall starts the fight with its
+weapon in it.** An arm is laid out the way a fighter faces when it is made,
+and that is along −Z, whichever way it is turned a moment later. The harness
+put an orc down a metre north of the hall's south wall, turned to face you,
+and its axe was already through the stone behind it: it spent twenty-five
+seconds pulling at it, and its friend, fighting you alone, made the pair look
+shoulder to shoulder in two runs of forty. The fights with friends in them are
+out in the middle of the floor.
+
+**Turning on whoever hit it last fought nobody.** An orc with you on one side
+and a kobold on the other turned on each blow as it landed, and spent the
+fight turning round. It stays on whoever turned it round for three seconds
+now, whatever else lands on it. And a blow from whoever it is fighting already
+changes nothing: the kobold's next blow, landing while the orc finished a
+swing at it, used to cancel the turn round to you that your blow had asked
+for.
+
+**Getting up after a set time gets up in the air.** A body counted as lying
+once it had tipped far enough over, or been over long enough, and got up a
+set time after that. Thrown up off the floor as it went over, as the ogre's
+club throws you, a goblin began to get up with its chest 0.6 m in the air and
+going at 2 m/s. It waits to be lying still on something now.
 
 ## Tuning
 
@@ -2325,14 +2467,20 @@ Some things look like bugs and are not:
 - **Swinging pushes you around.** A 420N drive against an 82kg body moves it, so
   a hard swing walks you half a metre off your mark. In mid-air, with nothing to
   brace against, it moves you considerably further.
-- **The orc and the goblin never cut each other.** Their weapons pass through
-  their own team. Friendly fire would be excellent and it is not here yet.
+- **They can cut each other.** A blade cuts whoever it lands on, and two of
+  them fighting you together keep out of each other's way rather than being
+  kept from cutting each other (see [beside a friend](#beside-a-friend)). Now
+  and then one does not, and a friend in the way of a swing is a swing that is
+  not thrown.
 - **Backing into a wall fades you out.** The camera sits three metres behind
   you and a wall that close leaves it inside the stone, looking at the outside
   of the room. It is pulled in to the wall instead, and your own body — then,
   closer still, your arm — fades so that what you can see is the room rather
   than your own shoulder. Step forward and you come back.
 - **An opponent in another room ignores you.** It has not seen you. Walk in.
+- **Kobolds and greenskins fight each other.** Each goes for whichever of
+  another side it sees first, and you are one more of those (see
+  [sides](#sides)).
 - **An opponent that loses you goes to look, then goes home.** It walks to
   where it last saw you, a little further the way you were going, and looks
   round. It does not know where you went, only where you were. If it finds
@@ -2501,7 +2649,7 @@ src/
                      bites -- or, for a club, how far it comes back off you --
                      and inertia
     species.ts       the bestiary — a size, a weapon, the shapes of swing it
-                     knows, and what it looks like
+                     knows, what it looks like, and whose side it is on
     look.ts          faces, clothes, harness, helm, tail and claws: what a
                      creature wears over its shells, and the woven, grained,
                      mottled and scaled surfaces they are made of
@@ -2542,7 +2690,8 @@ src/
                      takes hold of and pulls down until it catches
     combatant.ts     a fighter, their arm, and what a cut or a blow does to them
     ai.ts            the opponent's brain — mouse deltas and your keys, nothing
-                     more; and what it does about a noise it hears
+                     more; what it does about a noise it hears; and keeping
+                     out of its friends' way
     cutting.ts       swept-segment hit detection: the backstop for a blade already inside someone
     dummy.ts         the practice dummy, and how it comes apart
     damage.ts        the damage curve
@@ -2559,10 +2708,38 @@ tools/smoke.ts       headless harness driving the real modules
 ```
 
 `npm run smoke` runs the real `Arm`, `Fighter`, `Arena`, `Dummy`, `Combatant`
-and `Ai` against Rapier in Node — no WebGL, no browser, 435 checks in a few
+and `Ai` against Rapier in Node — no WebGL, no browser, 444 checks in a few
 minutes. It asserts the claim the design rests on: that the arm tracks the mouse
 closely when free and *fails to* when blocked. If the second ever stops failing,
 the mechanic is gone.
+
+The dice the game rolls are loaded there. The AI rolls `Math.random()` for
+nearly everything it decides, a body rolls for the way it falls when it dies
+and a severed limb for its spin, and a check that follows a fight starts from
+wherever the fight left things: with real dice the same code failed one check
+on one run and four on the next. `tools/dice.ts` puts a seeded generator in
+its place before anything else is loaded, and starts it again at the head of
+every group of checks, from the seed and the group's name. The same code gives
+the same result on every run, to the last digit of every measurement, and a
+group rolls the same wherever it runs: first, last, or on its own. The seed is
+printed at the top of the log and on its last line, and `SMOKE_SEED=7 npm run
+smoke` rolls another set.
+
+So there are two kinds of check. Most are rules: no NaN, no blade through
+stone, never your own sword in you, every swing drawn back for. They hold
+whatever the dice, and one that fails on any seed at all is a bug. The rest
+are tendencies, marked `~` in the log: what the AI does often enough — the
+orc's leap lands three times in five, the goblin quick-steps more than the
+swordsman — taken over the random choices it makes in a fight. Even a sound
+one misses on the odd seed, since anything that changes what is rolled, or
+when, or how anything in a fight moves, deals the rest of its group different
+dice. So each takes enough samples that luck alone should sink it on well
+under one seed in a hundred, and a miss (`MISS`, not `FAIL`) is weighed
+across seeds rather than read off one run: `npm run smoke:seeds -- --groups
+<group> --against HEAD` runs a group on seeds 1 to 10 with the change and
+without it, and says whether anything does worse. A tendency that misses too
+often on luck gets more samples, never a lower bar. `SMOKE_ONLY=<group> npm
+run smoke` runs one group, which gives exactly what it gives among the rest.
 
 It also drives a real scripted swing all the way through to a severed limb,
 takes a fighter apart and checks that a reset puts it back together — measuring
@@ -2759,7 +2936,7 @@ it a fast tip tunnels straight through the thin post.
 
 ## What's next
 
-Rounds and a reason to be in the rooms. Friendly fire. A thrown
+Rounds and a reason to be in the rooms. A thrown
 axe that cuts, and a thrown head that staggers whoever it hits. A scabbard or a belt
 for what you take off someone, so the orc's axe can go on you rather than in a
 bag. A shield for an opponent, and the second hand a spear actually

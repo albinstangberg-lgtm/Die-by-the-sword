@@ -1,0 +1,77 @@
+# Typecheck and the smoke suite, on every pull request and on every push to the
+# default branch. For a pull request GitHub checks out the branch as it would be
+# merged, so what is tested is the change on top of everything already merged.
+#
+# The smoke suite has two kinds of check (see tools/smoke.ts). A rule that
+# fails is a bug, and fails the job. A tendency that misses on the default seed
+# proves nothing on its own, so its group is run on seeds 1 to 10 with the
+# change and without it, and the job fails only if it misses more often with.
+name: smoke
+
+on:
+  pull_request:
+  push:
+    # The default branch. GitHub can't be asked for it here, so it is named.
+    branches: [claude/bold-pascal-0qri5z]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: typecheck and smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: smoke, on the default seed
+        id: smoke
+        run: |
+          set +e
+          npm run -s smoke 2>&1 | tee smoke.log
+          code=${PIPESTATUS[0]}
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          # 2 is only tendencies missing, which the next step weighs.
+          if [ "$code" = 2 ]; then exit 0; fi
+          exit "$code"
+      - name: a tendency missed -- does it miss more often with the change?
+        if: steps.smoke.outputs.code == '2'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          groups=$(sed -n 's/.*npm run smoke:seeds -- --groups \([^ ]*\) --against HEAD.*/\1/p' smoke.log | tail -n 1)
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
+          npm run -s smoke:seeds -- --groups "$groups" --seeds 1-10 --against "$BASE"
+
+  seeds:
+    # Every group on eight seeds, with the change and without it: a rule that
+    # fails on some seed the default doesn't roll, or a tendency that misses
+    # more often than it did. Slower, so its own job.
+    name: seeds 1 to 8, against the base
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: every group, seeds 1 to 8
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = 0000000000000000000000000000000000000000 ]; then BASE=HEAD~1; fi
+          npm run -s smoke:seeds -- --seeds 1-8 --against "$BASE"

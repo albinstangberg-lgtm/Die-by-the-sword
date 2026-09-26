@@ -59,6 +59,19 @@ const STAGGER = 0.4;
  */
 const BUDGE = 0.15;
 /**
+ * How much of a blow a body takes, against the speed its momentum hands it.
+ * Everything in here -- what the feet soak up, what budges a body, how far a
+ * shove carries it, a body's balance, and what a club throws it up with --
+ * was set against a weapon's speed measured about its grip, half as fast
+ * again as it goes (see `Arm.velocityAt`). Measured honestly, with only
+ * `Tuning.balance` and the ogre's heave fitted again, the feet soaked up half
+ * as much again of every blade's blow -- the orc's axe rocked you a quarter
+ * less often and the swordsman's sword hardly ever -- while the ogre, fitted
+ * by how high it lifts you, put you down two fifths more often. As
+ * `DAMAGE_PER_MS` puts back what a cut does, this puts back what a blow does.
+ */
+const REACTION = 1.5;
+/**
  * How much harder a blow is to stand up to, per body-centre-height it lands
  * off the middle. A rigid body says far more than this -- people are not
  * rigid, and a neck and a pair of knees give.
@@ -168,7 +181,7 @@ export function judgeBlow(
   out.lift = 0;
   const rebound = impact.weapon.rebound ?? 0;
   if (rebound > 0) return carried(impact, body, gravity, froude, rebound, out);
-  out.speed = blowSpeed(impact.blowMass, body.mass, impact.closingSpeed);
+  out.speed = blowSpeed(impact.blowMass, body.mass, impact.closingSpeed * REACTION);
   out.push.copy(impact.into).multiplyScalar(out.speed);
 
   // Along the ground: the line the blow drives in on, or failing that -- a
@@ -199,7 +212,7 @@ function carried(
   const v = impact.bladeVelocity;
   const into = impact.into;
   const along = v.x * into.x + v.y * into.y + v.z * into.z;
-  const share = blowSpeed(impact.blowMass, body.mass, 1);
+  const share = blowSpeed(impact.blowMass, body.mass, REACTION);
   // Along the line it drove in on, bounced; across it, carried, as far as
   // friction will.
   const n = Math.max(0, along) * (1 + rebound) * share;

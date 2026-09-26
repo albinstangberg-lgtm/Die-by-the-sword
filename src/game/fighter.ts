@@ -347,11 +347,11 @@ const SWING = 0.3;
 const RECOIL_MAX = 4;
 /**
  * On the floor, before it starts to get up, seconds -- counted from when it
- * is lying there, not from the blow, since a fall takes as long as it takes.
- * The first `LAND_TIME` of it is spent landing, and the last `GATHER_TIME`
- * pulling itself together; in between, it is limp.
+ * is lying still there (see `SETTLED`), not from the blow, since a fall and a
+ * roll take as long as they take. The last `GATHER_TIME` of it is spent
+ * pulling itself together; before that, it is limp.
  */
-const LIE_TIME = 0.8;
+const LIE_TIME = 0.6;
 /** Lying is the chest's long axis within this cosine of flat: fifty degrees over. */
 const FLOORED = 0.64;
 /** Propped against a wall, it counts as lying after this long anyway. */
@@ -378,8 +378,35 @@ const BRACE_LEG = { hip: 0.1, knee: 0.15 } as const;
  */
 const GATHER_TIME = 0.3;
 const GATHER_RATE = 14;
-/** Getting up, seconds. */
-const RISE_TIME = 0.65;
+/**
+ * Lying still enough to get up is the chest going slower than this, m/s at
+ * human size. A body thrown through the air is not on the floor however long
+ * it has been over, and one still tumbling along it is not lying there yet;
+ * one rocking where it lies is. See `settled`.
+ */
+const SETTLED = 1.0;
+/**
+ * A body that never comes to rest -- jammed against something, and shaking
+ * -- gets up anyway after this long down, seconds.
+ */
+const RESTLESS = 4;
+/**
+ * Getting up, seconds: rolled up onto its feet over the first `RISE_UP` of
+ * it, crouched and bowed over them, and stood up out of the crouch over the
+ * rest.
+ *
+ * It used to be two thirds of a second of the whole body, stiff, turning up
+ * about its feet: a plank stood on its end, fast enough to read as a snap.
+ */
+const RISE_TIME = 1.2;
+const RISE_UP = 0.6;
+/**
+ * How deep the crouch it comes up through is, metres at human size, and how
+ * far over it bows: deeper than a crouch you walk in, since this one is a
+ * body gathering itself over its feet.
+ */
+const RISE_SINK = 0.42;
+const RISE_LEAN = 0.45;
 /**
  * Over the first this-long of getting up, seconds, the hips and legs are drawn
  * from where they lay limp to where the living figure poses them, so what was
@@ -632,6 +659,8 @@ export class Fighter {
   private stanceTime = 0;
   /** Seconds it has been lying on the floor, once it gets there. */
   private lying = 0;
+  /** Seconds it has lain still there: what getting up waits on. See `SETTLED`. */
+  private settled = 0;
   /**
    * What blows have added to the velocity the feet are asked for, world,
    * m/s: horizontal, and spent at the rate stumbling feet can spend it.
@@ -658,6 +687,13 @@ export class Fighter {
   private gathering = false;
   /** How far the feet sink over a rise: from where the lying body left them to the floor. */
   private riseDrop = 0;
+  /**
+   * How face down it lay, 0 on its back or its side to 1 on its face: a body
+   * face down comes up through its crouch later, or its knees would go into
+   * the floor on the way. And the pose it comes up through: see `rise`.
+   */
+  private riseProne = 0;
+  private readonly riseMove: Move = emptyMove();
   /**
    * How much of the pose it lay in is left to show, 1 just up off the floor
    * and 0 once the living pose has it all: see `easeFromLimp`.
@@ -1784,6 +1820,7 @@ export class Fighter {
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
+    this.settled = 0;
     this.reel = 0;
     this.knock.set(0, 0, 0);
 
@@ -1828,6 +1865,7 @@ export class Fighter {
     this.stance = "down";
     this.stanceTime = 0;
     this.lying = 0;
+    this.settled = 0;
     this.reel = 0;
     this.knock.set(0, 0, 0);
     for (const part of this.parts) {
@@ -1943,13 +1981,21 @@ export class Fighter {
       // How upright the chest still is: the height of its long axis.
       const r = this.body.rotation();
       const upright = 1 - 2 * (r.x * r.x + r.z * r.z);
-      if (upright < FLOORED || this.stanceTime > FALL_MAX * pace) this.lying += dt;
+      const floored = upright < FLOORED || this.stanceTime > FALL_MAX * pace;
+      if (floored) this.lying += dt;
       // Down and landed: let go, and lie there as a body lies.
       if (this.braced && this.lying >= LAND_TIME * pace) {
         this.braced = false;
         ragdoll.relax();
       }
-      if (!this.gathering && this.lying >= (LIE_TIME - GATHER_TIME) * pace) {
+      // And it gets up only from the floor, lying still on it: not in the air,
+      // however long it has been over, and not while it is still rolling. Once
+      // it has started pulling itself together it is committed to getting up.
+      const v = this.body.linvel();
+      const still = Math.hypot(v.x, v.y, v.z) < SETTLED * pace || this.stanceTime > RESTLESS * pace;
+      if (this.gathering) this.settled += dt;
+      else this.settled = floored && still ? this.settled + dt : 0;
+      if (!this.gathering && this.settled >= (LIE_TIME - GATHER_TIME) * pace) {
         this.gathering = true;
         const legs = this.legs.map((l) => {
           const [hip, knee] = l.sign > 0 ? SPRAWL_NEAR : SPRAWL_FAR;
@@ -1957,13 +2003,14 @@ export class Fighter {
         });
         ragdoll.drive(legs, GATHER_RATE / pace);
       }
-      if (this.lying >= LIE_TIME * pace) this.beginRise();
+      if (this.settled >= LIE_TIME * pace) this.beginRise();
       else return;
     }
     if (this.stance === "rising") this.rise(dt, RISE_TIME * pace);
     this.unlimp = Math.max(0, this.unlimp - dt / (UNLIMP_TIME * pace));
 
-    this.posture.update(null, null, this.yaw, this.body.translation(), t, dt);
+    this.posture.update(null, null, this.yaw, this.body.translation(), t, dt, 0, 0, 0, null,
+      this.stance === "rising" ? this.riseMove : null);
     this.applyPosture();
     this.poseLegs(false, dt);
     this.holdPose(dt);
@@ -1997,6 +2044,10 @@ export class Fighter {
     const r = this.body.rotation();
     this.riseFrom.set(r.x, r.y, r.z, r.w);
     this.riseTo.setFromAxisAngle(UP, this.yaw);
+    // Which way its front faces: up, lying on its back, or down on its face.
+    this.riseProne = Math.max(0, -_extra.set(0, 0, -1).applyQuaternion(this.riseFrom).y);
+    this.riseMove.lean = 0;
+    this.riseMove.sink = 0;
     const p = this.body.translation();
     const half = this.build.hull.height / 2;
     this.risePivot.set(0, -half, 0)
@@ -2063,9 +2114,20 @@ export class Fighter {
    * and the head and arms are carried up by their joints rather than
    * teleported with it. It pivots about its feet, which sink from where the
    * lying hull holds them -- a hull's radius off the floor -- to the floor.
+   *
+   * It is upright once `RISE_UP` of the way through, and crouched over its
+   * feet, bowed, with its knees up: the crouch comes on as it rolls up and
+   * goes as it stands. Face down, the crouch waits until it is most of the way
+   * up -- the knees go forward, and forward is the floor.
    */
   private rise(dt: number, duration: number): void {
-    const s = smoothstep(0, 1, Math.min(1, this.stanceTime / duration));
+    const through = Math.min(1, this.stanceTime / duration);
+    const s = smoothstep(0, RISE_UP, through);
+    const prone = this.riseProne;
+    const fold = smoothstep(0.6 * prone, 0.5 + 0.45 * prone, s)
+      * (1 - smoothstep(RISE_UP, 1, through));
+    this.riseMove.sink = RISE_SINK * this.build.scale * fold;
+    this.riseMove.lean = RISE_LEAN * fold;
     const q = _qRise.slerpQuaternions(this.riseFrom, this.riseTo, s);
     const target = _pRise.set(0, this.build.hull.height / 2, 0).applyQuaternion(q)
       .add(this.risePivot);
@@ -2089,7 +2151,7 @@ export class Fighter {
     }
     this.body.setAngvel({ x: spin.x, y: spin.y, z: spin.z }, true);
 
-    if (this.stanceTime >= duration) this.stand();
+    if (through >= 1) this.stand();
   }
 
   /** On its feet: upright, locked, facing where it faced, and in charge of its legs again. */
@@ -2931,6 +2993,9 @@ export class Fighter {
     this.stance = "up";
     this.stanceTime = 0;
     this.lying = 0;
+    this.settled = 0;
+    this.riseMove.lean = 0;
+    this.riseMove.sink = 0;
     this.knock.set(0, 0, 0);
     this.reel = 0;
     this.sprawl = 0;

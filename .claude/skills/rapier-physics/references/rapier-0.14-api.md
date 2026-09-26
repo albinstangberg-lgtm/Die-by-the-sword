@@ -89,14 +89,16 @@ hull.setLinvel({ x: 1, y: hull.linvel().y, z: 0 }, true);
   gives it the velocity that pushes dynamic bodies.
 - There is no `velocityAtPoint` in 0.14. A point's velocity is
   `linvel() + angvel() × (point − worldCom())`: `linvel()` is the velocity of
-  the centre of mass, not of the body's origin (`translation()`). `Arm.drive`
-  gets the hand right because the forearm's centre of mass is its origin.
-  `Arm.velocityAt` and `Arm.sampleTip` measure from `blade.translation()`, the
-  grip, while a weapon's centre of mass is out along it (0.54 m on the sword,
-  0.79 m on the axe), so while the weapon turns the speeds they report are off
-  by its spin times that distance. Every hit speed and damage number the game
-  has been tuned on came from them, so correcting that is a change of its own,
-  with re-tuning.
+  the centre of mass, not of the body's origin (`translation()`). The bodies
+  whose centre of mass is off their origin are the weapon (0.54 m up a sword,
+  0.79 m up an axe, 0.56 m up a spear), the hull (13 to 20 cm up, which is
+  harmless while it only turns about Y) and a forearm with a shield on it
+  (5 cm). `Arm.velocityAt` (from the pre-step snapshot's `_preCom`),
+  `Arm.sampleTip`, `Arm.unsheathe` and the throw in `items.ts` measure about
+  the centre of mass; the hand's velocity in `Arm.drive` can use the
+  forearm's origin because that is its centre of mass. `worldCom()` lags a
+  mass change until the next step, so `unsheathe`, which has just changed the
+  body's type, works the offset out from `weaponMassProperties` instead.
 - `world.removeRigidBody(body)` also removes its colliders and every joint
   attached to it. A handle to anything removed is dead: drop it, and drop any
   Interpolator entry that reads it (`registerBodies` rebuilds the list).
@@ -301,7 +303,7 @@ if (withNormal) void withNormal.normal;
 | `RAPIER.ActiveHooks.MODIFY_SOLVER_CONTACTS` | doesn't exist; only `FILTER_CONTACT_PAIRS` and `FILTER_INTERSECTION_PAIRS` |
 | `RAPIER.JointAxis.AngX` | not exported; the raw axis numbers are 3, 4 and 5 |
 | `spherical.configureMotorVelocity(...)` | not on ball joints in 0.14; use the raw joint set |
-| `body.velocityAtPoint(p)` | not in 0.14; `linvel() + angvel() × (p − worldCom())` |
+| `body.velocityAtPoint(p)` | not in 0.14; `linvel() + angvel() × (p − worldCom())`, never `× (p − translation())` |
 | `@dimforge/rapier3d` imports | this project uses `@dimforge/rapier3d-compat` (the WASM is inlined, and `RAPIER.init()` is required) |
 | `<RigidBody>`, `useRapier()` | React Three Fiber's wrapper; this game has no React |
 

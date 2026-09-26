@@ -106,7 +106,8 @@ export interface Tuning {
   /**
    * How big a shove any body can step out of, as a Froude number: speed over
    * the square root of gravity times leg length. The same for every creature;
-   * what differs is how much each one weighs.
+   * what differs is how much each one weighs. Set against blows judged at
+   * `REACTION` times the speed their momentum hands a body (see balance.ts).
    */
   balance: number;
   /**

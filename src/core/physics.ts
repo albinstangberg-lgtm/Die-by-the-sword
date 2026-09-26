@@ -59,8 +59,8 @@ export function groups(membership: number, filter: number): number {
  * Every fighter gets bits of its own because a single shared FIGHTER group
  * cannot express "everyone's blade but my own" -- a fighter must be cut by
  * other blades while its own sweeps through its shoulder untouched. Bits of
- * its own make that a filter rather than a special case, and teams decide who
- * is hostile to whom.
+ * its own make that a filter rather than a special case. Whose side anyone is
+ * on does not come into it: a blade cuts whoever it lands on, ally or not.
  *
  * Note that weapons DO collide with each other. Parrying is not a scripted
  * move here; it is just two blades occupying the same space.
@@ -68,23 +68,27 @@ export function groups(membership: number, filter: number): number {
 export interface Side {
   /** Which fighter of the line-up this is. */
   readonly index: number;
-  /** Fighters on the same team do not cut each other. */
+  /**
+   * Whose side it is on: who it fights and who it fights beside. Not what its
+   * weapon meets -- an ally caught by a blade is cut like anyone else.
+   */
   readonly team: number;
   /** For every hittable body part. */
   readonly bodyFilter: number;
   /**
    * For the weapon.
    *
-   * A blade meets stone, other blades, and the bodies of the other team --
+   * A blade meets stone, other blades, and every body but its owner's --
    * the practice dummy's too. It used to pass through flesh, because a blade
    * the solver stops arrives having been braked, and a braked blade cannot
    * cut. It no longer needs to: a hit is measured from the blade's motion as
    * it was BEFORE the step that stopped it (see `Arm.snapshotBlade`), so the
    * blow scores the speed it arrived at, and the blade stops where it landed,
-   * as it does on a wall. An ally's body it still passes through.
+   * as it does on a wall. An ally's body it used to pass through; it stops in
+   * it now, and cuts it.
    */
   readonly bladeFilter: number;
-  /** What a weapon's swept cut may find, and what counts as flesh: soft targets on the other team. */
+  /** What a weapon's swept cut may find, and what counts as flesh: every body but its owner's. */
   readonly cuttableFilter: number;
   /**
    * For a shield: a blade's membership, so an enemy's cut is stopped by it
@@ -120,7 +124,7 @@ export interface Side {
    *
    * A kinematic body is immovable by anything it touches, so if the legs
    * collided with the world or another fighter they would shove rather than
-   * be shoved. Restricting them to hostile blades makes them cuttable without
+   * be shoved. Restricting them to other blades makes them cuttable without
    * letting them bulldoze the room.
    */
   readonly hitOnlyFilter: number;
@@ -139,43 +143,33 @@ export interface Side {
 }
 
 /**
- * Build one consistent set of sides from a team per fighter.
- *
- * Taking the whole roster at once is the point: hostility is a property of the
- * line-up, not of a fighter, so the filters can only be correct if they are all
- * derived together. `makeSides([0, 1, 1])` is a player against two allies who
- * will not cut each other.
+ * Build one consistent set of sides from a team per fighter: `makeSides([0,
+ * 1, 1])` is a player against two allies.
  *
  * Each fighter's body is a different three of the six body bits, and its
- * weapon a different three of the six weapon bits. Two things are asked of
- * those bits, and three of six answers both:
+ * weapon a different three of the six weapon bits, which is what "everyone
+ * but me" asks: bodies meet every other body, weapons every other weapon and
+ * every other body, and none of mine meets mine. A filter of the three bits I
+ * do not have does that, since any other three shares at least one bit with
+ * it -- no three of six sits inside another three -- and mine shares none.
  *
- * - **everyone but me.** Bodies meet every other body, and weapons every other
- *   weapon, but none of mine meets mine. A filter of the three bits I do not
- *   have does that: any other three share at least one bit with it, since no
- *   three of six sits inside another three, and mine shares none.
- * - **the other side, not mine.** A weapon cuts the bodies of the other team
- *   and not its own team's. A filter of the bits nobody on my team has does
- *   that, provided every one of them has a bit of its own that nobody on mine
- *   has -- which is what the threes are chosen for, below.
- *
- * One bit a fighter made "everyone but me" a filter too, and gave out at six
- * fighters; three of six go to twenty.
+ * Teams used to decide what a weapon met as well, and an ally's body let
+ * every ally's blade through it. That asked more of the bits -- every fighter
+ * a bit nobody on any other team had -- and gave out at three teams. A blade
+ * cuts whoever it lands on now, and twenty threes are twenty fighters, on as
+ * many sides as they like.
  */
 export function makeSides(teams: readonly number[]): Side[] {
-  const bodies = pickThrees(teams, "body");
-  const blades = pickThrees(teams, "weapon");
-  const body = bodies.map((m) => m << 3);
-  const blade = blades.map((m) => m << (3 + POOL));
-  const team = (bits: number[], t: number) =>
-    teams.reduce((all, u, j) => (u === t ? all | bits[j] : all), 0);
+  if (teams.length > THREES.length) {
+    throw new Error(`${teams.length} fighters, where the bits give ${THREES.length} a body and weapon of their own`);
+  }
+  const body = THREES.map((m) => m << 3);
+  const blade = THREES.map((m) => m << (3 + POOL));
 
   return teams.map((t, i) => {
-    // Everyone's but mine, and the other side's but none of my side's.
+    // Everyone's but mine.
     const otherBodies = BODY_POOL & ~body[i];
     const otherBlades = BLADE_POOL & ~blade[i];
-    const foeBodies = BODY_POOL & ~team(body, t);
-    const foeBlades = BLADE_POOL & ~team(blade, t);
     const otherHulls = teams.length > 1 ? HULL : 0;
 
     return {
@@ -183,71 +177,18 @@ export function makeSides(teams: readonly number[]): Side[] {
       team: t,
       body: body[i],
       blade: blade[i],
-      bodyFilter: groups(body[i], GROUP.WORLD | GROUP.PROP | otherBodies | foeBlades),
-      bladeFilter: groups(blade[i], GROUP.WORLD | GROUP.PROP | otherBlades | foeBodies),
-      cuttableFilter: groups(blade[i], GROUP.PROP | foeBodies),
+      bodyFilter: groups(body[i], GROUP.WORLD | GROUP.PROP | otherBodies | otherBlades),
+      bladeFilter: groups(blade[i], GROUP.WORLD | GROUP.PROP | otherBlades | otherBodies),
+      cuttableFilter: groups(blade[i], GROUP.PROP | otherBodies),
       shieldFilter: groups(blade[i], GROUP.WORLD | otherBlades),
       backShieldFilter: groups(blade[i], otherBlades),
       inertBladeFilter: groups(blade[i], GROUP.WORLD | GROUP.PROP | otherBlades),
       hullFilter: groups(HULL, GROUP.WORLD | GROUP.PROP | otherHulls),
-      hitOnlyFilter: groups(body[i], foeBlades),
+      hitOnlyFilter: groups(body[i], otherBlades),
       groundFilter: groups(HULL, GROUP.WORLD | GROUP.PROP),
       sightFilter: groups(HULL, GROUP.WORLD),
     };
   });
-}
-
-/**
- * A different three of six for every fighter, such that each has a bit that
- * nobody on any other team has. The first team -- you -- take threes with the
- * first bit in them and the rest take threes without it, which settles it for
- * two teams whatever their sizes, up to ten against you; anything else is
- * searched for, and a line-up it cannot be found for is refused.
- */
-function pickThrees(teams: readonly number[], what: string): number[] {
-  const order = [...new Set(teams)];
-  const first = order[0];
-  const picked: number[] = new Array(teams.length).fill(0);
-  const used = new Set<number>();
-
-  // Every fighter's three has a bit outside all of every other team's.
-  const fits = (upTo: number): boolean => {
-    for (let i = 0; i <= upTo; i++) {
-      const theirs = teams.reduce((all, u, j) =>
-        (j <= upTo && u !== teams[i] ? all | picked[j] : all), 0);
-      if (theirs !== 0 && (picked[i] & ~theirs) === 0) return false;
-    }
-    return true;
-  };
-  // Each team's threes in the order it prefers them, and taken in that order
-  // -- fighters on one team are interchangeable, so trying them the other
-  // way round would only try the same line-up again.
-  const tries = new Map(order.map((t) => {
-    const mine = t === first;
-    const suits = (m: number) => ((m & 1) === 1) === mine;
-    return [t, [...THREES].sort((a, b) => Number(suits(b)) - Number(suits(a)))] as const;
-  }));
-  const next = new Map<number, number>();
-  const place = (i: number): boolean => {
-    if (i === teams.length) return true;
-    const list = tries.get(teams[i])!;
-    const from = next.get(teams[i]) ?? 0;
-    for (let k = from; k < list.length; k++) {
-      if (used.has(list[k])) continue;
-      picked[i] = list[k];
-      used.add(list[k]);
-      next.set(teams[i], k + 1);
-      if (fits(i) && place(i + 1)) return true;
-      used.delete(list[k]);
-    }
-    next.set(teams[i], from);
-    picked[i] = 0;
-    return false;
-  };
-  if (!place(0)) {
-    throw new Error(`no way to give ${teams.length} fighters on ${order.length} teams a ${what} of their own`);
-  }
-  return picked;
 }
 
 /** Everything a blade or body can touch, for static scenery and loose props. */

@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx tools/smoke.ts"
+    "smoke": "tsx tools/smoke.ts",
+    "smoke:seeds": "tsx tools/seeds.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.14.0",

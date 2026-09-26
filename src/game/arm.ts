@@ -666,6 +666,8 @@ export class Arm {
   private readonly _preLin = new THREE.Vector3();
   private readonly _preAng = new THREE.Vector3();
   private readonly _preQuat = new THREE.Quaternion();
+  /** The weapon's centre of mass at the snapshot, which `_preLin` is the velocity of. */
+  private readonly _preCom = new THREE.Vector3();
   private readonly _tipPos = new THREE.Vector3();
   private readonly _tipVel = new THREE.Vector3();
   private readonly _probeHand = new THREE.Vector3();
@@ -1692,6 +1694,49 @@ export class Arm {
       -clamp(WRIST_RATE * axis.z, -WRIST_SPEED, WRIST_SPEED), factor);
   }
 
+  /**
+   * The grip's stop, held after the step. Rapier holds a joint's limit with an
+   * impulse like any other constraint's, and a light weapon's head driven into
+   * something heavy, with the arm still pushing, beats it: the weapon goes
+   * round about its own length, where it weighs next to nothing, and on
+   * through the stop. A kobold's hatchet pressed into the dummy's chest went
+   * round to 136°, where the stop is at 92°. Past it, the weapon is turned
+   * back to it, about its own length through the grip, and whatever was still
+   * carrying it further is taken off. Nothing ordinary gets there: the grip is
+   * never asked for more than `TWIST_REACH`, inside the stop.
+   */
+  private holdGripStop(): void {
+    if (!this.wristJoint) return;
+    const fq = this.fore.rotation();
+    const bq = this.blade.rotation();
+    const qf = this._qa.set(fq.x, fq.y, fq.z, fq.w);
+    const qb = this._qb.set(bq.x, bq.y, bq.z, bq.w);
+    const rel = this._qc.copy(qf).invert().multiply(qb);
+    // The stop as Rapier measures it, twice the arcsine of the turn's part of
+    // the hand's quaternion -- which the wrist's bend shrinks -- so it is only
+    // ever held here where the solver let it go.
+    if (2 * Math.asin(Math.min(1, Math.abs(rel.y))) <= TWIST_LIMIT) return;
+    // The hand's quaternion is a bend after a turn about the weapon's length;
+    // the turn that brings that reading back to the stop, with the bend kept.
+    const turn = wrapPi(2 * Math.atan2(rel.y, rel.w));
+    const bend = Math.hypot(rel.w, rel.y);
+    const stop = 2 * Math.asin(Math.min(1, Math.sin(TWIST_LIMIT / 2) / bend));
+    const side = Math.sign(turn);
+    // About its own length is on the right: in its own frame, after the rest
+    // of the hand's turn, so the wrist's bend is left as it was.
+    qb.multiply(this._q4.setFromAxisAngle(this._tb.set(0, 1, 0), side * stop - turn));
+    this.blade.setRotation({ x: qb.x, y: qb.y, z: qb.z, w: qb.w }, true);
+    const along = this._ta.set(0, 1, 0).applyQuaternion(qb);
+    const wb = this.blade.angvel();
+    const wf = this.fore.angvel();
+    const rate = (wb.x - wf.x) * along.x + (wb.y - wf.y) * along.y + (wb.z - wf.z) * along.z;
+    if (rate * side > 0) {
+      this.blade.setAngvel({
+        x: wb.x - along.x * rate, y: wb.y - along.y * rate, z: wb.z - along.z * rate,
+      }, true);
+    }
+  }
+
   /** Let go of the grip: a hand nothing is driving holds its weapon loosely. */
   private slackenGrip(): void {
     if (!this.wristJoint) return;
@@ -1860,10 +1905,12 @@ export class Arm {
   private snapshotBlade(): void {
     const p = this.blade.translation();
     const r = this.blade.rotation();
+    const c = this.blade.worldCom();
     const lv = this.blade.linvel();
     const av = this.blade.angvel();
     this._prePos.set(p.x, p.y, p.z);
     this._preQuat.set(r.x, r.y, r.z, r.w);
+    this._preCom.set(c.x, c.y, c.z);
     this._preLin.set(lv.x, lv.y, lv.z);
     this._preAng.set(av.x, av.y, av.z);
   }
@@ -1885,6 +1932,10 @@ export class Arm {
     const bp = this.blade.translation();
     this._tipPos.set(bp.x + r.x, bp.y + r.y, bp.z + r.z);
 
+    // The tip's velocity is the centre of mass's plus the spin about it --
+    // see `velocityAt` for why not the spin about the grip.
+    const c = this.blade.worldCom();
+    r.set(this._tipPos.x - c.x, this._tipPos.y - c.y, this._tipPos.z - c.z);
     const lv = this.blade.linvel();
     const av = this.blade.angvel();
     this._tipVel.set(
@@ -1927,11 +1978,20 @@ export class Arm {
     return out.set(bp.x + out.x, bp.y + out.y, bp.z + out.z);
   }
 
-  /** Blade velocity at a world point, from the pre-step snapshot. */
+  /**
+   * Blade velocity at a world point, from the pre-step snapshot.
+   *
+   * Measured from the weapon's centre of mass, not its origin at the grip:
+   * Rapier's `linvel` is the velocity of the centre of mass, and the spin
+   * adds to it only about that. Measured from the grip, every point was
+   * given the centre of mass's swing a second time -- the spin times the
+   * half metre or more from the hand out to it, 11 m/s at 20 rad/s on the
+   * sword, all of it along the swing.
+   */
   velocityAt(point: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
-    const rx = point.x - this._prePos.x;
-    const ry = point.y - this._prePos.y;
-    const rz = point.z - this._prePos.z;
+    const rx = point.x - this._preCom.x;
+    const ry = point.y - this._preCom.y;
+    const rz = point.z - this._preCom.z;
     const lv = this._preLin;
     const av = this._preAng;
     return out.set(
@@ -2089,6 +2149,11 @@ export class Arm {
       this.roll = keepRoll;
       this.computeGhost(t);
     }
+  }
+
+  /** How far the weapon goes on past its percussion point, out to its tip, metres. */
+  get pastStrike(): number {
+    return this.weapon.span * (1 - this.strikePoint);
   }
 
   /**
@@ -2843,14 +2908,23 @@ export class Arm {
     const fp = this.fore.translation();
     const lv = this.fore.linvel();
     const av = this.fore.angvel();
+    // A body's linvel is its centre of mass's, and the weapon's is out along
+    // it from the hand: it leaves at the forearm's velocity THERE, which is
+    // the hand's plus the spin about it. Worked out rather than asked of
+    // Rapier, since a body that has just changed type is no time to trust
+    // its mass (below).
+    const com = new THREE.Vector3()
+      .copy(weaponMassProperties(this.weapon, this.weaponMass).com)
+      .applyQuaternion(q)
+      .add(hand);
 
     this.blade.setBodyType(this.phys.rapier.RigidBodyType.Dynamic, true);
     this.blade.setTranslation({ x: fp.x + hand.x, y: fp.y + hand.y, z: fp.z + hand.z }, true);
     this.blade.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
     this.blade.setLinvel({
-      x: lv.x + (av.y * hand.z - av.z * hand.y),
-      y: lv.y + (av.z * hand.x - av.x * hand.z),
-      z: lv.z + (av.x * hand.y - av.y * hand.x),
+      x: lv.x + (av.y * com.z - av.z * com.y),
+      y: lv.y + (av.z * com.x - av.x * com.z),
+      z: lv.z + (av.x * com.y - av.y * com.x),
     }, true);
     this.blade.setAngvel({ x: av.x, y: av.y, z: av.z }, true);
     this.blade.resetForces(true);
@@ -3066,8 +3140,12 @@ export class Arm {
     return a.angleTo(b);
   }
 
-  /** Elbow flexion, for the HUD. */
+  /**
+   * After the step: elbow flexion, for the HUD, and the grip's stop, which the
+   * solver alone cannot always hold (see `holdGripStop`).
+   */
   updateDerived(): void {
+    this.holdGripStop();
     const uq = this.upper.rotation();
     const fq = this.fore.rotation();
     const a = this._v.set(0, 1, 0).applyQuaternion(this._q.set(uq.x, uq.y, uq.z, uq.w));

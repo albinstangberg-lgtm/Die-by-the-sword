@@ -29,7 +29,7 @@ import { judgeClash } from "./balance";
  * bite. Nothing about it is a hitbox check.
  */
 
-/** Ignore repeat events from a sustained contact with the SAME collider. */
+/** Ignore repeat events from one weapon's sustained contact with the SAME collider. */
 const COOLDOWN_MS = 180;
 
 /**
@@ -46,9 +46,15 @@ const RESTING_SPEED = 0.35;
  * A weapon knocked by another: the speed it is sent back at, m/s, below which
  * nothing comes of it and at which an arm loses all it can (`Tuning.clash`),
  * and how long the hardest knock takes to get over, seconds.
+ *
+ * 0.5 and 4 when a weapon's speed was measured about its grip (see
+ * `Arm.velocityAt`), which counted each blade's spin twice, and two blades
+ * swinging into each other both of theirs. Fitted to the same nine hundred
+ * clashes measured about their centres of mass, these knock about as many
+ * weapons aside, and about as hard.
  */
-const KNOCK_MIN = 0.5;
-const KNOCK_FULL = 4;
+const KNOCK_MIN = 0.12;
+const KNOCK_FULL = 2.6;
 const KNOCK_TIME = 0.6;
 
 export type Quality = "touch" | "flat" | "glance" | "bite" | "clean";
@@ -103,6 +109,8 @@ export interface Impact {
 }
 
 interface BladeEntry {
+  /** Which weapon, for the cooldown: see `lastAt`. */
+  readonly id: number;
   arm: Arm;
   onImpact: (i: Impact) => void;
   cutter: Cutter;
@@ -128,8 +136,13 @@ export class Impacts {
   /** Every weapon, once each, whatever its colliders are this step. */
   private readonly entries: BladeEntry[] = [];
 
-  /** Per-collider, so a graze on the torso cannot mask a cut to the arm. */
-  private lastAt = new Map<number, number>();
+  /**
+   * Per weapon and collider, so a graze on the torso cannot mask a cut to the
+   * arm, nor one weapon's blow another's: with two of them on you, or an
+   * ally's blade in the same place as yours, the second blow of a moment is a
+   * blow too.
+   */
+  private lastAt = new Map<string, number>();
   /** Off stone and steel. */
   private sparks: Sparks;
   /**
@@ -140,8 +153,8 @@ export class Impacts {
   /**
    * Blood, and who gets it.
    *
-   * What counts as flesh is what the blade's sweep is allowed to cut: the
-   * other team's bodies and the practice dummy, `Side.cuttableFilter`. A
+   * What counts as flesh is what the blade's sweep is allowed to cut: every
+   * body but its owner's, and the practice dummy, `Side.cuttableFilter`. A
    * blade meets those in the solver now, like a wall, so a contact is sorted
    * by what it touched rather than by which path found it. Sparks come off
    * the wall, blood comes out of the body.
@@ -183,7 +196,8 @@ export class Impacts {
       existing.onImpact = onImpact;
     } else {
       this.entries.push({
-        arm, onImpact, handles: [], cutter: new Cutter(this.phys, arm, arm.side.cuttableFilter),
+        id: this.entries.length, arm, onImpact, handles: [],
+        cutter: new Cutter(this.phys, arm, arm.side.cuttableFilter),
       });
     }
     this.route(existing ?? this.entries[this.entries.length - 1]);
@@ -230,13 +244,14 @@ export class Impacts {
       }
       entry.cutter.sweep(this._swept);
       for (const hit of this._swept) {
-        const last = this.lastAt.get(hit.collider.handle);
+        const key = `${entry.id}/${hit.collider.handle}`;
+        const last = this.lastAt.get(key);
         if (last !== undefined && now - last < COOLDOWN_MS) continue;
 
         const impact = this.describeSwept(entry.arm, hit, now);
         if (!impact || impact.closingSpeed < RESTING_SPEED) continue;
 
-        this.lastAt.set(hit.collider.handle, now);
+        this.lastAt.set(key, now);
         this.latest = impact;
         entry.onImpact(impact);
         this.bleed(impact);
@@ -334,7 +349,8 @@ export class Impacts {
         bladeHandle = h2;
         otherHandle = h1;
       }
-      const last = this.lastAt.get(otherHandle);
+      const key = `${entry.id}/${otherHandle}`;
+      const last = this.lastAt.get(key);
       if (last !== undefined && now - last < COOLDOWN_MS) return;
 
       const other = this.phys.world.getCollider(otherHandle);
@@ -351,7 +367,7 @@ export class Impacts {
       // otherwise leaning on a target makes you briefly unable to cut it.
       if (impact.closingSpeed < RESTING_SPEED) return;
 
-      this.lastAt.set(otherHandle, now);
+      this.lastAt.set(key, now);
       this.latest = impact;
       entry.onImpact(impact);
       if (this.isFlesh(entry.arm, other)) this.bleed(impact);
@@ -504,12 +520,17 @@ export class Impacts {
   }
 }
 
+/**
+ * What the HUD calls a hit. The speeds were 1.2, 4.5 and 2.5 m/s when a
+ * weapon's speed was measured about its grip (see `Arm.velocityAt`); these
+ * call as many of the same fights' hits touches, clean cuts and bites.
+ */
 function classify(speed: number, edgeAlign: number, alongBlade: number): Quality {
-  if (speed < 1.2) return "touch";
+  if (speed < 0.7) return "touch";
   if (edgeAlign < 0.35) return "flat";
   if (alongBlade < 0.15) return "glance";   // caught it on the guard
-  if (edgeAlign > 0.72 && speed > 4.5) return "clean";
-  if (edgeAlign > 0.5 && speed > 2.5) return "bite";
+  if (edgeAlign > 0.72 && speed > 3) return "clean";
+  if (edgeAlign > 0.5 && speed > 1.7) return "bite";
   return "glance";
 }
 

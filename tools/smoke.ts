@@ -10,15 +10,18 @@
  * blocked. If the second case ever stops failing, the mechanic is gone.
  *
  *   npm run smoke
+ *   SMOKE_SEED=7 npm run smoke    # other dice: see dice.ts
  */
 
+// First, so that nothing imported below rolls a die before they are loaded.
+import { reseed, SEED } from "./dice";
 import * as THREE from "three";
 import { createPhysics, makeSides, type PhysicsWorld } from "../src/core/physics";
 import {
   BLOCK, buildArena, CRATE, DUMMY_AT, GATEWAYS, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, POSTS, RAIL, ROOMS,
   SPAWN as GAME_SPAWN, STONES, THIN_POST, type Arena, type GatedRoom,
 } from "../src/game/arena";
-import { gateHeard, ROSTER, spawnOf } from "../src/game/roster";
+import { gateHeard, ROSTER, spawnOf, type Occupant } from "../src/game/roster";
 import { interact, Items, promptFor, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
 import { SLUNG, SLUNG_TURN } from "../src/game/shield";
@@ -28,12 +31,13 @@ import { Dummy, type SeverEvent } from "../src/game/dummy";
 import { cutDamage, sweetSpot, MIN_CUT_SPEED } from "../src/game/damage";
 import { Combatant } from "../src/game/combatant";
 import {
-  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, type Cut, type Species,
+  GOBLIN, KOBOLD, OGRE, ORC, SPECIES, SWORDSMAN, jointScaleFor, maxHealthFor, sideOf, type Cut,
+  type Species,
 } from "../src/game/species";
 import {
   AXE, CLUB, HATCHET, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon,
 } from "../src/game/weapons";
-import { Ai, type Swing } from "../src/game/ai";
+import { Ai, FELT, GRUDGE, type Swing } from "../src/game/ai";
 import { emptyBlow, judgeBlow, judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -406,8 +410,26 @@ function throwForehand(
 
 // --- tiny assertion harness ---------------------------------------------------
 
+// Two kinds of check. A rule (`check`) holds every time, on every seed: no NaN,
+// no blade through a wall, never your own sword in you, every swing drawn back
+// for. One that fails is a bug, however rarely it does.
+//
+// A tendency (`tendency`) is what the AI does often enough -- a rate, a count,
+// an order -- taken over the random choices it makes in a fight, so even a
+// sound one misses on the odd seed. Each takes enough of them that luck alone
+// should sink it on well under one seed in a hundred, and a miss is weighed by
+// how often it misses on other seeds, with the change and without it
+// (`npm run smoke:seeds`, tools/seeds.ts), never by one run. Its bar is what
+// the game should do, and more samples are the answer to a miss, not a lower
+// bar.
+
 let failures = 0;
+let misses = 0;
 let checks = 0;
+let tendencies = 0;
+/** The group running now, and the groups a tendency has missed in. */
+let nowGroup = "";
+const missedIn: string[] = [];
 
 function check(name: string, ok: boolean, detail: string): void {
   checks++;
@@ -416,6 +438,19 @@ function check(name: string, ok: boolean, detail: string): void {
   } else {
     failures++;
     console.log(`  \x1b[31mFAIL\x1b[0m  ${name}  \x1b[33m${detail}\x1b[0m`);
+  }
+}
+
+/** Something the AI does often enough, not every time: see above. */
+function tendency(name: string, ok: boolean, detail: string): void {
+  checks++;
+  tendencies++;
+  if (ok) {
+    console.log(`  \x1b[32mPASS\x1b[0m  ~ ${name}  \x1b[90m${detail}\x1b[0m`);
+  } else {
+    misses++;
+    if (!missedIn.includes(nowGroup)) missedIn.push(nowGroup);
+    console.log(`  \x1b[35mMISS\x1b[0m  ~ ${name}  \x1b[33m${detail}\x1b[0m`);
   }
 }
 
@@ -971,7 +1006,7 @@ async function theOpponentCanHurtYou(): Promise<void> {
   // front of you, and stop there -- a guard held still is a guard, since a
   // blade stopped passing through the arm behind it into the body. Over
   // fifty-odd runs one in ten waited past eleven seconds, and one over twenty.
-  check("it lands its first cut quickly", firstCutAt >= 0 && firstCutAt < 1500,
+  tendency("it lands its first cut quickly", firstCutAt >= 0 && firstCutAt < 1500,
     firstCutAt < 0 ? "never landed a cut" : `first blood at ${(firstCutAt / 60).toFixed(1)}s`);
   // Before the fighters were rebuilt this left a passive player on 6/100. A
   // human-shaped target is a far harder one than the barrel it replaced: the
@@ -980,7 +1015,7 @@ async function theOpponentCanHurtYou(): Promise<void> {
   // change working as intended; how much is a judgement for someone playing it.
   // Blades stopping on bodies took it from dead in forty seconds to about
   // half: a blow that went through your arm into your body landed twice.
-  check("a passive player is worn down", rig.player.health < 85,
+  tendency("a passive player is worn down", rig.player.health < 85,
     `player at ${rig.player.health.toFixed(1)}/100 after 40s of standing still`);
 }
 
@@ -1481,9 +1516,15 @@ async function weaponsAreToldApartByPhysics(): Promise<void> {
   check("an axe hits harder than a sword at the same speed",
     hit(AXE, 10) > hit(SWORD, 10) * 1.2,
     `axe ${hit(AXE, 10).toFixed(1)} vs sword ${hit(SWORD, 10).toFixed(1)}`);
+  // Slow for a cut: at 2.4 m/s a sword's does what it did at 3.5 when a
+  // weapon's speed was measured about its grip (see `Arm.velocityAt`). A
+  // sword swings about its middle far more than a spear thrusts, so it lost
+  // more of its measured speed to that, and with each refitted to the damage
+  // it did in a fight, a thrust comes out two and a half cuts here, not the
+  // nearly four it did.
   check("a thrust is worth throwing at a speed a cut is not",
-    hit(SPEAR, 3.5) > hit(SWORD, 3.5) * 3,
-    `at 3.5 m/s: spear ${hit(SPEAR, 3.5).toFixed(1)} vs sword ${hit(SWORD, 3.5).toFixed(1)}`);
+    hit(SPEAR, 2.4) > hit(SWORD, 2.4) * 2,
+    `at 2.4 m/s: spear ${hit(SPEAR, 2.4).toFixed(1)} vs sword ${hit(SWORD, 2.4).toFixed(1)}`);
 }
 
 async function theAxeIsHarderToSwing(): Promise<void> {
@@ -1587,10 +1628,41 @@ async function eachSpeciesCanFight(): Promise<void> {
 
     check(`${species.name} closes the distance`, closest < 2.2,
       `closed to ${closest.toFixed(2)} m`);
-    check(`${species.name} draws blood`, firstCut >= 0,
+    tendency(`${species.name} draws blood`, firstCut >= 0,
       firstCut >= 0
         ? `first cut at ${firstCut.toFixed(1)}s, player down to ${rig.player.health.toFixed(0)}`
         : "never landed a hit in 30s");
+  }
+}
+
+/**
+ * How long a swing takes, back, through and on guard again: fed each step of a
+ * bout, it keeps the length of every swing on its own and drawn back standing.
+ * Not the last of a run, nor one carried on round, whose guard is longer
+ * coming back up on purpose, nor one drawn back walking in or giving ground,
+ * whose wind-up is as long as the walking takes (see the runs, and the swings
+ * on the move, below). What is being asked about is the weapon.
+ */
+class SwingCycles {
+  readonly lengths: number[] = [];
+  private cycle = -1;
+  private alone = true;
+
+  /** After a step: `before` and `run` as they were before it. */
+  step(rig: Rig, before: string, run: number): void {
+    const now = rig.ai.intent;
+    if (now === "windup" && before !== "windup") {
+      this.cycle = 0;
+      this.alone = rig.ai.committed!.move === "stand";
+    }
+    if (rig.ai.spinning) this.alone = false;
+    if (this.cycle < 0) return;
+    if (now === "windup" || now === "leap" || now === "strike" || now === "recover") {
+      this.cycle += STEP;
+    } else {
+      if (before === "recover" && this.alone && run <= 1) this.lengths.push(this.cycle);
+      this.cycle = -1;
+    }
   }
 }
 
@@ -1613,51 +1685,32 @@ async function swingsAreReadOffTheArm(): Promise<void> {
     const rig = await buildRig({}, species, foeSpawn(species));
     const swings: Swing[] = [];
     const drawing: number[] = [];
-    const cycles: number[] = [];
+    const cycles = new SwingCycles();
     let drawn = 0;
     let t = 0;
-    let cycle = -1;
     let from = rig.foe.arm.aim;
     let told = "";
     let lied = "";
     // Three quarters of a minute: a swing's length is a median over a bout,
     // and since an opponent swings on your misses and as you walk in as well
     // as when it is ready, half a minute of them is a noisier one than it was.
-    // A swing on its own and drawn back standing: not the last of a run, nor
-    // one carried on round, whose guard is longer coming back up on purpose,
-    // nor one drawn back walking in or giving ground, whose wind-up is as long
-    // as the walking takes (see the runs, and the swings on the move, below).
-    // What is being asked about is the weapon.
-    let alone = true;
     for (let i = 0; i < 60 * 45; i++) {
       const before = rig.ai.intent;
       const run = rig.ai.run;
       rig.fight(1);
+      cycles.step(rig, before, run);
       const now = rig.ai.intent;
       if (now === "windup" && before !== "windup") {
         swings.push(rig.ai.committed!);
         from = rig.foe.arm.aim;
         t = 0;
-        cycle = 0;
-        alone = rig.ai.committed!.move === "stand";
       }
-      if (rig.ai.spinning) alone = false;
       if (now === "windup") t += STEP;
       if (before === "windup" && now === "strike") {
         drawing.push(t);
         const to = rig.foe.arm.aim;
         const moved = Math.hypot(to.yaw - from.yaw, to.pitch - from.pitch);
         if (moved > 0.25 || Math.abs(to.reach - from.reach) > 0.08) drawn++;
-      }
-      // Back, through, and on guard again.
-      if (cycle >= 0) {
-        if (now === "windup" || now === "leap" || now === "strike" || now === "recover") {
-          cycle += STEP;
-        }
-        else {
-          if (before === "recover" && alone && run <= 1) cycles.push(cycle);
-          cycle = -1;
-        }
       }
       const swinging = now === "windup" || now === "leap" || now === "strike";
       if (lied === "" && swinging !== (rig.ai.committed !== null)) {
@@ -1667,16 +1720,18 @@ async function swingsAreReadOffTheArm(): Promise<void> {
         told = `the panel said "${rig.ai.outlook}" while it was in "${now}"`;
       }
     }
-    whole.set(species.key, cycles);
+    whole.set(species.key, cycles.lengths);
 
     const fastest = Math.min(...drawing);
     const slowest = Math.max(...drawing);
     check(`${species.name} draws back before every swing`,
       drawing.length >= 8 && drawn === drawing.length,
       `${drawn} of ${drawing.length} swings drew the weapon back first`);
-    check("for as long as its arm takes, not a set time",
-      fastest >= 0.09 && median(drawing) < 0.6 && slowest - fastest > 0.05,
+    tendency("for as long as its arm takes, not a set time",
+      median(drawing) < 0.6 && slowest - fastest > 0.05,
       `${fastest.toFixed(2)}-${slowest.toFixed(2)}s, median ${median(drawing).toFixed(2)}s`);
+    check("and none quicker than an arm can take a weapon back", fastest >= 0.09,
+      `the quickest ${fastest.toFixed(2)}s`);
 
     const parts = new Set(swings.map((s) => s.aim));
     for (const p of parts) everywhere.add(p);
@@ -1692,7 +1747,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
 
   }
 
-  check("between them they go for your head, your body, your sword arm and your legs",
+  tendency("between them they go for your head, your body, your sword arm and your legs",
     everywhere.size === 4, `went for your ${[...everywhere].join(", ")}`);
 
   // And what the orc reaches for, which half a minute of a fight is too short
@@ -1706,7 +1761,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
   const high = imagined.filter((s) => s.aim === "head" || s.aim === "body");
   const over = high.filter((s) => s.cut.name === "overhead").length / high.length;
   const all = imagined.filter((s) => s.cut.name === "overhead").length / imagined.length;
-  check("the orc brings the axe over the top three times in four where it has the choice",
+  tendency("the orc brings the axe over the top three times in four where it has the choice",
     Math.abs(over - 0.75) < 0.04,
     `${(over * 100).toFixed(0)}% overheads at your head or body, ` +
     `${(all * 100).toFixed(0)}% of everything it throws`);
@@ -1714,14 +1769,42 @@ async function swingsAreReadOffTheArm(): Promise<void> {
   // More weapon, longer. Swung by an arm scaled to the body carrying it, a
   // metre of ash with 3.65 kg on the end is still slower back, through and
   // up again than a sword: not by a number anybody wrote down, by its weight.
-  const sword = median(whole.get("swordsman")!);
-  const axe = median(whole.get("orc")!);
-  check("a swing of the axe takes longer than a swing of the sword", axe > sword + 0.1,
-    `back, through and on guard again: a median ${axe.toFixed(2)}s for the orc's axe, ` +
-    `${sword.toFixed(2)}s for the sword`);
+  //
+  // By a quarter of a second: over twenty bouts the medians are 1.35s and
+  // 1.1s. But a bout of the swordsman gives four to eleven swings on their
+  // own, since it runs one swing into the next and lunges as often as it
+  // stands, and a median of so few came out on the wrong side of the tenth
+  // of a second asked for three bouts in ten. So both go on, in a bout of
+  // their own that runs nothing together and never lunges, until each has
+  // sixty: with forty, the gap came out at 0.22s give or take 0.05, short of
+  // the tenth about one seed in a hundred.
+  const ENOUGH = 60;
+  for (const kind of [SWORDSMAN, ORC]) {
+    const lengths = whole.get(kind.key)!;
+    const species = {
+      ...kind, footwork: { ...kind.footwork, dart: 0, lunge: 0 }, flow: { ...kind.flow, combo: 0 },
+    };
+    const rig = await buildRig({}, species, foeSpawn(species));
+    const cycles = new SwingCycles();
+    for (let i = 0; i < 60 * 240 && lengths.length + cycles.lengths.length < ENOUGH; i++) {
+      const before = rig.ai.intent;
+      const run = rig.ai.run;
+      rig.fight(1);
+      cycles.step(rig, before, run);
+      if (rig.player.dead) rig.place(HOME);
+    }
+    lengths.push(...cycles.lengths);
+  }
+  const swords = whole.get("swordsman")!;
+  const axes = whole.get("orc")!;
+  const sword = median(swords);
+  const axe = median(axes);
+  tendency("a swing of the axe takes longer than a swing of the sword", axe > sword + 0.1,
+    `back, through and on guard again: a median ${axe.toFixed(2)}s for the orc's axe ` +
+    `over ${axes.length} swings, ${sword.toFixed(2)}s for the sword over ${swords.length}`);
 }
 
-async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
+async function aBladeCutsEveryoneButItsOwner(): Promise<void> {
   console.log("\nthree fighters, two teams, one set of collision groups -- and the game's nine");
   const sides = makeSides([0, 1, 1]);
   const [you, orc, goblin] = sides;
@@ -1736,8 +1819,10 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
     canCut(you, orc) && canCut(you, goblin), "player -> orc, player -> goblin");
   check("theirs reach you", canCut(orc, you) && canCut(goblin, you),
     "orc -> player, goblin -> player");
-  check("but not each other", !canCut(orc, goblin) && !canCut(goblin, orc),
-    "the orc's axe passes through the goblin");
+  // Friendly fire: an ally caught by a blade is cut like anyone else, and
+  // keeping out of each other's way is theirs to see to.
+  check("and each other: an ally's blade cuts as well as anyone's", canCut(orc, goblin) && canCut(goblin, orc),
+    "orc -> goblin, goblin -> orc");
   check("and nobody cuts themselves",
     !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
 
@@ -1748,10 +1833,16 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
   const [me, ...them] = roster;
   const meets = (a: number, b: number) => ((a >>> 16) & (b & 0xffff)) !== 0 && ((b >>> 16) & (a & 0xffff)) !== 0;
   const pairs = them.flatMap((a, i) => them.filter((_, j) => j !== i).map((b) => [a, b] as const));
-  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and not one another`,
-    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => !canCut(a, b))
+  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and one another`,
+    them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => canCut(a, b))
       && roster.every((s) => !canCut(s, s)),
-    `${them.length} against you, ${pairs.length} pairs of them that must not cut`);
+    `${them.length} against you, and ${pairs.length} pairs of them`);
+  // Sides are the fight's business now, not the bits': twenty fighters on
+  // twenty sides fit as well as two sides do.
+  const many = makeSides(Array.from({ length: 20 }, (_, i) => i));
+  check("and twenty fighters fit, on as many sides as there are of them",
+    many.every((a, i) => many.every((b, j) => canCut(a, b) === (i !== j))),
+    `${many.length} fighters, each on a side of its own`);
   // Bodies still meet every other body, and weapons every other weapon, but
   // never their own: "everyone but me" with three bits of six each.
   const everyone = roster.flatMap((a, i) => roster.map((b, j) => [a, b, i === j] as const));
@@ -2043,10 +2134,20 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
   const at = () => led.foe.position(new THREE.Vector3());
   led.place(new THREE.Vector3(GATEWAYS.warren.at.x, HOME.y, -3));
   led.fight(150);
+  // ...and go on your feet, once it is between swings: a swing already
+  // coming lands on someone backing away from it, and floored in the doorway
+  // -- or before you set off -- you never got into the hall, and there was
+  // nothing to follow.
+  for (let i = 0; i < 360 && (led.player.fighter.down || !FOOTWORK.has(led.ai.intent)); i++) {
+    led.fight(1);
+  }
   // How far it got, not where it happens to be at the end: one time in ten,
   // after a swing, it gives ground, and it gave it back into its room once.
+  // And for long enough after you are out for the swings it throws at where
+  // you were to go by first: watched for a second and a half, it was still
+  // in its own doorway, coming, when the time was up.
   let followed = -Infinity;
-  for (let i = 0; i < 132 + 90; i++) {
+  for (let i = 0; i < 132 + 240; i++) {
     led.fight(1, i < 132 ? { ...NO_KEYS, back: true } : NO_KEYS);
     followed = Math.max(followed, at().z);
   }
@@ -2067,30 +2168,53 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
 
 /**
  * The whole line-up, as the game has it -- you and everything behind the four
- * gates (see roster.ts) -- in one arena, and a step that drives them all as
- * the game's does.
+ * gates (see roster.ts) -- in one arena, each on its faction's side, and a
+ * step that drives them all as the game's does. Or another line-up.
  */
-async function buildRoster(youAt: THREE.Vector3) {
+async function buildRoster(youAt: THREE.Vector3, line: readonly Occupant[] = ROSTER) {
   const tuning: Tuning = { ...DEFAULTS };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   const arena = buildArena(phys, scene, targets);
-  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
+  const sides = makeSides([0, ...line.map((o) => sideOf(o.species.faction))]);
   const you = new Combatant(phys, scene, youAt, sides[0], tuning, targets, SWORDSMAN, "you", "your");
-  const foes = ROSTER.map((o, i) => {
+  const foes = line.map((o, i) => {
     const combatant = new Combatant(phys, scene, spawnOf(o), sides[i + 1],
       tuning, targets, o.species, o.name, `${o.name}'s`);
     combatant.fighter.yaw = o.facing;
     return { combatant, ai: new Ai(o.species), room: o.room };
   });
+  const everyone = [you, ...foes.map((f) => f.combatant)];
+  for (const f of foes) f.ai.company = everyone;
   const impacts = new Impacts(phys, scene, targets, tuning);
   let cutsOnYou = 0;
+  let hurtYou = 0;
+  // A blade cuts whoever it lands on, and one of them caught by a friend's is
+  // cut like anyone else: a cut is a blow it would feel (`FELT`), and a weapon
+  // at its guard brushing a friend's arm as they go through a doorway side by
+  // side is only a touch. One of another side it goes for, as it goes for you.
   let cutsAmongThem = 0;
+  let touchesAmongThem = 0;
+  let cutsAcross = 0;
   for (const f of foes) {
     impacts.addBlade(f.combatant.arm, (i) => {
-      if (you.receive(i)) cutsOnYou++;
-      else if (foes.some((o) => o.combatant.receive(i))) cutsAmongThem++;
+      const yours = you.health;
+      if (you.receive(i)) { cutsOnYou++; hurtYou += yours - you.health; return; }
+      for (const o of foes) {
+        const was = o.combatant.health;
+        if (!o.combatant.receive(i)) continue;
+        o.ai.struckBy(f.combatant);
+        const cut = was - o.combatant.health >= FELT;
+        if (o.combatant.fighter.side.team !== f.combatant.fighter.side.team) {
+          if (cut) cutsAcross++;
+        } else if (cut) {
+          cutsAmongThem++;
+        } else {
+          touchesAmongThem++;
+        }
+        return;
+      }
     });
   }
   phys.world.updateSceneQueries();
@@ -2102,7 +2226,13 @@ async function buildRoster(youAt: THREE.Vector3) {
     /** Everything that waits in one room. */
     in: (room: GatedRoom) => foes.filter((f) => f.room === room),
     get cutsOnYou() { return cutsOnYou; },
+    /** Health taken off you, all told. */
+    get hurtYou() { return hurtYou; },
+    /** Cuts, and touches, by one of them on a friend. */
     get cutsAmongThem() { return cutsAmongThem; },
+    get touchesAmongThem() { return touchesAmongThem; },
+    /** Cuts by one of them on one of another side. */
+    get cutsAcross() { return cutsAcross; },
     step(n = 1) {
       for (let k = 0; k < n; k++) {
         you.act(still, NO_KEYS, tuning, STEP);
@@ -2169,9 +2299,13 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     through >= 0 && found >= 0 && swung,
     `both in the hall after ${(through / 60).toFixed(1)}s, both fighting after ` +
     `${(found / 60).toFixed(1)}s; swung: ${swung}`);
-  check("two of them on one side, and not one cut between them",
-    world.cutsOnYou > 0 && world.cutsAmongThem === 0,
-    `${world.cutsOnYou} cuts on you, ${world.cutsAmongThem} among the ${world.foes.length + 1} of you`);
+  // A friend is as easily cut as you are, and how seldom they cut each other
+  // is `friendsComeAtYouFromTwoSides`'s to weigh: nine seconds of this is
+  // one roll of the dice.
+  tendency("two of them on one side, and hardly a cut between them",
+    world.cutsOnYou > 0 && world.cutsAmongThem <= 1,
+    `${world.cutsOnYou} blows on you, ${world.cutsAmongThem} cuts among them ` +
+    `(and ${world.touchesAmongThem} touches)`);
 
   // Heard, and nobody there: you down the entrance, round the corner from
   // the gateway. They go and look, find nothing, and go home again.
@@ -2193,6 +2327,205 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     looked && left > 2 && back.every((d) => d < 0.4) && orcs.every((f) => f.ai.outlook === "waiting"),
     `went ${left.toFixed(1)} m; back to within ${Math.max(...back).toFixed(2)} m of their posts, ` +
     orcs.map((f) => `"${f.ai.outlook}"`).join(" and "));
+}
+
+/**
+ * Friends that come at you together. A blade cuts whoever it lands on, a
+ * friend as readily as you, so each keeps its friends out of the circle its
+ * own weapon sweeps -- stepping round you away from them, which brings them
+ * at you from two sides rather than one -- and looks along a swing and on
+ * through it, before letting it go and as it goes (see `Ai.makeRoom` and
+ * `Ai.inTheWay`). What they cut is you.
+ *
+ * Out in the hall's east half, you standing your ground with your guard up
+ * and them coming at you together from the east: two orcs abreast, two one
+ * behind the other, and three goblins abreast. Clear of the stone all round,
+ * and to the south most of all: a weapon is laid out that way when it is put
+ * down, and an orc put down a metre from the wall started the fight with its
+ * axe in it. Your health is put back every step, so that each fight runs its
+ * length.
+ */
+async function friendsComeAtYouFromTwoSides(): Promise<void> {
+  console.log("\nfriends together: a blade cuts whoever it lands on, and they keep out of each other's way");
+  const at = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const packs = [
+    { who: [ORC, ORC], from: [[4, -0.7], [4, 0.7]] },
+    { who: [ORC, ORC], from: [[3.5, 0], [5, 0]] },
+    { who: [GOBLIN, GOBLIN, GOBLIN], from: [[4, -1.2], [4, 0], [4, 1.2]] },
+  ] as const;
+  const seconds = 25;
+  let onYou = 0;
+  let hurt = 0;
+  let among = 0;
+  let touches = 0;
+  // How far apart round you two of them are, radians, each step both are at
+  // you: the pairs only, since the nearest two of three are nearer than any
+  // two.
+  const apart: number[] = [];
+  for (const pack of packs) {
+    const line: Occupant[] = pack.who.map((species, i) => ({
+      species,
+      room: "pen",
+      at: new THREE.Vector3(at.x + pack.from[i][0], 0, at.z + pack.from[i][1]),
+      facing: Math.PI / 2,
+      name: `${species.name} ${i + 1}`,
+    }));
+    const world = await buildRoster(at, line);
+    world.you.fighter.yaw = -Math.PI / 2;
+    const you = world.you.position(new THREE.Vector3());
+    const p = new THREE.Vector3();
+    for (let i = 0; i < 60 * seconds && !world.you.dead; i++) {
+      world.step(1);
+      world.you.health = world.you.maxHealth;
+      if (world.foes.length !== 2 || !world.foes.every((f) => f.ai.outlook === "fighting")) continue;
+      const [a, b] = world.foes.map((f) => {
+        f.combatant.position(p);
+        return Math.atan2(p.x - you.x, p.z - you.z);
+      });
+      apart.push(Math.abs(wrap(a - b)));
+    }
+    onYou += world.cutsOnYou;
+    hurt += world.hurtYou;
+    among += world.cutsAmongThem;
+    touches += world.touchesAmongThem;
+  }
+  const middle = [...apart].sort((a, b) => a - b)[Math.floor(apart.length / 2)] ?? 0;
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(0)}deg`;
+  // Over forty seeds of these fights: never more than one cut among them,
+  // against 112 to 233 blows on you. Before they looked out for each other,
+  // nine seconds of the pen's two orcs landed eleven to twenty-five blows
+  // on each other.
+  tendency("they cut you, and hardly ever each other: fifty blows on you for every cut among them",
+    onYou >= 60 && among * 50 <= onYou,
+    `${onYou} blows on you (${hurt.toFixed(0)} health), ${among} cuts among them ` +
+    `and ${touches} touches, over ${packs.length} fights of ${seconds}s`);
+  tendency("and two of them come at you from two sides, not shoulder to shoulder",
+    middle >= 1.0,
+    `${deg(middle)} apart round you, at the median`);
+}
+
+/**
+ * Sides (see `Faction`): the greenskins -- orcs, goblins and the ogre -- and
+ * the kobolds, each against the other and both against you. Each goes for
+ * whichever of another side it sees first, and never for its own, and turns
+ * on whatever lands a blow on it (see `Ai.choose`, `Ai.struckBy`).
+ *
+ * Two kobolds and two greenskins, an orc and a goblin, let loose on each
+ * other out in the hall's east half, with you at the far end of the entrance,
+ * further off than any of them notices anything: they fight each other, and
+ * nobody comes for you. Then an orc in front of you, and a kobold behind it:
+ * each goes for the nearest thing it would fight -- the orc for you, the
+ * kobold for the orc -- and the orc, hacked at from behind, turns round.
+ */
+async function factionsGoForEachOther(): Promise<void> {
+  console.log("\nfactions: greenskins and kobolds, against each other and against you");
+  const put = (species: Species, x: number, z: number, facing: number, name: string): Occupant =>
+    ({ species, room: "pen", at: new THREE.Vector3(x, 0, z), facing, name });
+  // Facing east, and facing west: forward is -Z at yaw zero, and +X is right.
+  const eastward = -Math.PI / 2;
+  const westward = Math.PI / 2;
+  const kind = (c: Combatant) => c.fighter.side.team;
+
+  const brawl = await buildRoster(new THREE.Vector3(4.5, HOME.y, 21), [
+    put(KOBOLD, 6.5, 4.9, eastward, "the kobold"),
+    put(KOBOLD, 6.5, 6.1, eastward, "the second kobold"),
+    put(ORC, 11.5, 4.8, westward, "the orc"),
+    put(GOBLIN, 11.5, 6.2, westward, "the goblin"),
+  ]);
+  const seconds = 20;
+  const wentFor = brawl.foes.map(() => new Set<Combatant>());
+  for (let i = 0; i < 60 * seconds; i++) {
+    brawl.step(1);
+    brawl.foes.forEach((f, k) => {
+      const them = f.ai.fighting;
+      if (them !== null && f.ai.outlook === "fighting") wentFor[k].add(them);
+    });
+  }
+  const own = brawl.foes.flatMap((f, k) =>
+    [...wentFor[k]].filter((c) => c !== brawl.you && kind(c) === kind(f.combatant))
+      .map((c) => `${f.combatant.name} went for ${c.name}`));
+  const each = brawl.foes.every((f, k) =>
+    [...wentFor[k]].some((c) => c !== brawl.you && kind(c) !== kind(f.combatant)));
+  const dead = brawl.foes.filter((f) => f.combatant.dead).map((f) => f.combatant.name);
+  check("kobolds and greenskins go for each other, and not one for its own",
+    each && own.length === 0,
+    own.length > 0 ? own.join("; ")
+      : brawl.foes.map((f, k) => `${f.combatant.name}: ${[...wentFor[k]].map((c) => c.name).join(", ")}`)
+        .join("; "));
+  check("and nobody comes for you, further off than they notice anything",
+    wentFor.every((w) => !w.has(brawl.you)) && brawl.cutsOnYou === 0,
+    `${brawl.cutsOnYou} blows on you`);
+  tendency("they cut each other",
+    brawl.cutsAcross >= 1,
+    `${brawl.cutsAcross} cuts across the sides in ${seconds}s, ` +
+    `${brawl.cutsAmongThem} among friends; ${dead.length > 0 ? `${dead.join(" and ")} dead` : "nobody dead"}`);
+
+  // An orc in front of you and a kobold behind it.
+  const you = new THREE.Vector3(8.5, HOME.y, 5.5);
+  const three = await buildRoster(you, [
+    put(ORC, 10.5, 5.5, westward, "the orc"),
+    put(KOBOLD, 14, 5.5, westward, "the kobold"),
+  ]);
+  three.you.fighter.yaw = eastward;
+  const [orc, kobold] = three.foes;
+  let chose = -1;
+  for (let i = 0; i < 60 * 3 && chose < 0; i++) {
+    three.step(1);
+    if (orc.ai.outlook === "fighting" && kobold.ai.outlook === "fighting") chose = i;
+  }
+  check("each goes for the nearest thing it would fight: the orc for you, the kobold for the orc",
+    chose >= 0 && orc.ai.fighting === three.you && kobold.ai.fighting === orc.combatant,
+    `after ${(chose / 60).toFixed(1)}s the orc is after ${orc.ai.fighting?.name ?? "nobody"}, ` +
+    `the kobold after ${kobold.ai.fighting?.name ?? "nobody"}`);
+  // Come to its elbow, it is a good deal nearer than you are, and once it
+  // lands a blow it is the one that did: either way the orc turns round.
+  //
+  // What is asked here is the orc's answer to the kobold, so from here on
+  // the kobold does not know you are there. Left to itself, one whose way to
+  // the orc took it past you -- the orc goes round you as it fights, and
+  // drags the kobold's way round with it -- found you twice as near as the
+  // orc, and turned on you instead, as it should (see `TURN_ON`); and the orc
+  // never had anything at its back to turn round on.
+  kobold.ai.company = [kobold.combatant, orc.combatant];
+  let turned = -1;
+  let near = Infinity;
+  for (let i = 0; i < 60 * 15 && turned < 0; i++) {
+    three.step(1);
+    if (orc.ai.fighting === kobold.combatant) turned = i;
+    const o = orc.combatant.position(new THREE.Vector3());
+    const k = kobold.combatant.position(new THREE.Vector3());
+    near = Math.min(near, Math.hypot(o.x - k.x, o.z - k.z));
+  }
+  const hurt = orc.combatant.maxHealth - orc.combatant.health;
+  check("and the orc, the kobold at its back, turns round on it",
+    turned >= 0,
+    turned < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} after 15s, the kobold ` +
+      `as near as ${near.toFixed(2)} m`
+      : `after ${(turned / 60).toFixed(1)}s, the kobold ${near.toFixed(2)} m off at the nearest ` +
+        `and ${hurt > 0 ? `${hurt.toFixed(1)} health off it` : "not a blow landed"}`);
+
+  // Busy with the kobold, and you land a blow on it -- as the game reports
+  // yours: the harness's still sword swings at nothing. Once it has been on
+  // the kobold long enough to have got over whatever blow of the kobold's
+  // turned it round (see GRUDGE), it turns on you as soon as it is free to,
+  // not in the middle of a swing at the kobold; and it stays on you, with the
+  // kobold still at its elbow, for a second and a half at least.
+  three.step(Math.ceil(60 * GRUDGE) + 1);
+  orc.ai.struckBy(three.you);
+  // And the kobold's blows go on landing.
+  const midSwing = orc.ai.committed !== null;
+  let back = -1;
+  let held = 0;
+  for (let i = 0; back < 0 ? i < 60 * 3 : i - back < 90; i++) {
+    three.step(1);
+    if (back < 0 && orc.ai.fighting === three.you) back = i;
+    if (back >= 0 && orc.ai.fighting === three.you) held++;
+  }
+  check("and turns on you when you land a blow on it, once it has finished any swing, and stays on you",
+    turned >= 0 && back >= 0 && held >= 90,
+    back < 0 ? `still after ${orc.ai.fighting?.name ?? "nobody"} 3s later`
+      : `${(back / 60).toFixed(2)}s later${midSwing ? ", having finished the swing it was in" : ""}, ` +
+        `and on you for ${(held / 60).toFixed(2)}s of the next 1.5`);
 }
 
 async function severingBleeds(): Promise<void> {
@@ -3054,7 +3387,10 @@ let blowClock = 1e6;
  * A blow with real weight behind it -- your own sword and arm, as the solver
  * has them -- driving along -Z into a fighter's chest collider at a given
  * fraction of its height. On the flat unless a test says otherwise, so it
- * pushes without cutting: what these measure is the push.
+ * pushes without cutting: what these measure is the push. The speeds are a
+ * blade's about its centre of mass, as the game measures them (see
+ * `Arm.velocityAt`): two thirds of the 6 to 12 m/s these were written at,
+ * when it was measured about the grip.
  */
 function blowOn(rig: Rig, target: Combatant, closing: number, height: number,
   over: Partial<Impact> = {}): Impact {
@@ -3095,7 +3431,7 @@ async function oneBlowThreeBodies(): Promise<void> {
     const rig = await buildRig({}, species, foeSpawn(species));
     rig.hold(60);
     const start = rig.foe.position(new THREE.Vector3());
-    rig.foe.receive(blowOn(rig, rig.foe, 8, 0.75));
+    rig.foe.receive(blowOn(rig, rig.foe, 5.3, 0.75));
     const { effect, speed, mass } = rig.foe.lastBlow!;
     let moved = 0;
     let tilt = 0;
@@ -3138,7 +3474,7 @@ async function aKnockedDownFighterGetsUp(): Promise<void> {
   rig.fight(20);
   const standing = rig.foe.position(new THREE.Vector3()).y;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   const head = rig.foe.fighter.parts.find((p) => p.name === "head")!.body!;
   let tilt = 0;
@@ -3223,7 +3559,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
     return legParts.map((l) => l.mesh.getWorldPosition(new THREE.Vector3()));
   };
 
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   const effect = rig.foe.lastBlow!.effect;
   let limp = true;
   let simulated = true;
@@ -3275,14 +3611,14 @@ async function aKnockdownGoesLimp(): Promise<void> {
 
   // Floored again halfway up: limp again, from however far up it had got.
   rig.hold(30);
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   let rising = false;
   for (let i = 0; i < 60 * 4 && !rising; i++) {
     rig.hold(1);
     rising = f.down && !f.limp;
   }
   rig.hold(10);
-  rig.foe.receive(blowOn(rig, rig.foe, 12, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 8, 0.8));
   const again = rig.foe.lastBlow!.effect === "down" && f.limp;
   for (let i = 0; i < 60 * 5 && f.down; i++) rig.hold(1);
   rig.hold(60);
@@ -3292,7 +3628,7 @@ async function aKnockdownGoesLimp(): Promise<void> {
       + `down ${f.down}, ${census()}, tilt ${tiltOf(f.body).toFixed(1)}deg`);
 
   // And killed on the floor: it stays down, and a reset still takes it all away.
-  rig.foe.receive(blowOn(rig, rig.foe, 10, 0.8));
+  rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8));
   rig.hold(20);
   const torso = f.collider.handle;
   for (let i = 0; i < 60 && !rig.foe.dead; i++) rig.foe.receive(fakeImpact(torso, { closingSpeed: 10 }));
@@ -3322,7 +3658,7 @@ async function aStaggerTakesTheSwingOffIt(): Promise<void> {
   rig.fight(2);
   const winding = rig.ai.intent === "windup" && rig.ai.committed !== null;
 
-  rig.foe.receive(blowOn(rig, rig.foe, 6, 0.6));
+  rig.foe.receive(blowOn(rig, rig.foe, 4, 0.6));
   const effect = rig.foe.lastBlow!.effect;
   rig.fight(1);
   const after = { intent: rig.ai.intent, committed: rig.ai.committed };
@@ -3352,8 +3688,12 @@ async function realBlowsAreWeighed(): Promise<void> {
     });
     // Forty seconds of it, however many lives that takes: the AI makes its
     // swings up at random, and an orc that happens to take your head in the
-    // first few blows would leave too few to count.
-    for (let i = 0; i < 60 * 40; i++) {
+    // first few blows would leave too few to count. Eighty for the orc: its
+    // axe rocks you about seven times in forty seconds, but that is a count
+    // of what one random fight throws at you, and forty seconds of it has
+    // given one.
+    const seconds = species === ORC ? 80 : 40;
+    for (let i = 0; i < 60 * seconds; i++) {
       rig.fight(1);
       if (rig.player.dead) rig.place(HOME);
     }
@@ -3363,7 +3703,7 @@ async function realBlowsAreWeighed(): Promise<void> {
   const goblin = tally.get("goblin")!;
   const line = (e: Record<string, number>) =>
     `${e.none} none, ${e.shove} shoved, ${e.stagger} staggered, ${e.down} down`;
-  check("the orc's axe rocks you", orc.stagger + orc.down > 0, line(orc));
+  tendency("the orc's axe rocks you", orc.stagger + orc.down > 0, line(orc));
   check("the goblin's spear never moves you",
     goblin.shove + goblin.stagger + goblin.down === 0 && goblin.none > 5, line(goblin));
 
@@ -3447,6 +3787,132 @@ async function theDummySwingsWhenStruck(): Promise<void> {
     `hand ${(handMoved * 100).toFixed(0)} cm, chest ${(chestMoved * 100).toFixed(1)} cm, nothing cut`);
 }
 
+/**
+ * Knocked down, it gets up off the floor, and only off the floor: once it has
+ * come down and lain still (see `SETTLED` in fighter.ts), not in the air or
+ * still rolling. And it comes up through a crouch, bowed over its feet, and
+ * stands out of it -- no knee or hip through the floor on the way, whichever
+ * way up it lay, and no snap square at the end.
+ *
+ * A goblin and a man, each knocked over backwards -- on its back -- and
+ * forwards, on its face; and a goblin thrown up off the floor as it goes over,
+ * as the ogre's club throws you.
+ */
+async function aKnockdownGetsUpOffTheFloor(): Promise<void> {
+  console.log("\nknocked down, it gets up off the floor, through a crouch, and nothing snaps");
+  const deg = (r: number) => `${(r * 180 / Math.PI).toFixed(1)}deg`;
+  const trials: { species: Species; face: "up" | "down"; throw?: number }[] = [
+    { species: GOBLIN, face: "up" },
+    { species: GOBLIN, face: "down" },
+    { species: SWORDSMAN, face: "up" },
+    { species: SWORDSMAN, face: "down" },
+    { species: GOBLIN, face: "up", throw: 8 },
+  ];
+  const lines: string[] = [];
+  let everyUp = true;
+  let onFloor = true;
+  let aboveFloor = true;
+  let crouched = true;
+  let smooth = true;
+  let landedFirst = true;
+  let worstLow = Infinity;
+  let worstSnap = 0;
+  for (const trial of trials) {
+    const rig = await buildRig({}, trial.species, foeSpawn(trial.species));
+    const f = rig.foe.fighter;
+    // Facing away from you, the blow -- which goes away from you -- puts it
+    // on its face; facing you, on its back.
+    f.yaw = trial.face === "up" ? Math.PI : 0;
+    rig.hold(60);
+    const scale = trial.species.build.scale;
+    const legs = f.parts.filter((q) => /thigh|shin|pelvis/.test(q.name));
+    // A man takes a heavier blow than a sword's to put over: a club's.
+    rig.foe.receive(blowOn(rig, rig.foe, 6.7, 0.8,
+      trial.species === GOBLIN ? {} : { blowMass: CLUB.mass * 3 }));
+    const floored = rig.foe.lastBlow!.effect === "down";
+    let thrown = trial.throw === undefined;
+    let airborne = -1;
+    let rose = false;
+    let landed = -1;
+    const speeds: number[] = [];
+    let riseAt = -1;
+    let upAt = -1;
+    let riseSpeed = 0;
+    let riseHeight = 0;
+    let low = Infinity;
+    let sink = 0;
+    let snap = 0;
+    let turn = 0;
+    const was = new THREE.Quaternion();
+    const now = new THREE.Quaternion();
+    for (let i = 0; i < 60 * 6 && upAt < 0; i++) {
+      // Once it has gone over far enough to be lying, up it goes.
+      if (!thrown && tiltOf(f.body) > 60) {
+        const bodies = [f.body, ...f.parts.map((q) => q.body ?? q.collider.parent())]
+          .filter((b): b is NonNullable<typeof b> => b !== null && b.isDynamic());
+        for (const b of new Set(bodies)) {
+          const v = b.linvel();
+          b.setLinvel({ x: v.x, y: v.y + trial.throw!, z: v.z }, true);
+        }
+        thrown = true;
+        airborne = i;
+      }
+      const r = f.body.rotation();
+      was.set(r.x, r.y, r.z, r.w);
+      const down = f.down;
+      const limp = f.limp;
+      rig.hold(1);
+      const v = f.body.linvel();
+      speeds.push(Math.hypot(v.x, v.y, v.z));
+      const p = f.body.translation();
+      if (airborne >= 0 && p.y > 0.6 * scale) rose = true;
+      if (rose && landed < 0 && p.y < 0.4 * scale) landed = i;
+      const r2 = f.body.rotation();
+      now.set(r2.x, r2.y, r2.z, r2.w);
+      if (limp && !f.limp && f.down) {
+        riseAt = i;
+        riseSpeed = Math.max(...speeds.slice(-13, -1));
+        riseHeight = p.y;
+      }
+      if (riseAt >= 0 && f.down && !f.limp) {
+        low = Math.min(low, ...legs.map((q) => q.collider.translation().y));
+        sink = Math.max(sink, f.posture.pose.sink);
+        turn = Math.max(turn, was.angleTo(now));
+      }
+      if (down && !f.down) {
+        upAt = i;
+        snap = was.angleTo(now);
+      }
+    }
+    const who = `${trial.species.name.replace(/^the /, "")} ${trial.throw ? "thrown" : `face ${trial.face}`}`;
+    everyUp &&= floored && upAt > 0;
+    // Lying, the chest is a hull's radius or so off the floor: a goblin's,
+    // 0.1 m. The old way up began with a thrown goblin's 0.6 m up, at 2 m/s.
+    onFloor &&= riseAt > 0 && riseHeight < 0.4 * scale;
+    if (trial.throw !== undefined) landedFirst = airborne >= 0 && landed > 0 && riseAt > landed;
+    aboveFloor &&= low > 0;
+    crouched &&= sink > 0.2 * scale;
+    smooth &&= snap < 0.035 && turn < 0.25;
+    worstLow = Math.min(worstLow, low);
+    worstSnap = Math.max(worstSnap, snap);
+    lines.push(`${who}: ${floored ? "down" : "not floored"}, up ${riseAt > 0 ? `from ${riseHeight.toFixed(2)} m at ` +
+      `${riseSpeed.toFixed(2)} m/s after ${(riseAt / 60).toFixed(2)}s` : "never"}` +
+      `${trial.throw ? ` (thrown at ${(airborne / 60).toFixed(2)}s, down again at ${(landed / 60).toFixed(2)}s)` : ""}, ` +
+      `on its feet after ${upAt > 0 ? (upAt / 60).toFixed(2) : "-"}s; legs down to ${low.toFixed(3)} m, ` +
+      `crouched ${sink.toFixed(2)} m, ${deg(turn)} a step at most and ${deg(snap)} the last`);
+  }
+  for (const line of lines) console.log(`    ${line}`);
+  check("knocked down, whichever way up it lands, it gets up", everyUp, `${trials.length} falls`);
+  check("only off the floor: down and lying there first, not in the air", onFloor && landedFirst,
+    !landedFirst ? "thrown, it began to get up before it was down again"
+      : !onFloor ? "a rise began off the floor" : "every rise began lying on the floor");
+  check("and on the way up, nothing of it goes into the floor", aboveFloor,
+    `the legs and hips down to ${worstLow.toFixed(3)} m at the lowest`);
+  check("it comes up through a crouch, not stiff as a plank", crouched,
+    "the hips sunk into a crouch on every rise");
+  check("and stands up out of it without a snap", smooth, `${deg(worstSnap)} the last step at worst`);
+}
+
 async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   console.log("\nfloored three times over, a body is still in one piece");
   const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
@@ -3455,7 +3921,7 @@ async function knockdownsDoNotWearTheBodyOut(): Promise<void> {
   let floored = 0;
   let finite = true;
   for (let round = 0; round < 3; round++) {
-    rig.foe.receive(blowOn(rig, rig.foe, 11, 0.8));
+    rig.foe.receive(blowOn(rig, rig.foe, 7.3, 0.8));
     if (rig.foe.fighter.down) floored++;
     for (let i = 0; i < 60 * 4 && rig.foe.fighter.down; i++) {
       rig.hold(1);
@@ -3484,7 +3950,7 @@ async function oneSwingIsOneBlow(): Promise<void> {
   const rig = await buildRig({}, SWORDSMAN, foeSpawn(SWORDSMAN));
   rig.hold(60);
   const offArm = rig.foe.fighter.parts.find((p) => p.name === "offShoulder")!;
-  const first = blowOn(rig, rig.foe, 12, 0.6);
+  const first = blowOn(rig, rig.foe, 8, 0.6);
   rig.foe.receive(first);
   const once = rig.foe.fighter.knock.length();
   // The same swing, a tenth of a second on, through the arm as well.
@@ -3747,7 +4213,7 @@ async function footworkAsksTheStone(): Promise<void> {
   // corner. It goes round you less than it did, since it began drawing back
   // on its way in and while giving ground -- in and out rather than round --
   // and three metres of it in twenty-five seconds was no longer always there.
-  check("fought into a corner, it does not walk into the walls",
+  tendency("fought into a corner, it does not walk into the walls",
     bout.blocked < 30 && bout.around > 2 && bout.swings.length > 5,
     `${bout.blocked} of ${Math.round(footwork * 60)} footwork steps went nowhere; ` +
     `${bout.around.toFixed(1)} m round you, ${bout.swings.length} swings`);
@@ -3772,7 +4238,7 @@ async function anOpponentMovesBetweenSwings(): Promise<void> {
     const bout = watchBout(rig, 25);
     bouts.set(species.key, bout);
     // The old opponent managed under a metre of this in forty seconds.
-    check(`${species.name} goes round you`, bout.around > 1.5,
+    tendency(`${species.name} goes round you`, bout.around > 1.5,
       `${bout.around.toFixed(1)} m round you with ${bout.turns} changes of direction, ` +
       `${bout.away.toFixed(1)} m given, ${bout.swings.length} swings in 25s`);
   }
@@ -3780,17 +4246,17 @@ async function anOpponentMovesBetweenSwings(): Promise<void> {
   const orc = bouts.get("orc")!;
   const goblin = bouts.get("goblin")!;
   const turns = man.turns + orc.turns + goblin.turns;
-  check("and not always the same way round", turns >= 3,
+  tendency("and not always the same way round", turns >= 3,
     `${turns} changes of direction between the three of them`);
   const pct = (b: Bout) => `${(swinging(b) * 100).toFixed(0)}%`;
-  check("the orc presses: it spends more of the fight swinging than the goblin",
+  tendency("the orc presses: it spends more of the fight swinging than the goblin",
     swinging(orc) > swinging(goblin) + 0.05,
     `swinging ${pct(orc)} of the time, against the goblin's ${pct(goblin)} ` +
     `(and the man's ${pct(man)})`);
   // Backing off by choice, not the in-and-out of stepping in to swing: every
   // one of them does that.
   const backing = (b: Bout) => b.time.get("backoff") ?? 0;
-  check("the goblin goes round you out of your sword's reach, and backs off more than the orc",
+  tendency("the goblin goes round you out of your sword's reach, and backs off more than the orc",
     median(goblin.hover) > yours + 0.3 && backing(goblin) > backing(orc),
     `goes round you ${median(goblin.hover).toFixed(2)} m off, where your sword works at ` +
     `${yours.toFixed(2)}; backed off for ${backing(goblin).toFixed(1)}s to the orc's ` +
@@ -3802,10 +4268,24 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
   // The goblin, because it is the wary one: it answers more than half the
   // swings it sees, where the orc answers one in ten. A reaction time after
   // it sees them, too, so a quick cut has often landed before it moves.
-  const goblin = watchBout(await buildRig({}, GOBLIN, foeSpawn(GOBLIN)), 45, fencer());
-  check("a goblin hops back out of your cuts", goblin.evadedFrom.length >= 1,
-    `${goblin.evadedFrom.length} steps out of the way in 45s of being swung at`);
-  const from = goblin.evadedFrom;
+  //
+  // Put back where they began every seven and a half seconds, you first. The
+  // fencer presses it, and pressed for long enough it is pinned against a
+  // wall, where it swings from where it stands and gets out of the way of
+  // nothing: one bout in twenty spent its last thirty seconds there.
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  const drive = fencer();
+  const from: string[] = [];
+  for (let bout = 0; bout < 6; bout++) {
+    if (bout > 0) {
+      rig.place(HOME);
+      rig.foe.reset(rig.tuning, foeSpawn(GOBLIN));
+      rig.ai.reset();
+    }
+    from.push(...watchBout(rig, 7.5, drive).evadedFrom);
+  }
+  tendency("a goblin hops back out of your cuts", from.length >= 1,
+    `${from.length} steps out of the way in 45s of being swung at`);
   check("and never in the middle of a swing of its own",
     from.every((s) => s === "close" || s === "circle" || s === "backoff" || s === "taunt"),
     `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
@@ -3830,7 +4310,7 @@ async function anOpponentMovesInAndOut(): Promise<void> {
     rockIn += rig.ai.tally.rockIn;
     rockOut += rig.ai.tally.rockOut;
   }
-  check("it rocks in and out across the edge of its reach", rockIn >= 3 && rockOut >= 3,
+  tendency("it rocks in and out across the edge of its reach", rockIn >= 3 && rockOut >= 3,
     `${rockIn} half-steps in and ${rockOut} out, the swordsman and the goblin in 80s`);
 
   // Step in on it while it is going round you, and see how much ground it
@@ -3882,7 +4362,7 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   };
   const goblin = await given(GOBLIN);
   const stands = await given({ ...GOBLIN, footwork: { ...GOBLIN.footwork, give: 0 } });
-  check("step in on a goblin and it gives ground", goblin > stands + 0.1,
+  tendency("step in on a goblin and it gives ground", goblin > stands + 0.1,
     `${goblin.toFixed(2)} m back as you come, where one that never gives ground ` +
     `goes ${stands.toFixed(2)} (medians of 16)`);
 
@@ -3897,7 +4377,7 @@ async function anOpponentMovesInAndOut(): Promise<void> {
     punishes += rig.ai.tally.punishes;
     paid.push(`${species.name} ${rig.ai.tally.punishes}`);
   }
-  check("swing at it and miss, and it steps in and makes you pay", punishes >= 5,
+  tendency("swing at it and miss, and it steps in and makes you pay", punishes >= 5,
     `${paid.join(", ")} times in a minute each of being swung at`);
 
   // And it offers you something to miss: a step inside your reach, guard up,
@@ -3912,31 +4392,44 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   const yours = Math.hypot(hits.x - at.x, hits.z - at.z);
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
+  let baits = 0;
   let inside = 0;
   let outAgain = 0;
-  for (let i = 0; i < 60 * 30; i++) {
+  // Each bait from where it began: how near it came, and how far back out it
+  // went after that -- most of the way it came in. Over when the next one
+  // begins, when it stops going round you, or a second and a half on. Read
+  // where it was at the end of a set second and a half instead, a swordsman
+  // that always baits was as often as not inside again on the next one.
+  let watching = false;
+  let start = 0;
+  let nearest = 0;
+  let back = 0;
+  let steps = 0;
+  for (let i = 0; i < 60 * 30 || watching; i++) {
     const before = bait.ai.tally.baits;
     bait.fight(1);
-    if (bait.ai.tally.baits === before) continue;
-    // A bait has begun: how near it comes, and whether it goes back out --
-    // most of the way it came in.
     bait.player.position(me);
     bait.foe.position(it);
-    const start = Math.hypot(it.x - me.x, it.z - me.z);
-    let nearest = start;
-    let last = start;
-    for (let j = 0; j < 90 && bait.ai.intent === "circle"; j++, i++) {
-      bait.fight(1);
-      bait.player.position(me);
-      bait.foe.position(it);
-      last = Math.hypot(it.x - me.x, it.z - me.z);
-      nearest = Math.min(nearest, last);
+    const gap = Math.hypot(it.x - me.x, it.z - me.z);
+    const began = bait.ai.tally.baits > before;
+    if (watching && (began || bait.ai.intent !== "circle" || ++steps > 90)) {
+      if (nearest < yours) inside++;
+      if (back > 0.5 * (start - nearest)) outAgain++;
+      watching = false;
     }
-    if (nearest < yours) inside++;
-    if (last - nearest > 0.5 * (start - nearest)) outAgain++;
+    if (began && i < 60 * 30) {
+      baits++;
+      watching = true;
+      start = nearest = gap;
+      back = steps = 0;
+    } else if (watching && gap < nearest) {
+      nearest = gap;
+      back = 0;
+    } else if (watching) {
+      back = Math.max(back, gap - nearest);
+    }
   }
-  const baits = bait.ai.tally.baits;
-  check("and it steps inside your reach on purpose, and back out", baits >= 3
+  tendency("and it steps inside your reach on purpose, and back out", baits >= 3
     && inside >= baits / 2 && outAgain >= inside / 2,
     `${baits} times in 30s: ${inside} inside the ${yours.toFixed(2)} m your sword works at, ` +
     `${outAgain} back out again`);
@@ -4023,7 +4516,7 @@ async function weaponsKnockEachOther(): Promise<void> {
     open.fight(40);
     if (open.ai.tally.punishes > before) took++;
   }
-  check("your weapon knocked aside, it steps in on the opening", tried >= 3 && took >= 0.6 * tried,
+  tendency("your weapon knocked aside, it steps in on the opening", tried >= 3 && took >= 0.6 * tried,
     `${took} of ${tried} times`);
 
   // And in a fight: stand with your guard up over your head, in front of an
@@ -4054,7 +4547,7 @@ async function weaponsKnockEachOther(): Promise<void> {
     guard.fight(1, facing);
     if (guard.player.dead) guard.place(home);
   }
-  check("hold your guard in front of the orc and its axe knocks it aside", yours >= 1,
+  tendency("hold your guard in front of the orc and its axe knocks it aside", yours >= 1,
     `${yours} times in 30s`);
 }
 
@@ -4141,13 +4634,17 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
   // the floor it is committed to the line it jumped on and to where you were
   // when it jumped, so stepping aside is the answer: which has to be true, or
   // it is just an axe you cannot avoid.
-  const still = await leapTrials(10, false);
+  // Thirty stood still for: its chop lands about three times in five, and on
+  // luck alone ten of them fell under two in five on about one seed in
+  // thirty. Thirty do on about one in two hundred.
+  const still = await leapTrials(30, false);
   const aside = await leapTrials(10, true);
   const leapt = still.filter((t) => t.leapt);
   const lowest = Math.min(...leapt.map((t) => t.rose));
-  check("back out of its reach and it leaps at you", leapt.length >= 7 && lowest > 0.2,
-    `${leapt.length} of ${still.length} times; its feet left the floor by at least ` +
-    `${(lowest * 100).toFixed(0)}cm`);
+  tendency("back out of its reach and it leaps at you", leapt.length >= 0.7 * still.length,
+    `${leapt.length} of ${still.length} times`);
+  check("and every leap takes its feet well off the floor", lowest > 0.2,
+    `its feet left the floor by at least ${(lowest * 100).toFixed(0)}cm`);
   const inAir = leapt.filter((t) => t.inAir).length;
   check("the axe is up before it jumps, and comes down in the air", inAir >= leapt.length - 1,
     `${inAir} of ${leapt.length} chops began before its feet found the floor`);
@@ -4155,9 +4652,9 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
   const standingHits = landed(still);
   const dodged = aside.filter((t) => t.leapt);
   const asideHits = landed(aside);
-  check("stand there and it lands", standingHits >= 0.4 * leapt.length,
+  tendency("stand there and it lands", standingHits >= 0.4 * leapt.length,
     `the chop drew blood ${standingHits} times in ${leapt.length}`);
-  check("step aside as its feet leave the floor and it does not",
+  tendency("step aside as its feet leave the floor and it does not",
     dodged.length >= 5 && asideHits <= 0.3 * dodged.length,
     `${asideHits} of ${dodged.length} chops drew blood from someone stepping out of the way`);
 
@@ -4170,12 +4667,19 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
   let closest = 99;
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
+  // Up to its first swing, which is the end of its first time. After that it
+  // has had you in reach, and may leap: on one seed its first chop floored
+  // you, it backed off, and came back through the air.
   for (let i = 0; i < 60 * 4; i++) {
     fresh.fight(1);
-    if (fresh.ai.committed?.leap) jumpedIn = true;
     fresh.player.position(me);
     fresh.foe.position(it);
     closest = Math.min(closest, Math.hypot(me.x - it.x, me.z - it.z));
+    const swing = fresh.ai.committed;
+    if (swing !== null) {
+      jumpedIn = swing.leap;
+      break;
+    }
   }
   check("but it walks up to you the first time", !jumpedIn && closest < 2.2,
     `${jumpedIn ? "leapt" : "no leap"}; closed to ${closest.toFixed(2)} m`);
@@ -4197,11 +4701,11 @@ async function crowdingItDoesNotStopIt(): Promise<void> {
     rig.place(new THREE.Vector3(10.0, HOME.y, -3.8));
     const bout = watchBout(rig, 15, crowder());
     if (species === GOBLIN) shaft = bout.swings.filter((a) => a === "shaft sweep").length;
-    check(`${species.name} swings at you from inside its guard`, bout.swings.length >= 4,
+    tendency(`${species.name} swings at you from inside its guard`, bout.swings.length >= 4,
       `${bout.swings.length} swings in 15s with you in its face, median ` +
       `${median(bout.ranges).toFixed(2)} m off`);
   }
-  check("inside a goblin's point, it swings the shaft", shaft > 0,
+  tendency("inside a goblin's point, it swings the shaft", shaft > 0,
     `${shaft} shaft sweeps -- the one swing it has up close`);
 }
 
@@ -4324,7 +4828,7 @@ async function aMissRunsIntoTheNextSwing(): Promise<void> {
     `${linked} of them starting where the one before ended or began`);
   check("and every one of them is drawn back for", chained >= 5 && drawn === chained,
     `${drawn} of ${chained} drew the weapon back first`);
-  check("a run is paid for: its guard is longer coming back up at the end of one",
+  tendency("a run is paid for: its guard is longer coming back up at the end of one",
     longer.length >= 3 && median(longer) > 0.08,
     `a median ${median(longer).toFixed(2)}s longer after ${longer.length} runs than the same ` +
     `creature's after a swing on its own (${alone.map((a) => a.toFixed(2)).join(", ")}s)`);
@@ -4358,7 +4862,7 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
   // Where it holds its guard after a swing is all but decided by where the
   // swing ended, so two of each is plenty; swings that end on its right are
   // the fewer, and half a minute of two creatures now and then throws two.
-  check("after a swing it keeps its weapon on the side the swing ended",
+  tendency("after a swing it keeps its weapon on the side the swing ended",
     left.length >= 2 && right.length >= 2 && mean(left) - mean(right) > 0.3,
     `guard at ${mean(left).toFixed(2)} rad after a swing ending on its left, ` +
     `${mean(right).toFixed(2)} after one ending on its right (${left.length} and ${right.length})`);
@@ -4377,7 +4881,10 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
   // Coming back to its guard out of a parry or a step out of the way is the
   // end of those, at a hand's speed: the guard is measured once it is back.
   let settled = 0;
-  for (let i = 0; i < 60 * 20; i++) {
+  // Twenty seconds of it going round you, however long that takes. It drifts
+  // into someone standing still now and then, and from inside its guard it
+  // swings rather than goes round: on one seed, for eleven seconds of twenty.
+  for (let i = 0; i < 60 * 60 && yaws.length < 60 * 20; i++) {
     rig.fight(1);
     if (rig.ai.intent !== "circle") {
       was = null;
@@ -4396,7 +4903,7 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
   // A guard held still, as it was, ranges well under a hundredth of a radian
   // either way over the same bout; a shift or two more or less in twenty
   // seconds is the difference between a tenth and a twentieth.
-  check("going round you, it moves its guard about", yaws.length > 600
+  tendency("going round you, it moves its guard about", yaws.length > 600
     && spread(yaws) > 0.03 && spread(pitches) > 0.03,
     `over ${(yaws.length / 60).toFixed(0)}s its guard ranged ${spread(yaws).toFixed(2)} rad across and ` +
     `${spread(pitches).toFixed(2)} up and down (standard deviations)`);
@@ -4424,11 +4931,14 @@ async function itDrawsBackOnTheMove(): Promise<void> {
     rig.foe.position(it);
     return Math.hypot(me.x - it.x, me.z - it.z);
   };
+  // A minute and a third each: whether it comes in drawing back is rolled
+  // once each time it comes, and forty seconds each came to two to eleven
+  // swings drawn back on the way in.
   for (const species of [SWORDSMAN, ORC]) {
     const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
     rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     let start = 0;
-    for (let i = 0; i < 60 * 40; i++) {
+    for (let i = 0; i < 60 * 80; i++) {
       const before = rig.ai.intent;
       rig.fight(1);
       const now = rig.ai.intent;
@@ -4441,12 +4951,15 @@ async function itDrawsBackOnTheMove(): Promise<void> {
       if (rig.player.dead) rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     }
   }
-  check("pressing in, it draws back on its way and swings as it arrives",
+  tendency("pressing in, it draws back on its way and swings as it arrives",
     coming >= 3 && closed >= (2 / 3) * coming,
-    `${coming} swings drawn back on the way in, the swordsman's and the orc's in 40s each; ` +
+    `${coming} swings drawn back on the way in, the swordsman's and the orc's in 80s each; ` +
     `${closed} closed the gap by more than 15cm while the weapon went back`);
 
-  const lunger = { ...GOBLIN, footwork: { ...GOBLIN.footwork, lunge: 1 } };
+  // A goblin that lunges whenever it swings from where it stands -- and never
+  // quick-steps in instead, which it otherwise does on most of its ways in,
+  // leaving a bout too few lunges to say anything about.
+  const lunger = { ...GOBLIN, footwork: { ...GOBLIN.footwork, lunge: 1, dart: 0 } };
   const rig = await buildRig({}, lunger, spawnFor(GOBLIN, 10.0, -7.8));
   rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
   let lunges = 0;
@@ -4468,7 +4981,7 @@ async function itDrawsBackOnTheMove(): Promise<void> {
       if (widest - gap(rig) > 0.1) cameBack++;
     }
   }
-  check("and from giving ground: a step back as the weapon goes back, and in again behind it",
+  tendency("and from giving ground: a step back as the weapon goes back, and in again behind it",
     lunges >= 3 && gave >= (2 / 3) * lunges && cameBack >= (2 / 3) * lunges,
     `${lunges} lunges by a goblin that always does: ${gave} gave more than 10cm of ground as ` +
     `the spear went back, and ${cameBack} came back in by more than that before it thrust`);
@@ -4494,7 +5007,14 @@ async function aMissCanCarryItRound(): Promise<void> {
   check("Shift with a turn turns you on your heel, several times as fast", heel > 3 * walk,
     `in 0.4s: ${walk.toFixed(2)} rad turning, ${heel.toFixed(2)} on your heel`);
 
+  // A spin still going when its bout ends is counted, but not judged: where it
+  // would have ended isn't seen. The one of those allowed to "its back is to
+  // you" was all that ever failed it -- every spin that ended in its bout had
+  // turned all but a full half-turn away -- so it judges the ones that end,
+  // with nothing allowed. And two bouts of eighty seconds, not forty: with
+  // forty, four spins was a bar luck alone missed about one seed in ten.
   let spins = 0;
+  let ended = 0;
   let backTurned = 0;
   let fastest = 0;
   let met = 0;
@@ -4516,7 +5036,7 @@ async function aMissCanCarryItRound(): Promise<void> {
     const me = new THREE.Vector3();
     const it = new THREE.Vector3();
     let turnedAway = false;
-    for (let i = 1; i < 60 * 40; i++) {
+    for (let i = 1; i < 60 * 80; i++) {
       const was = fight.ai.spinning;
       fight.fight(1, drive(fight));
       const now = fight.ai.spinning;
@@ -4535,6 +5055,7 @@ async function aMissCanCarryItRound(): Promise<void> {
         if (Math.abs(off) > 2.2) turnedAway = true;
       }
       if (was && !now) {
+        ended++;
         if (turnedAway) backTurned++;
         if (touched) met++;
       }
@@ -4548,12 +5069,12 @@ async function aMissCanCarryItRound(): Promise<void> {
     }
     who.push(`${base.name} ${fight.ai.tally.spins}`);
   }
-  check("miss with a swing that goes round, and it may come round again", spins >= 4,
-    `${spins} spins in 40s each (${who.join(", ")}) against someone stepping back out of every swing`);
+  tendency("miss with a swing that goes round, and it may come round again", spins >= 4,
+    `${spins} spins in 80s each (${who.join(", ")}) against someone stepping back out of every swing`);
   check("its back is to you on the way round, which is the moment to go in",
-    backTurned >= spins - 1,
-    `${backTurned} of ${spins} turned it more than two radians away from you`);
-  check("and the weapon comes round at you at a body's turning speed", fastest > 10 && met >= 2,
+    ended >= 1 && backTurned === ended,
+    `${backTurned} of the ${ended} that ended in their bout turned it more than two radians away from you`);
+  tendency("and the weapon comes round at you at a body's turning speed", fastest > 10 && met >= 2,
     `up to ${fastest.toFixed(1)} m/s at the tip; ${met} of ${spins} met you or your weapon`);
 }
 
@@ -4571,9 +5092,11 @@ async function itMeetsASwingWithItsWeapon(): Promise<void> {
   // across the line yours is coming on, a reaction time after it sees yours
   // go back -- which is what anyone watching an arm reads, and not a moment
   // before -- and what comes of that is the weapons' business. Stand in front
-  // of one going round you and cut at it, sixteen times. About half the swings
-  // it parries meet its weapon: a dozen was too few to say so every time.
-  const swings = 16;
+  // of one going round you and cut at it, thirty-two times. About half the
+  // swings it parries meet its weapon: a dozen was too few to say so every
+  // time, and sixteen, luck alone left at one on about one seed in thirty.
+  // What it asks is a rate: the bars go up with the swings.
+  const swings = 32;
   const trial = async (base: Species, parry: number) => {
     const species = {
       ...base,
@@ -4594,6 +5117,12 @@ async function itMeetsASwingWithItsWeapon(): Promise<void> {
     // step further off an orc's bulk, a step nearer a goblin.
     const off = 1.0 * Math.max(0.9, species.build.scale * species.build.girth);
     for (let k = 0; k < swings; k++) {
+      // Put back together if your cuts took its head or its sword arm: a
+      // corpse parries nothing, and nor does a hand with no sword in it.
+      if (rig.foe.dead || rig.foe.arm.disarmed) {
+        rig.foe.reset(rig.tuning, spawnFor(species, 20.8, 5.0));
+        rig.ai.reset();
+      }
       for (let i = 0; i < 240 && rig.ai.intent !== "circle"; i++) rig.fight(1);
       // In front of it, facing it.
       const at = rig.foe.position(new THREE.Vector3());
@@ -4633,14 +5162,17 @@ async function itMeetsASwingWithItsWeapon(): Promise<void> {
   const never = await trial(SWORDSMAN, 0);
   const man = await trial(SWORDSMAN, 1);
   const orc = await trial(ORC, 1);
-  check("it puts its weapon in the way of a swing it sees drawn back",
-    man.parried >= 6 && man.met >= 2 && never.parried === 0,
+  tendency("it puts its weapon in the way of a swing it sees drawn back",
+    man.parried >= swings * 6 / 16 && man.met >= swings * 2 / 16,
     `a swordsman that always does met ${man.parried} of ${swings} forehands, ` +
-    `${man.met} of them with its sword; one that never does, ${never.parried}`);
+    `${man.met} of them with its sword`);
+  check("and one that never parries, never does", never.parried === 0,
+    `${never.parried} of ${swings} forehands met by a swordsman that never parries`);
   // Held still in the way, a weapon is knocked aside by a swing with more
   // behind it, as any is; still moving as your blade meets it, the orc's axe
   // sends your sword back instead. Which it is, is where the axe had got to.
-  check("and the orc puts its axe in the way", orc.parried >= 4 && orc.met >= 1,
+  tendency("and the orc puts its axe in the way",
+    orc.parried >= swings * 4 / 16 && orc.met >= swings / 16,
     `${orc.parried} of ${swings} parried, ${orc.met} met by the axe, ` +
     `${orc.knocked} sending your sword back`);
 }
@@ -4683,7 +5215,7 @@ async function itHopsClearAndFlinches(): Promise<void> {
     if (rig.ai.intent === "evade" || rig.ai.intent === "backoff") rose = Math.max(rose, it.y - floor);
     if (rig.player.dead) rig.place(home);
   }
-  check("a goblin swung at hops back off the floor", rig.ai.tally.hops >= 1 && rose > 0.15,
+  tendency("a goblin swung at hops back off the floor", rig.ai.tally.hops >= 1 && rose > 0.15,
     `${rig.ai.tally.hops} hops in 60s of being swung at by one that always does, ` +
     `up to ${(rose * 100).toFixed(0)}cm off the floor`);
 
@@ -4705,8 +5237,12 @@ async function itHopsClearAndFlinches(): Promise<void> {
       r.fight(1);
       const after: string = r.ai.intent;
       if (after === "recover") gone++;
-      r.fight(60);
+      // Healed while it can still see it heal. Healed after the pause instead,
+      // a trial that began with the next wind-up already under way took off
+      // exactly what the healing had just put back, before it had looked:
+      // to it nothing had happened, and a tenth of the cuts were never felt.
       r.foe.health = r.foe.maxHealth;
+      r.fight(60);
     }
     counts.set(species.key, [gone, tries]);
     let_go.push(`${species.name} ${gone} of ${tries}`);
@@ -4714,10 +5250,11 @@ async function itHopsClearAndFlinches(): Promise<void> {
   const [goblin, gTries] = counts.get("goblin")!;
   const [man, mTries] = counts.get("swordsman")!;
   const [orc, oTries] = counts.get("orc")!;
-  check("cut while it draws back, it may let go of the swing -- never the orc",
-    gTries >= 8 && goblin >= gTries / 2 && mTries >= 8 && man >= 1 && man < mTries
-      && oTries >= 8 && orc === 0,
+  tendency("cut while it draws back, it may let go of the swing",
+    gTries >= 8 && goblin >= gTries / 2 && mTries >= 8 && man >= 1 && man < mTries,
     `let go of the swing: ${let_go.join(", ")}`);
+  check("and the orc never does", oTries >= 8 && orc === 0,
+    `the orc let go of ${orc} of ${oTries}`);
 }
 
 async function aCutLegLamesYou(): Promise<void> {
@@ -4749,21 +5286,23 @@ async function aCutLegLamesYou(): Promise<void> {
 async function badlyHurtItFightsLikeIt(): Promise<void> {
   console.log("\nbadly hurt, it fights like it");
   // The orc gets angry and the goblin gets away: the same creature, fought
-  // with a quarter of its health left, against itself whole.
+  // with a quarter of its health left, against itself whole. Eighty seconds
+  // a bout: in forty the hurt orc swung ten points more of the time give or
+  // take five, and luck alone put it behind about one seed in fifty.
   const bout = async (species: Species, hurt: boolean) => {
     const rig = await buildRig({}, species, foeSpawn(species));
     if (hurt) rig.foe.health = rig.foe.maxHealth * 0.25;
-    return watchBout(rig, 40);
+    return watchBout(rig, 80);
   };
   const orc = await bout(ORC, false);
   const angry = await bout(ORC, true);
   const goblin = await bout(GOBLIN, false);
   const scared = await bout(GOBLIN, true);
   const pct = (b: Bout) => `${(swinging(b) * 100).toFixed(0)}%`;
-  check("hurt, the orc gets angry: it spends more of the fight swinging",
+  tendency("hurt, the orc gets angry: it spends more of the fight swinging",
     swinging(angry) > swinging(orc),
     `swinging ${pct(angry)} of the time with a quarter of its health, ${pct(orc)} whole`);
-  check("and the goblin gets away: it spends less of it swinging, and more going round you",
+  tendency("and the goblin gets away: it spends less of it swinging, and more going round you",
     swinging(scared) < swinging(goblin),
     `swinging ${pct(scared)} of the time with a quarter of its health, ${pct(goblin)} whole`);
 }
@@ -4778,6 +5317,7 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
   const it = new THREE.Vector3();
   let lowest = 9;
   let nearest = 99;
+  let standing = 0;
   let windups = 0;
   // Where its axe does its work, flat from its middle, measured as it measures its own.
   rig.foe.position(it);
@@ -4791,16 +5331,25 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
     rig.foe.position(it);
     faceToward(rig.fighter, it.x - me.x, it.z - me.z, keys);
     const before = rig.ai.intent;
+    const down = rig.player.fighter.down;
     rig.fight(1, keys);
     if (rig.ai.intent !== "taunt") continue;
-    if (before !== "taunt") nearest = Math.min(nearest, Math.hypot(me.x - it.x, me.z - it.z));
+    // Over you on the floor it taunts from wherever it stands, rather than come
+    // and finish you (see `Ai.taunt`), and standing there you get floored now
+    // and then. How near it comes is asked of taunts at someone on their feet,
+    // and there has to be one.
+    if (before !== "taunt" && !down) {
+      standing++;
+      nearest = Math.min(nearest, Math.hypot(me.x - it.x, me.z - it.z));
+    }
     lowest = Math.min(lowest, rig.foe.arm.tipPosition.y);
     if (rig.ai.committed !== null) windups++;
   }
   check("the orc beats the floor with its axe at you, from out of its reach",
-    rig.ai.tally.taunts >= 1 && lowest < 0.4 && nearest > 1.3 * reach && windups === 0,
-    `${rig.ai.tally.taunts} taunts, the axe down to ${(lowest * 100).toFixed(0)}cm off the floor, ` +
-    `never nearer you than ${nearest.toFixed(1)} m, where its axe works at ${reach.toFixed(2)}`);
+    standing >= 1 && lowest < 0.4 && nearest > 1.3 * reach && windups === 0,
+    `${rig.ai.tally.taunts} taunts, ${standing} at you on your feet; the axe down to ` +
+    `${(lowest * 100).toFixed(0)}cm off the floor, never nearer you on your feet than ` +
+    `${nearest.toFixed(1)} m, where its axe works at ${reach.toFixed(2)}`);
 }
 
 async function theyQuickStepToo(): Promise<void> {
@@ -4864,15 +5413,18 @@ async function theyQuickStepToo(): Promise<void> {
     steps.set(species.key, taken);
   }
   const [goblin, man, orc] = ["goblin", "swordsman", "orc"].map((k) => steps.get(k)!);
-  check("the goblin quick-steps all the time, the swordsman now and then, the orc hardly ever",
-    goblin > man && man > orc && soonest >= rest - 1e-6,
-    `${goblin}, ${man} and ${orc} quick steps in two minutes each; never two nearer than ` +
-    `${soonest.toFixed(2)}s apart, where the rest is ${rest}s`);
-  check("its moment come, it quick-steps in with the weapon going back, and swings from where it lands",
-    darts >= 6 && thrown >= 0.75 * darts && drawn === thrown && closed >= 0.75 * thrown,
-    `${darts} quick steps in to swing: ${thrown} swung from where they landed, ${drawn} of those ` +
-    `drew the weapon back first, ${closed} closed the gap by more than 30cm`);
-  check("and out again after a swing", outs >= 4,
+  tendency("the goblin quick-steps all the time, the swordsman now and then, the orc hardly ever",
+    goblin > man && man > orc,
+    `${goblin}, ${man} and ${orc} quick steps in two minutes each`);
+  check("and never two nearer together than the rest between them", soonest >= rest - 1e-6,
+    `never two nearer than ${soonest.toFixed(2)}s apart, where the rest is ${rest}s`);
+  tendency("its moment come, it quick-steps in with the weapon going back, and swings from where it lands",
+    darts >= 6 && thrown >= 0.75 * darts && closed >= 0.75 * thrown,
+    `${darts} quick steps in to swing: ${thrown} swung from where they landed, ${closed} of those ` +
+    `closed the gap by more than 30cm`);
+  check("and every swing off one is drawn back for", drawn === thrown,
+    `${drawn} of ${thrown} drew the weapon back first`);
+  tendency("and out again after a swing", outs >= 4,
     `${outs} quick steps back out of reach after a swing`);
 
   // Out of the way of your swing, a quick step gets it further in the moment
@@ -4921,11 +5473,12 @@ async function theyQuickStepToo(): Promise<void> {
   };
   const quick = await away(1);
   const step = await away(0);
-  check("and out of the way of your swing, further in the moment it has than a step goes",
-    quick.quick >= 3 && step.quick === 0 && step.moved.length >= 3
-      && median(quick.moved) > 1.4 * median(step.moved),
+  tendency("and out of the way of your swing, further in the moment it has than a step goes",
+    quick.quick >= 3 && step.moved.length >= 3 && median(quick.moved) > 1.4 * median(step.moved),
     `${quick.quick} quick steps out of the way, ${median(quick.moved).toFixed(2)} m in the first ` +
     `0.2s; a step ${median(step.moved).toFixed(2)} m (${step.moved.length} of them)`);
+  check("and one that never quick-steps out of the way, never does", step.quick === 0,
+    `${step.quick} quick steps out of the way by a goblin that never takes them`);
 }
 
 // -----------------------------------------------------------------------------
@@ -6639,7 +7192,7 @@ async function aClubSendsYouFlying(): Promise<void> {
       || rig.fighter.parts.some((p) => p.severed === true);
     if (rig.player.dead) break;
   }
-  check("swung up through you, it puts you on the floor metres away, off your feet on the way",
+  tendency("swung up through you, it puts you on the floor metres away, off your feet on the way",
     throws >= 2 && farthest > 2 && (highest > 0.1 || lift > 1),
     `${throws} times down; thrown up to ${farthest.toFixed(2)} m, the chest ${highest.toFixed(2)} m higher on the way, up to ${lift.toFixed(2)} m/s up`);
   check("and you get up again every time, with nothing taken off you",
@@ -6672,9 +7225,9 @@ async function theNewcomersCloseAndCut(): Promise<void> {
       if (rig.player.dead) break;
     }
     const reach = species === KOBOLD ? 1 : 2.2;
-    check(`${species.name} closes the distance and swings`, closest < reach && swings >= 5,
+    tendency(`${species.name} closes the distance and swings`, closest < reach && swings >= 5,
       `closed to ${closest.toFixed(2)} m, ${swings} swings in 30s`);
-    check(`${species.name} draws blood${species === OGRE ? ", and puts you on the floor" : ""}`,
+    tendency(`${species.name} draws blood${species === OGRE ? ", and puts you on the floor" : ""}`,
       firstCut >= 0 && (species !== OGRE || downs >= 2),
       firstCut >= 0
         ? `first cut at ${firstCut.toFixed(1)}s, you down to ${rig.player.health.toFixed(0)}, floored ${downs} times`
@@ -6752,125 +7305,165 @@ async function theNewKeysAreWhereTheySay(): Promise<void> {
     `two taps ${twice}, held first ${held}, too far apart ${slow}, Q between ${between}, three taps ${thrice}`);
 }
 
+/**
+ * Every group of checks, in the order they run. Each rolls its own dice (see
+ * `reseed`), so adding, dropping or moving one leaves the rest as they were.
+ */
+const GROUPS: (() => Promise<void>)[] = [
+  freeArmTracks,
+  reachesAtEveryExtension,
+  blockedBladeDefeatsTheArm,
+  edgeRollTracks,
+  survivesAbuse,
+  thinPostIsHittable,
+  damageCurveIsHonest,
+  limbsComeOff,
+  severingTakesChildrenWithIt,
+  resetRebuildsCleanly,
+  aRealSwingSevers,
+  aBladeStopsOnABody,
+  aHitSaysHowHardItWas,
+  theOpponentClosesAndSwings,
+  theOpponentPlaysByTheSameRules,
+  theOpponentCanHurtYou,
+  cuttingTheArmDisarms,
+  bladesIgnoreTheirOwnerButNotTheFoe,
+  deathDropsTheBody,
+  theTrunkWalksWithTheLegs,
+  aDeadBodyGoesLimp,
+  aLostArmIsHeld,
+
+  theControlsAreWhereTheySay,
+  jumpingLeavesTheGround,
+  airControlIsWeakerThanGround,
+  aDoubleTapIsAQuickStep,
+  aLegSweepCanBeJumped,
+  weaponsAreToldApartByPhysics,
+  theAxeIsHarderToSwing,
+  theBestiaryScalesHonestly,
+  eachSpeciesCanFight,
+  swingsAreReadOffTheArm,
+  aBladeCutsEveryoneButItsOwner,
+  resetPutsSeveredLimbsBackOn,
+  everyMovingPartIsInterpolated,
+  theTestingAreaIsAHallAndFourRooms,
+  anOpponentWaitsUntilItSeesYou,
+  anOpponentLooksWhereItLastSawYou,
+  thePenOpensOnTwoOrcs,
+  friendsComeAtYouFromTwoSides,
+  factionsGoForEachOther,
+  severingBleeds,
+
+  theArmKeepsOutOfItsOwnChest,
+  aFlickDoesNotSnapTheArm,
+  aRaisedArmDoesNotTurnOver,
+  slowInputIsUntouched,
+  theChestLeadsTheArm,
+  theFeetStayPlantedThenStep,
+  theKneesBendLikeAPersons,
+  stoppingPutsTheFeetDown,
+  turningOnTheSpotSteps,
+  theLegsGoTheWayTheBodyDoes,
+  theBodyAgreesWithItsProbes,
+  thePostureIsInterpolated,
+
+  theWeaponsWeighWhatTheyShould,
+  theGripKeepsTheEdge,
+  theWristKeepsTheLine,
+  noGripSpinsUnderAbuse,
+
+  oneBlowThreeBodies,
+  aKnockedDownFighterGetsUp,
+  aKnockdownGoesLimp,
+  aStaggerTakesTheSwingOffIt,
+  realBlowsAreWeighed,
+  theDummySwingsWhenStruck,
+  aKnockdownGetsUpOffTheFloor,
+  knockdownsDoNotWearTheBodyOut,
+  oneSwingIsOneBlow,
+  aCorpseLiesStill,
+  aDroppedWeaponIsNotKicked,
+
+  footworkAsksTheStone,
+  anOpponentMovesBetweenSwings,
+  anOpponentGetsOutOfTheWay,
+  anOpponentMovesInAndOut,
+  weaponsKnockEachOther,
+  crowdingItDoesNotStopIt,
+  theOrcComesAfterYouThroughTheAir,
+  aMissRunsIntoTheNextSwing,
+  itsGuardIsWhereItsLastSwingLeftIt,
+  itDrawsBackOnTheMove,
+  aMissCanCarryItRound,
+  itMeetsASwingWithItsWeapon,
+  itHopsClearAndFlinches,
+  aCutLegLamesYou,
+  badlyHurtItFightsLikeIt,
+  itTauntsYouFromOutOfReach,
+  theyQuickStepToo,
+
+  theOtherArmHoldsStill,
+  theSwordGoesOnYourBack,
+  aFreeHandTakesThings,
+  fGoesAndGetsIt,
+  aLeverIsPulledByHand,
+  aShieldStopsABlade,
+  theShieldArmIsSteered,
+  theShieldGoesOnYourBackToo,
+  aShieldOnYourBackStopsACutFromBehind,
+  whatYouCutOffYouCanCarryOff,
+  whatYouHoldYouCanThrow,
+  theOrcsAxeCanBeWielded,
+  everyWeaponCanBeWielded,
+  aCrouchGetsLow,
+  aVaultGoesOver,
+  aClimbGoesUp,
+  theStonesAndTheRailAreJumped,
+  theNewcomersScaleHonestly,
+  aClubSendsYouFlying,
+  theNewcomersCloseAndCut,
+  everyLookFadesWithItsBody,
+  theNewKeysAreWhereTheySay,
+];
+
 async function run(): Promise<void> {
   console.log("Die by the Sword — headless arm harness");
-  await freeArmTracks();
-  await reachesAtEveryExtension();
-  await blockedBladeDefeatsTheArm();
-  await edgeRollTracks();
-  await survivesAbuse();
-  await thinPostIsHittable();
-  await damageCurveIsHonest();
-  await limbsComeOff();
-  await severingTakesChildrenWithIt();
-  await resetRebuildsCleanly();
-  await aRealSwingSevers();
-  await aBladeStopsOnABody();
-  await aHitSaysHowHardItWas();
-  await theOpponentClosesAndSwings();
-  await theOpponentPlaysByTheSameRules();
-  await theOpponentCanHurtYou();
-  await cuttingTheArmDisarms();
-  await bladesIgnoreTheirOwnerButNotTheFoe();
-  await deathDropsTheBody();
-  await theTrunkWalksWithTheLegs();
-  await aDeadBodyGoesLimp();
-  await aLostArmIsHeld();
+  console.log(`seed ${SEED}: SMOKE_SEED=${SEED} npm run smoke repeats this run exactly`);
+  // SMOKE_ONLY=a,b runs just those groups, by function name, and they come out
+  // exactly as they do among the rest: each group rolls its own dice.
+  const only = (process.env.SMOKE_ONLY ?? "").split(",").map((g) => g.trim()).filter(Boolean);
+  const unknown = only.filter((g) => !GROUPS.some((group) => group.name === g));
+  if (unknown.length) {
+    throw new Error(`SMOKE_ONLY: no group called ${unknown.join(", ")}; the groups are the functions in GROUPS`);
+  }
+  // What the game makes once and keeps -- the textures every body shares, made
+  // the first time one is dressed -- rolls dice for three.js's uuids as it is
+  // made. Made here, it takes none of the first group's, so a group rolls the
+  // same wherever it runs: first, last, or on its own.
+  await buildRig();
+  for (const group of GROUPS) {
+    if (only.length && !only.includes(group.name)) continue;
+    nowGroup = group.name;
+    reseed(group.name);
+    await group();
+  }
 
-  await theControlsAreWhereTheySay();
-  await jumpingLeavesTheGround();
-  await airControlIsWeakerThanGround();
-  await aDoubleTapIsAQuickStep();
-  await aLegSweepCanBeJumped();
-  await weaponsAreToldApartByPhysics();
-  await theAxeIsHarderToSwing();
-  await theBestiaryScalesHonestly();
-  await eachSpeciesCanFight();
-  await swingsAreReadOffTheArm();
-  await alliesShareAnArenaWithoutCuttingEachOther();
-  await resetPutsSeveredLimbsBackOn();
-  await everyMovingPartIsInterpolated();
-  await theTestingAreaIsAHallAndFourRooms();
-  await anOpponentWaitsUntilItSeesYou();
-  await anOpponentLooksWhereItLastSawYou();
-  await thePenOpensOnTwoOrcs();
-  await severingBleeds();
-
-  await theArmKeepsOutOfItsOwnChest();
-  await aFlickDoesNotSnapTheArm();
-  await aRaisedArmDoesNotTurnOver();
-  await slowInputIsUntouched();
-  await theChestLeadsTheArm();
-  await theFeetStayPlantedThenStep();
-  await theKneesBendLikeAPersons();
-  await stoppingPutsTheFeetDown();
-  await turningOnTheSpotSteps();
-  await theLegsGoTheWayTheBodyDoes();
-  await theBodyAgreesWithItsProbes();
-  await thePostureIsInterpolated();
-
-  await theWeaponsWeighWhatTheyShould();
-  await theGripKeepsTheEdge();
-  await theWristKeepsTheLine();
-  await noGripSpinsUnderAbuse();
-
-  await oneBlowThreeBodies();
-  await aKnockedDownFighterGetsUp();
-  await aKnockdownGoesLimp();
-  await aStaggerTakesTheSwingOffIt();
-  await realBlowsAreWeighed();
-  await theDummySwingsWhenStruck();
-  await knockdownsDoNotWearTheBodyOut();
-  await oneSwingIsOneBlow();
-  await aCorpseLiesStill();
-  await aDroppedWeaponIsNotKicked();
-
-  await footworkAsksTheStone();
-  await anOpponentMovesBetweenSwings();
-  await anOpponentGetsOutOfTheWay();
-  await anOpponentMovesInAndOut();
-  await weaponsKnockEachOther();
-  await crowdingItDoesNotStopIt();
-  await theOrcComesAfterYouThroughTheAir();
-  await aMissRunsIntoTheNextSwing();
-  await itsGuardIsWhereItsLastSwingLeftIt();
-  await itDrawsBackOnTheMove();
-  await aMissCanCarryItRound();
-  await itMeetsASwingWithItsWeapon();
-  await itHopsClearAndFlinches();
-  await aCutLegLamesYou();
-  await badlyHurtItFightsLikeIt();
-  await itTauntsYouFromOutOfReach();
-  await theyQuickStepToo();
-
-  await theOtherArmHoldsStill();
-  await theSwordGoesOnYourBack();
-  await aFreeHandTakesThings();
-  await fGoesAndGetsIt();
-  await aLeverIsPulledByHand();
-  await aShieldStopsABlade();
-  await theShieldArmIsSteered();
-  await theShieldGoesOnYourBackToo();
-  await aShieldOnYourBackStopsACutFromBehind();
-  await whatYouCutOffYouCanCarryOff();
-  await whatYouHoldYouCanThrow();
-  await theOrcsAxeCanBeWielded();
-  await everyWeaponCanBeWielded();
-  await aCrouchGetsLow();
-  await aVaultGoesOver();
-  await aClimbGoesUp();
-  await theStonesAndTheRailAreJumped();
-  await theNewcomersScaleHonestly();
-  await aClubSendsYouFlying();
-  await theNewcomersCloseAndCut();
-  await everyLookFadesWithItsBody();
-  await theNewKeysAreWhereTheySay();
-
+  if (misses) {
+    console.log(
+      `\nA tendency that misses on one seed proves nothing either way. See how often it misses on\n` +
+      `others, with your change and without it:\n` +
+      `  npm run smoke:seeds -- --groups ${missedIn.join(",")} --against HEAD`);
+  }
   console.log(
-    `\n${checks - failures}/${checks} checks passed` +
-    (failures ? `  \x1b[31m(${failures} failed)\x1b[0m` : "  \x1b[32mOK\x1b[0m"),
+    `\n${checks - failures - misses}/${checks} checks passed` +
+    (failures ? `  \x1b[31m(${failures} of ${checks - tendencies} rules failed)\x1b[0m` : "") +
+    (misses ? `  \x1b[35m(${misses} of ${tendencies} tendencies missed)\x1b[0m` : "") +
+    (failures || misses ? "" : "  \x1b[32mOK\x1b[0m") +
+    `  seed ${SEED}`,
   );
-  process.exit(failures ? 1 : 0);
+  // 1 for a rule, which is a bug; 2 when only tendencies missed, which is a
+  // question for tools/seeds.ts.
+  process.exit(failures ? 1 : misses ? 2 : 0);
 }
 
 run().catch((e) => {
