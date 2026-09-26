@@ -44,15 +44,16 @@ wrong.
 | `src/core/physics.ts` | `createPhysics`: the world (gravity from tuning, `timestep = STEP`, 16 solver iterations for the stiff arm), the one `EventQueue`, and the collision groups (`GROUP`, `groups()`, `makeSides()`) |
 | `src/core/loop.ts` | the fixed 60 Hz accumulator: `STEP`, at most 5 steps per frame |
 | `src/core/interpolate.ts` | `Interpolator`, the only thing that places a rigid body's mesh |
-| `src/main.ts` | the order of one step (`fixed`), and `registerBodies` |
+| `src/main.ts` | the order of one step (`fixed`), `registerBodies`, and the reset (`input.onReset`) |
 | `src/game/arm.ts` | the sword arm: upper arm, forearm and weapon bodies; shoulder, elbow and wrist joints and their factories; the linear and angular drives; the grip's raw motors; the blade snapshot; stowing, severing and reset |
 | `src/game/drive.ts` | `stablePD`, an angular PD capped by each axis's inertia |
 | `src/game/weapons.ts` | weapon shapes, and `weaponMassProperties` |
-| `src/game/fighter.ts` | the hull (one dynamic body per fighter, turning about Y only, walked by setting its velocity), the trunk colliders on it, head and off arm on joints (`jointFor`), posed kinematic legs, ground, step and sight rays, knockdown, reset |
+| `src/game/fighter.ts` | the hull (one dynamic body per fighter, turning about Y only, walked by setting its velocity, and carried over a wall or up a ledge the same way), the trunk colliders on it, head and off arm on joints (`jointFor`), posed kinematic legs, ground, step and sight rays, knockdown, reset. `traverse.ts` only poses the body for a vault or a climb |
 | `src/game/ragdoll.ts` | a dead or floored body: the hull's capsule switched off, hips and legs made jointed dynamic bodies, braced and gathered by motors |
 | `src/game/offarm.ts`, `shield.ts` | the other arm, and the shield on it or on the back |
 | `src/game/impacts.ts` | drains the contact-force events once per step and turns them into hits |
 | `src/game/cutting.ts` | a swept-ray backstop for a blade already inside someone. Its header still describes the old design, in which blades passed through bodies; they collide with enemy bodies now (see `Side.bladeFilter`) |
+| `src/game/gate.ts` | the lever, a dynamic bar with no collider on a revolute pin, sprung by a force-based position motor and pulled through a joint to the hand; and the gate, a kinematic body in the `WORLD` group winched up with `setNextKinematicTranslation` |
 | `src/game/dummy.ts`, `arena.ts`, `items.ts`, `remains.ts` | the practice dummy, the rooms, things picked up and thrown, what comes off a body |
 | `src/tuning.ts` | every number that shapes the feel (`DEFAULTS`) |
 | `tools/smoke.ts` | the headless harness |
@@ -67,9 +68,11 @@ wrong.
    shoulder, and adds this step's forces and torques; the hull gets its
    velocity; the kinematic legs get their next pose. Mouse movement is read
    here, once per step, not once per frame.
-2. `interp.capture()`, `phys.step()`, `interp.commit()`.
-3. `items.update()`, each arm's `updateDerived()`, then `impacts.update(now)`,
-   which drains the contact events.
+2. `arena.gate.step(dt)` gives the gate its next kinematic position.
+3. `interp.capture()`, `phys.step()`, `interp.commit()`.
+4. `arena.lever.update()` (a lever pulled far enough catches and opens the
+   gate), `items.update()`, each arm's `updateDerived()`, then
+   `impacts.update(now)`, which drains the contact events.
 
 Each frame, `render` then calls `interp.apply(alpha)` and draws.
 
@@ -119,18 +122,21 @@ brackets.
 6. **Kinematic bodies.** They are created at the origin, so put them in place
    with `setTranslation` and `setRotation` before their first step, then move
    them with `setNextKinematicTranslation` and `setNextKinematicRotation`
-   (`pushKinematic` in `fighter.ts`). Nothing can push one back, so they meet
-   only hostile blades (`hitOnlyFilter`), and a weapon nobody is swinging
-   switches to `inertBladeFilter` so they don't meet that either: a posed foot
-   once fired a dropped spear across the room at 17 m/s. [A kinematic body is
-   born at the origin; Nothing pushes back on a kinematic leg]
+   (`pushKinematic` in `fighter.ts`). Nothing can push one back, so the posed
+   body parts meet only hostile blades (`hitOnlyFilter`), and a weapon nobody
+   is swinging switches to `inertBladeFilter` so they don't meet that either:
+   a posed foot once fired a dropped spear across the room at 17 m/s. The gate
+   is the one kinematic body that meets everything, as architecture does, and
+   it only ever moves up out of the doorway. [A kinematic body is born at the
+   origin; Nothing pushes back on a kinematic leg]
 7. **Move a fighter only through its reset.** Setting the hull's position
    leaves the head, off arm and sword arm behind on joints a room long, and
-   the solver drags the hull back. Use `Combatant.reset(tuning, at)`; after
-   moving bodies, `main.ts` re-registers them with the Interpolator, calls
-   `interp.snap()` and `impacts.resetSweeps()`, and the harness's `rig.place`
-   does the same, so nothing streaks and no blade sweeps the room. [A hull
-   moved on its own drags itself back]
+   the solver drags the hull back. Use `Combatant.reset(tuning, at)`, then
+   `impacts.resetSweeps()` so no blade sweeps the room from where it was, as
+   the harness's `rig.place` does. The game's reset (`input.onReset` in
+   `main.ts`) also re-registers every body with the Interpolator and calls
+   `interp.snap()`, so nothing streaks. [A hull moved on its own drags itself
+   back]
 8. **A severed joint is gone.** `removeImpulseJoint` deletes it; there is no
    disabled state to flip back. Rebuild joints only through their factories
    (`makeShoulderJoint`, `makeElbowJoint` and `makeWristJoint` in `arm.ts`,
@@ -152,15 +158,27 @@ brackets.
 12. **CCD on anything fast and thin.** The weapon and the forearm have
     `enableCcd(true)`; without it a fast tip passes straight through the thin
     post.
+13. **Rays see the world as it was at the last step.** Rapier updates what a
+    ray can hit as it steps, so a ray cast before the first step finds no
+    walls, and after anything is moved outright (a reset, the gate shut
+    again) rays still find it where it was. `main.ts` calls
+    `world.updateSceneQueries()` before the first step, and after a reset
+    `world.propagateModifiedBodyPositionsToColliders()` and then
+    `updateSceneQueries()`; do the same wherever you move things and cast
+    before the next step. [The world's rays see nothing before it has
+    stepped]
 
 ## Collision groups
 
 Rapier keeps a collider's membership in the top 16 bits and its filter in the
 bottom 16, and two colliders touch only if each one's membership is in the
-other's filter. `physics.ts` spends the bits on `WORLD` (0x1) and `PROP` (0x2),
-then three per fighter: body, blade and hull. That allows `MAX_FIGHTERS = 4`,
-and `makeSides` throws past it. Build every value with `groups(membership,
-filter)` or take it from a `Side`; never write one as a bare number.
+other's filter. `physics.ts` spends the bits on `WORLD` (0x1), `PROP` (0x2)
+and one bit that every walking hull shares (0x4), then two per fighter: body
+and blade. That allows `MAX_FIGHTERS = 6`, and `makeSides` throws past it; a
+new kind of part that needs telling apart costs bits, so reuse a role below if
+one fits. Build every value with `groups(membership, filter)` or take it from a
+`Side`; never write one as a bare number. [The fifth fighter was one bit too
+many]
 
 `makeSides(teams)` builds everyone's filters at once, because who is hostile
 to whom depends on the whole line-up. Use the filter for the part's role:
@@ -172,14 +190,16 @@ to whom depends on the whole line-up. Use the filter for the part's role:
 | `cuttableFilter` | the sweep's rays: what counts as flesh |
 | `shieldFilter`, `backShieldFilter` | a shield on the arm, and one slung on the back |
 | `inertBladeFilter` | a weapon nobody is swinging: floor, walls and other blades only |
-| `hullFilter` | the invisible walking capsule: blades pass through it |
+| `hullFilter` | the invisible walking capsule: meets the world, props and every other hull; blades pass through it |
 | `hitOnlyFilter` | kinematic parts that exist only to be cut |
 | `groundFilter`, `sightFilter` | the foot probe, and the line-of-sight ray |
 
-Scenery is `groups(GROUP.WORLD, GROUP.WORLD | GROUP.PROP | ALL_COMBATANTS)`
-(`arena.ts`). Weapons collide with each other on purpose: a parry is two
-blades in the same place. An invisible collider still blocks a ray, so give
-every ray a filter. [An invisible collider still blocks a raycast]
+Scenery, the gate included, is `groups(GROUP.WORLD, GROUP.WORLD | GROUP.PROP |
+ALL_COMBATANTS)` (`arena.ts`, `gate.ts`). Something that should meet nothing
+at all can go without a collider, as the lever does: its body has only mass.
+Weapons collide with each other on purpose: a parry is two blades in the same
+place. An invisible collider still blocks a ray, so give every ray a filter.
+[An invisible collider still blocks a raycast]
 
 ## Making a change
 
@@ -195,15 +215,17 @@ every ray a filter. [An invisible collider still blocks a raycast]
    Then call it from `run()`. Measure the thing itself: the README's last five
    lessons are about checks that passed because nothing happened, or because
    they leaned on a bug.
-5. Run `npm run typecheck`, then `npm run smoke`. The harness runs the real
-   modules against Rapier in Node, takes about two minutes for its ~370
-   checks, prints `passed/total checks passed`, and exits non-zero on any
-   failure. It can't run a single group: while iterating, comment out other
-   calls in `run()`, and put them back before committing.
-6. The AI rolls unseeded `Math.random()`, so a check on its behaviour near its
-   threshold can fail one run and pass the next. Read the numbers in the
-   detail and run it again before deciding; don't loosen a threshold just to
-   get a pass.
+5. Run `npm run typecheck` yourself. Run the harness (`npm run smoke`) the
+   way CLAUDE.md says: through the `smoke-tester` agent, in the background.
+   It runs the real modules against Rapier in Node for a few minutes, prints
+   `passed/total checks passed`, and exits non-zero on any failure. It can't
+   run a single group; to iterate on one, comment out the other calls in
+   `run()`, and put them back before committing.
+6. The AI rolls unseeded `Math.random()`, and a physics check that follows a
+   fight starts from wherever the fight left things, so the same code can fail
+   different checks on different runs. Read the numbers in a failure's
+   detail, run it again, and compare with a run without your change before
+   deciding a failure is yours; don't loosen a threshold to get a pass.
 7. If the feel changed, say what to try in the browser (`npm run dev`). The
    harness measures; it can't feel.
 
@@ -223,7 +245,7 @@ every ray a filter. [An invisible collider still blocks a raycast]
 | A joint motor can't lift what it joins | Rapier's acceleration-based motors scale by the two joined bodies only; `ragdoll.ts` uses force-based motors with torques worked out from the anatomy |
 | Two springs on a ball joint circle each other | Rapier reads a ball joint's angles off its quaternion; use a velocity servo on a proper error, as `Arm.applyGrip` does |
 | A ray finds nothing useful | an invisible collider such as the hull in the way; filter the ray |
-| A ray cast right after a teleport sees the old position | 0.14's scene queries use positions from the last step; see the reference |
+| A ray misses a wall on the first step, or finds something where it was before a reset | scene queries not brought up to date (rule 13) |
 
 ## Upgrading Rapier
 

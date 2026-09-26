@@ -112,7 +112,9 @@ blade.setAdditionalMassProperties(
 ```
 
 The numbers come from `weaponMassProperties` in `src/game/weapons.ts`; those
-above are only placeholders. `principalInertia()` and
+above are only placeholders. `RigidBodyDesc` has the same
+`setAdditionalMassProperties` (without `wakeUp`), which is how the lever in
+`gate.ts` gets a weight with no collider at all. `principalInertia()` and
 `principalInertiaLocalFrame()` read them back, which is what `stablePD` in
 `src/game/drive.ts` uses to cap its gains per axis.
 
@@ -125,13 +127,15 @@ const collider = world.createCollider(
     .setTranslation(0, 0.2, 0)
     .setMass(2.1)
     .setFriction(0.5)
-    .setCollisionGroups((0x0004 << 16) | 0x0001) // use groups()/a Side in real code
+    // Membership high, filter low: fighter 0's body bit, meeting the world.
+    // Real code takes this from groups() or a Side, never a bare number.
+    .setCollisionGroups((0x0008 << 16) | 0x0001)
     .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
     .setContactForceEventThreshold(1.0),
   body,
 );
-collider.setEnabled(false);                 // out of the world, still attached
-collider.setCollisionGroups(0x00040001);    // change role at runtime
+collider.setEnabled(false); // out of the world, still attached
+collider.setCollisionGroups((0x0008 << 16) | 0x0010); // a new role at runtime
 ```
 
 - `ColliderDesc.cuboid(hx, hy, hz)` takes half-extents; `ball(radius)`.
@@ -249,7 +253,7 @@ events.drainContactForceEvents((e) => {
 ## Rays
 
 ```ts
-const groundFilter = (0x0010 << 16) | 0x0003; // use a Side's filter in real code
+const groundFilter = (0x0004 << 16) | 0x0003; // the hulls' bit, against WORLD | PROP: a Side's groundFilter
 const ray = new RAPIER.Ray({ x: 0, y: 1, z: 0 }, { x: 0, y: -1, z: 0 }); // keep it and reuse it
 ray.origin = { x: 2, y: 1, z: 0 };
 
@@ -266,9 +270,13 @@ if (withNormal) void withNormal.normal;
   exclude, a body to exclude, and a predicate. The game filters by groups:
   an invisible collider still blocks a ray, and the hull encloses the whole
   figure.
-- Queries see collider positions as of the last step. To cast against a body
-  moved since, call `world.propagateModifiedBodyPositionsToColliders()` and
-  then `world.updateSceneQueries()` first. Neither steps the simulation.
+- Queries see collider positions as of the last step, and before the first
+  step they see nothing at all. To cast against something moved since, call
+  `world.propagateModifiedBodyPositionsToColliders()` and then
+  `world.updateSceneQueries()` first; neither steps the simulation. `main.ts`
+  calls `updateSceneQueries()` before the first step and both after a reset,
+  and the harness's `buildRoster` calls `updateSceneQueries()` before its
+  first step.
 
 ## Names examples get wrong
 
