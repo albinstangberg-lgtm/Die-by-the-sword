@@ -15,9 +15,10 @@
 import * as THREE from "three";
 import { createPhysics, makeSides, type PhysicsWorld } from "../src/core/physics";
 import {
-  buildArena, CRATE, DUMMY_AT, GATE_AT, GOBLIN_POST, inRoom, ITEM_LAYOUT, LEDGE, LEVER, LOW_WALL,
-  ORC_POST, PEN_POSTS, ROOMS, SPAWN, THIN_POST, type Arena,
+  BLOCK, buildArena, CRATE, DUMMY_AT, GATEWAYS, inRoom, ITEM_LAYOUT, LEDGE, LOW_WALL, POSTS, RAIL, ROOMS,
+  SPAWN as GAME_SPAWN, STONES, THIN_POST, type Arena, type GatedRoom,
 } from "../src/game/arena";
+import { gateHeard, ROSTER, spawnOf } from "../src/game/roster";
 import { interact, Items, promptFor, type Item } from "../src/game/items";
 import { OFF_GUARD } from "../src/game/offarm";
 import { SLUNG, SLUNG_TURN } from "../src/game/shield";
@@ -32,7 +33,7 @@ import {
 import {
   AXE, CLUB, HATCHET, SPEAR, SWORD, WEAPONS, weaponMassProperties, type Weapon,
 } from "../src/game/weapons";
-import { Ai, noise, type Swing } from "../src/game/ai";
+import { Ai, type Swing } from "../src/game/ai";
 import { emptyBlow, judgeBlow, judgeClash } from "../src/game/balance";
 import { Arm, type ArmInput } from "../src/game/arm";
 import { Pose } from "../src/game/posture";
@@ -85,15 +86,22 @@ class FakeInput implements ArmInput {
 }
 
 /**
- * Where an opponent starts: the training room, across the floor from SPAWN.
+ * Where you start, here: in the hall's west half, where the training room
+ * was, with its pillars round you and its south wall behind -- not at the
+ * game's own spawn, down the entrance.
+ */
+const HOME = new THREE.Vector3(0, 0.95, 10.4);
+
+/**
+ * Where an opponent starts: the hall, across the floor from HOME.
  *
- * The rooms are walled off from each other now and an opponent that cannot
- * see you does not come for you, so a foe parked in the hall would simply
- * stand there. Every fight here is the two of them in one room.
+ * The rooms are walled off from each other and an opponent that cannot see
+ * you does not come for you, so a foe parked behind a gate would simply stand
+ * there. Every fight here is the two of them in one room.
  */
 const FOE_X = -1.4;
 const FOE_Z = 4.4;
-const FOE_SPAWN = new THREE.Vector3(FOE_X, 0.95, FOE_Z);
+const FOE_HOME = new THREE.Vector3(FOE_X, 0.95, FOE_Z);
 
 /** Spawn height for a body of a given build, so nothing starts in the floor. */
 function spawnFor(species: Species, x: number, z: number): THREE.Vector3 {
@@ -107,7 +115,7 @@ function foeSpawn(species: Species): THREE.Vector3 {
 
 interface Rig {
   phys: PhysicsWorld;
-  /** What of the arena moves: the pen's gate and its lever, stepped as the game steps them. */
+  /** What of the arena moves: the gates and their levers, stepped as the game steps them. */
   arena: Arena;
   arm: Arm;
   fighter: Fighter;
@@ -162,7 +170,7 @@ interface Rig {
 async function buildRig(
   overrides: Partial<Tuning> = {},
   foeSpecies: Species = SWORDSMAN,
-  foeAt: THREE.Vector3 = FOE_SPAWN,
+  foeAt: THREE.Vector3 = FOE_HOME,
 ): Promise<Rig> {
   const tuning: Tuning = { ...DEFAULTS, ...overrides };
   const scene = new THREE.Scene();
@@ -171,7 +179,7 @@ async function buildRig(
   const arena = buildArena(phys, scene, targets);
 
   const [playerSide, foeSide] = makeSides([0, 1]);
-  const player = new Combatant(phys, scene, SPAWN, playerSide, tuning, targets,
+  const player = new Combatant(phys, scene, HOME, playerSide, tuning, targets,
     SWORDSMAN, "you", "your");
   const foe = new Combatant(phys, scene, foeAt, foeSide, tuning, targets, foeSpecies);
   const ai = new Ai(foeSpecies);
@@ -201,9 +209,9 @@ async function buildRig(
     } else if (foeMode === "hold") {
       foe.act(still, NO_KEYS, tuning, STEP);
     }
-    arena.gate.step(STEP);
+    for (const g of Object.values(arena.gateways)) g.gate.step(STEP);
     phys.step();
-    arena.lever.update();
+    for (const g of Object.values(arena.gateways)) g.lever.update();
     arm.updateDerived();
     foe.arm.updateDerived();
     now += STEP * 1000;
@@ -568,7 +576,7 @@ async function survivesAbuse(): Promise<void> {
 
   const p = rig.arm.blade.translation();
   check("no NaN in the blade transform", finite(p), `blade at (${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})`);
-  const room = ROOMS.training;
+  const room = ROOMS.hall;
   check("blade stayed in the room",
     p.x > room.minX - 1 && p.x < room.maxX + 1
     && p.z > room.minZ - 1 && p.z < room.maxZ + 1 && p.y > -1 && p.y < 6,
@@ -592,7 +600,7 @@ async function thinPostIsHittable(): Promise<void> {
 
   // The post stands two metres tall in the hall. Stand off it, aim at its middle.
   const post = new THREE.Vector3(THIN_POST.x, 1.3, THIN_POST.z);
-  rig.place(new THREE.Vector3(post.x, SPAWN.y, post.z + 1.0));
+  rig.place(new THREE.Vector3(post.x, HOME.y, post.z + 1.0));
   rig.fighter.yaw = 0;                   // facing -Z, post dead ahead
   rig.step(45);
   aimBladeAt(rig, post);
@@ -724,7 +732,7 @@ async function aRealSwingSevers(): Promise<void> {
   // It passed for a while anyway, because the aiming routine drifted high and
   // kept taking the head off by accident.
   const arm = new THREE.Vector3(DUMMY_AT.x + 0.23, 1.5, DUMMY_AT.z + 0.15);
-  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  const standAt = new THREE.Vector3(DUMMY_AT.x, HOME.y, DUMMY_AT.z + 1.1);
   rig.place(standAt);
   rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
   rig.pin(standAt);
@@ -769,7 +777,7 @@ async function aBladeStopsOnABody(): Promise<void> {
   // from the blade's motion before the step now, so it can be stopped like
   // any other blow and still be worth what it was swung at.
   const chest = new THREE.Vector3(DUMMY_AT.x, 1.45, DUMMY_AT.z);
-  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  const standAt = new THREE.Vector3(DUMMY_AT.x, HOME.y, DUMMY_AT.z + 1.1);
   rig.place(standAt);
   rig.fighter.yaw = 0;
   rig.pin(standAt);
@@ -1493,7 +1501,7 @@ async function theAxeIsHarderToSwing(): Promise<void> {
   // `weaponMassProperties`) and a grip that can turn, spinning a spear about
   // its shaft is nearly free, as it should be, and says nothing about steering.
   const sweptAngle = async (weapon: typeof SWORD): Promise<number> => {
-    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_SPAWN);
+    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_HOME);
     rig.step(90);
 
     const start = rig.foe.arm.blade.rotation();
@@ -1714,7 +1722,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
 }
 
 async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
-  console.log("\nthree fighters, two teams, one set of collision groups -- and the game's five");
+  console.log("\nthree fighters, two teams, one set of collision groups -- and the game's nine");
   const sides = makeSides([0, 1, 1]);
   const [you, orc, goblin] = sides;
 
@@ -1733,19 +1741,27 @@ async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
   check("and nobody cuts themselves",
     !canCut(you, you) && !canCut(orc, orc), "own-side bodies are transparent to own blade");
 
-  // The game's own line-up: you, and four against you -- two of them in the
-  // pen. Five used to be one more than there were bits for.
-  const roster = makeSides([0, 1, 1, 1, 1]);
+  // The game's own line-up: you, and everything behind the four gates.
+  // Five used to be one more than there were bits for; then six were all
+  // there were bits for.
+  const roster = makeSides([0, ...ROSTER.map(() => 1)]);
   const [me, ...them] = roster;
-  const meets = (a: number, b: number) => ((a >> 16) & (b & 0xffff)) !== 0 && ((b >> 16) & (a & 0xffff)) !== 0;
+  const meets = (a: number, b: number) => ((a >>> 16) & (b & 0xffff)) !== 0 && ((b >>> 16) & (a & 0xffff)) !== 0;
   const pairs = them.flatMap((a, i) => them.filter((_, j) => j !== i).map((b) => [a, b] as const));
-  check("five fit: your weapon reaches all four, theirs reach you and not one another",
+  check(`${roster.length} fit: your weapon reaches all ${them.length}, theirs reach you and not one another`,
     them.every((t) => canCut(me, t) && canCut(t, me)) && pairs.every(([a, b]) => !canCut(a, b))
       && roster.every((s) => !canCut(s, s)),
     `${them.length} against you, ${pairs.length} pairs of them that must not cut`);
+  // Bodies still meet every other body, and weapons every other weapon, but
+  // never their own: "everyone but me" with three bits of six each.
+  const everyone = roster.flatMap((a, i) => roster.map((b, j) => [a, b, i === j] as const));
+  check("every body still meets every other body, and every weapon every other weapon, never its own",
+    everyone.every(([a, b, same]) => meets(a.bodyFilter, b.bodyFilter) === !same
+      && meets(a.bladeFilter, b.bladeFilter) === !same),
+    `${roster.length * (roster.length - 1)} pairs of each, and ${roster.length} of each that must not`);
   check("and every walking hull still bumps into every other, whoever's side it is on",
     roster.every((a, i) => roster.every((b, j) => i === j || meets(a.hullFilter, b.hullFilter))),
-    "hull against hull, all twenty pairs");
+    `hull against hull, all ${roster.length * (roster.length - 1)} pairs`);
 }
 
 async function resetPutsSeveredLimbsBackOn(): Promise<void> {
@@ -1770,7 +1786,7 @@ async function resetPutsSeveredLimbsBackOn(): Promise<void> {
       && part("head").severed === true,
     `arm ${rig.foe.arm.severedAt}, off arm and head off`);
 
-  rig.foe.reset(rig.tuning, FOE_SPAWN);
+  rig.foe.reset(rig.tuning, FOE_HOME);
   rig.ai.reset();
   rig.impacts.resetSweeps();
 
@@ -1860,28 +1876,39 @@ async function everyMovingPartIsInterpolated(): Promise<void> {
 }
 
 
-async function theTestingAreaIsFourRooms(): Promise<void> {
-  console.log("\nfour rooms, one subject in each -- and two in the last, behind a gate");
-  check("you start in the training room",
-    inRoom(ROOMS.training, SPAWN.x, SPAWN.z),
-    `spawn (${SPAWN.x}, ${SPAWN.z}) in ${ROOMS.training.name}`);
-  check("so does the practice dummy",
-    inRoom(ROOMS.training, DUMMY_AT.x, DUMMY_AT.z),
+/** Which way is into the hall from a gate: the way its lever's front faces. */
+function intoHall(g: { lever: { facing: number } }): THREE.Vector3 {
+  return new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), g.lever.facing);
+}
+
+async function theTestingAreaIsAHallAndFourRooms(): Promise<void> {
+  console.log("\na hall, and four rooms off it behind gates: two orcs, two kobolds, three goblins, the ogre");
+  check("you start in the entrance, and it opens into the hall",
+    inRoom(ROOMS.entrance, GAME_SPAWN.x, GAME_SPAWN.z)
+      && inRoom(ROOMS.hall, GAME_SPAWN.x, ROOMS.entrance.minZ - 0.5),
+    `spawn (${GAME_SPAWN.x}, ${GAME_SPAWN.z}) in ${ROOMS.entrance.name}`);
+  check("the practice dummy is in the hall",
+    inRoom(ROOMS.hall, DUMMY_AT.x, DUMMY_AT.z),
     `dummy at (${DUMMY_AT.x}, ${DUMMY_AT.z})`);
-  check("the orc waits in the hall",
-    inRoom(ROOMS.hall, ORC_POST.x, ORC_POST.z)
-    && !inRoom(ROOMS.training, ORC_POST.x, ORC_POST.z),
-    `orc at (${ORC_POST.x}, ${ORC_POST.z})`);
-  check("the goblin waits in the cell, past the orc",
-    inRoom(ROOMS.cell, GOBLIN_POST.x, GOBLIN_POST.z)
-    && !inRoom(ROOMS.hall, GOBLIN_POST.x, GOBLIN_POST.z),
-    `goblin at (${GOBLIN_POST.x}, ${GOBLIN_POST.z})`);
-  check("and two more orcs in the pen, off the other end of the hall",
-    PEN_POSTS.length === 2
-      && PEN_POSTS.every((p) => inRoom(ROOMS.pen, p.at.x, p.at.z) && !inRoom(ROOMS.hall, p.at.x, p.at.z))
-      && inRoom(ROOMS.hall, LEVER.at.x + 0.3, LEVER.at.z),
-    PEN_POSTS.map((p) => `(${p.at.x}, ${p.at.z})`).join(" and ") +
-    `; the lever on the hall's side, at (${LEVER.at.x.toFixed(1)}, ${LEVER.at.z})`);
+
+  const rooms = Object.keys(GATEWAYS) as GatedRoom[];
+  const who = (room: GatedRoom) => ROSTER.filter((o) => o.room === room).map((o) => o.species.key).join(", ");
+  const home = ROSTER.every((o) => inRoom(ROOMS[o.room], o.at.x, o.at.z) && !inRoom(ROOMS.hall, o.at.x, o.at.z));
+  check("two orcs in the pen, two kobolds in the warren, three goblins in the cell, and the ogre in the den",
+    home && who("pen") === "orc, orc" && who("warren") === "kobold, kobold"
+      && who("cell") === "goblin, goblin, goblin" && who("den") === "ogre",
+    rooms.map((r) => `${ROOMS[r].name}: ${who(r)}`).join("; "));
+  // A gate in the wall between each room and the hall, and its lever on the
+  // hall's side of that wall.
+  const between = rooms.every((r) => {
+    const g = GATEWAYS[r];
+    const out = intoHall(g);
+    return inRoom(ROOMS.hall, g.at.x + out.x * 0.5, g.at.z + out.z * 0.5)
+      && inRoom(ROOMS[r], g.at.x - out.x * 0.5, g.at.z - out.z * 0.5)
+      && inRoom(ROOMS.hall, g.lever.at.x + out.x * 0.3, g.lever.at.z + out.z * 0.3);
+  });
+  check("each behind a gate out of the hall, with a lever beside it on the hall's side",
+    between, rooms.map((r) => `${r} at (${GATEWAYS[r].at.x}, ${GATEWAYS[r].at.z})`).join(", "));
 
   // And the walls are really there: the layout is only worth anything if a
   // ray from one room to the next is stopped by something.
@@ -1891,48 +1918,62 @@ async function theTestingAreaIsFourRooms(): Promise<void> {
 
   rig.foe.fighter.eyeWorld(eye);
   check("across one room, the line is clear", rig.fighter.sees(eye),
-    "training room, no wall in between");
+    "the hall, no wall in between");
 
-  // Off the door line, so it is the wall being tested and not the hole in it.
+  // Off the doorway, so it is the wall being tested and not the gate in it.
   const pastTheWall = new THREE.Vector3(-5.5, 1.6, -3.0);
   check("into the next room, it is not", !rig.fighter.sees(pastTheWall),
-    "the partition stops it");
+    "the wall into the warren stops it");
 
-  // The doorway is a hole in that partition, and it has to actually be one.
-  const doorway = new THREE.Vector3(0, 1.6, -0.6);
-  rig.place(new THREE.Vector3(0, SPAWN.y, 1.2));
+  // The entrance has no door: it is the hall's south end run on.
+  rig.place(GAME_SPAWN);
   rig.step(30);
-  check("but through the door it is clear again", rig.fighter.sees(doorway),
-    "standing on the door line, looking into the hall");
+  check("but up the entrance into the hall it is clear",
+    rig.fighter.sees(new THREE.Vector3(GAME_SPAWN.x, 1.6, 6)),
+    "standing where you start, looking up into the hall");
 
-  // The pen's doorway is a hole too, with a gate in it: a wall while it is
-  // shut, to sight and to the feet's own probe alike, and a doorway once it
-  // is up.
-  const gate = rig.arena.gate;
-  const inPen = new THREE.Vector3(GATE_AT.x - 3, 1.6, GATE_AT.z);
-  rig.place(new THREE.Vector3(GATE_AT.x + 2, SPAWN.y, GATE_AT.z));
-  rig.fighter.yaw = Math.PI / 2;
-  rig.step(40);
-  const shutClear = rig.fighter.clearAlong(-1, 0, 5);
-  check("the pen's gate, shut, stops the line and the feet",
-    !rig.fighter.sees(inPen) && shutClear < 2.1 && !gate.opening,
-    `sees into the pen: ${rig.fighter.sees(inPen)}; ${shutClear.toFixed(2)} m of floor toward it`);
-  gate.open();
-  let rose = 0;
-  while (!gate.isOpen && rose < 60 * 6) {
-    rig.step(1);
-    rose++;
+  // Every doorway has a gate in it: a wall while it is shut, to sight and to
+  // the feet's own probe alike, and a doorway once it is up.
+  const shut: string[] = [];
+  const open: string[] = [];
+  for (const r of rooms) {
+    const g = rig.arena.gateways[r];
+    const out = intoHall(g.spec);
+    const inside = new THREE.Vector3(g.spec.at.x - out.x * 3, 1.6, g.spec.at.z - out.z * 3);
+    rig.place(new THREE.Vector3(g.spec.at.x + out.x * 2, HOME.y, g.spec.at.z + out.z * 2));
+    rig.fighter.yaw = g.spec.lever.facing + Math.PI;
+    rig.step(40);
+    const shutClear = rig.fighter.clearAlong(-out.x, -out.z, 5);
+    if (rig.fighter.sees(inside) || shutClear >= 2.1 || g.gate.opening) {
+      shut.push(`${r}: ${shutClear.toFixed(2)} m`);
+    }
+    g.gate.open();
+    let rose = 0;
+    while (!g.gate.isOpen && rose < 60 * 6) {
+      rig.step(1);
+      rose++;
+    }
+    const openClear = rig.fighter.clearAlong(-out.x, -out.z, 5);
+    if (!g.gate.isOpen || !rig.fighter.sees(inside) || openClear !== 5) {
+      open.push(`${r}: ${openClear.toFixed(2)} m, up ${g.gate.isOpen}`);
+    }
   }
-  const openClear = rig.fighter.clearAlong(-1, 0, 5);
+  check("every gate, shut, stops the line and the feet",
+    shut.length === 0, shut.join("; ") || "all four: no line through, and under 2.1 m of floor toward it");
   check("and, up, it is a doorway like any other",
-    gate.isOpen && rig.fighter.sees(inPen) && openClear === 5,
-    `up in ${(rose / 60).toFixed(2)}s; sees into the pen: ${rig.fighter.sees(inPen)}; ` +
-    `${openClear.toFixed(2)} m of floor toward it`);
+    open.length === 0, open.join("; ") || "all four: the line through, and 5 m of floor");
 }
+
+/**
+ * Where the orc waits in the next two: in the warren, which is as good a room
+ * as any to hold a post in -- north of the hall, with its gate in the wall
+ * between, as the hall was once north of the training room with a door.
+ */
+const WARREN_POST = new THREE.Vector3(-1.8, 0, -7.0);
 
 async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
   console.log("\nan opponent that cannot see you holds its post");
-  const rig = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const rig = await buildRig({}, ORC, spawnFor(ORC, WARREN_POST.x, WARREN_POST.z));
 
   const where = () => rig.foe.position(new THREE.Vector3());
   const start = where();
@@ -1947,8 +1988,8 @@ async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
     `tip ${rig.foe.arm.state.tipSpeed.toFixed(1)} m/s, committed ` +
     `${rig.ai.committed?.cut.name ?? "nothing"}`);
 
-  // Walk into the hall and it is a fight.
-  rig.place(new THREE.Vector3(ORC_POST.x, SPAWN.y, ORC_POST.z + 4.5));
+  // Walk into its room and it is a fight.
+  rig.place(new THREE.Vector3(WARREN_POST.x, HOME.y, WARREN_POST.z + 4.5));
   let closest = 99;
   let peakTip = 0;
   for (let i = 0; i < 60 * 8; i++) {
@@ -1966,84 +2007,82 @@ async function anOpponentWaitsUntilItSeesYou(): Promise<void> {
 
 async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
   console.log("\nan opponent that loses you looks where it saw you, then goes home");
-  const rig = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  const rig = await buildRig({}, ORC, spawnFor(ORC, WARREN_POST.x, WARREN_POST.z));
   const where = () => rig.foe.position(new THREE.Vector3());
   const flat = (a: THREE.Vector3, b: THREE.Vector3) => Math.hypot(a.x - b.x, a.z - b.z);
 
-  // It sees you in its hall, and then you are on the far side of the wall
-  // into the training room. It used to know where for two and a half seconds
-  // after, and walked most of the way across its hall toward you, into the
-  // wall.
-  const seenAt = new THREE.Vector3(ORC_POST.x + 3, SPAWN.y, ORC_POST.z + 3.5);
+  // It sees you in its room, and then you are on the far side of the wall
+  // in the hall. It used to know where for two and a half seconds after, and
+  // walked most of the way across its room toward you, into the wall.
+  const seenAt = new THREE.Vector3(WARREN_POST.x + 3, HOME.y, WARREN_POST.z + 3.5);
   rig.place(seenAt);
   rig.fight(60);
-  rig.place(new THREE.Vector3(-4, SPAWN.y, 3));
-  let north = -Infinity;
+  rig.place(new THREE.Vector3(-4, HOME.y, 3));
+  let south = -Infinity;
   let nearest = Infinity;
   for (let i = 0; i < 60 * 15; i++) {
     rig.fight(1);
-    north = Math.max(north, where().z);
+    south = Math.max(south, where().z);
     nearest = Math.min(nearest, flat(where(), seenAt));
   }
   check("lost behind a wall, it goes to where it saw you and not to you",
-    nearest < 0.8 && north < seenAt.z + 1,
+    nearest < 0.8 && south < seenAt.z + 1,
     `came within ${nearest.toFixed(2)} m of where it saw you, ` +
-    `and no further toward the wall than z ${north.toFixed(2)}`);
+    `and no further toward the wall than z ${south.toFixed(2)}`);
   check("finds nothing there, and goes back to its post",
-    rig.ai.intent === "waiting" && flat(where(), ORC_POST) < 0.3,
-    `intent "${rig.ai.intent}", ${flat(where(), ORC_POST).toFixed(2)} m from its post`);
+    rig.ai.intent === "waiting" && flat(where(), WARREN_POST) < 0.3,
+    `intent "${rig.ai.intent}", ${flat(where(), WARREN_POST).toFixed(2)} m from its post`);
 
-  // Now lead it out of its hall and into the training room, and vanish. The
-  // straight line home from there runs into the wall beside the door.
-  const led = await buildRig({}, ORC, spawnFor(ORC, ORC_POST.x, ORC_POST.z));
+  // Now, with its gate up, lead it out of its room and into the hall, and
+  // vanish. The straight line home from there runs into the wall beside the
+  // doorway.
+  const led = await buildRig({}, ORC, spawnFor(ORC, WARREN_POST.x, WARREN_POST.z));
+  const gate = led.arena.gateways.warren.gate;
+  gate.open();
+  for (let i = 0; i < 60 * 6 && !gate.isOpen; i++) led.step(1);
   const at = () => led.foe.position(new THREE.Vector3());
-  led.place(new THREE.Vector3(0, SPAWN.y, -3));
+  led.place(new THREE.Vector3(GATEWAYS.warren.at.x, HOME.y, -3));
   led.fight(150);
   // How far it got, not where it happens to be at the end: one time in ten,
-  // after a swing, it gives ground, and it gave it back into the hall once.
+  // after a swing, it gives ground, and it gave it back into its room once.
   let followed = -Infinity;
   for (let i = 0; i < 132 + 90; i++) {
     led.fight(1, i < 132 ? { ...NO_KEYS, back: true } : NO_KEYS);
     followed = Math.max(followed, at().z);
   }
-  led.place(new THREE.Vector3(GOBLIN_POST.x, SPAWN.y, GOBLIN_POST.z + 2));
+  // Gone: into the cell, behind its shut gate.
+  led.place(new THREE.Vector3(12.4, HOME.y, -6.2));
   led.fight(60 * 20);
   const yaw = led.foe.fighter.yaw;
   const facing = Math.abs(Math.atan2(Math.sin(yaw), Math.cos(yaw)));
   // Through, not in it: the doorway's far face is at 0.2, and its body is
   // four tenths of a metre across the middle.
-  check("backed out through the door, it follows you through", followed > 0.5,
-    `it got to z ${followed.toFixed(2)}, the training-room side of the door`);
+  check("backed out through the doorway, it follows you through", followed > 0.5,
+    `it got to z ${followed.toFixed(2)}, the hall's side of the doorway`);
   check("and lost there, it goes home the way it came, and faces the way it stood",
-    led.ai.intent === "waiting" && flat(at(), ORC_POST) < 0.3 && facing < 0.1,
-    `intent "${led.ai.intent}", ${flat(at(), ORC_POST).toFixed(2)} m from its post, ` +
+    led.ai.intent === "waiting" && flat(at(), WARREN_POST) < 0.3 && facing < 0.1,
+    `intent "${led.ai.intent}", ${flat(at(), WARREN_POST).toFixed(2)} m from its post, ` +
     `${(facing * 180 / Math.PI).toFixed(0)}deg off how it stood`);
 }
 
 /**
- * The whole line-up, as the game has it -- you, the hall's orc, the goblin
- * and the pen's two -- in one arena, and a step that drives them all as the
- * game's does. The hall's orc can be put somewhere other than its post, so
- * that it is not the one you are fighting.
+ * The whole line-up, as the game has it -- you and everything behind the four
+ * gates (see roster.ts) -- in one arena, and a step that drives them all as
+ * the game's does.
  */
-async function buildRoster(youAt: THREE.Vector3, hallOrcAt: THREE.Vector3 = ORC_POST) {
+async function buildRoster(youAt: THREE.Vector3) {
   const tuning: Tuning = { ...DEFAULTS };
   const scene = new THREE.Scene();
   const phys = await createPhysics(tuning.gravity);
   const targets = new Targets();
   const arena = buildArena(phys, scene, targets);
-  const posts = [
-    { species: ORC, at: hallOrcAt, facing: 0 },
-    { species: GOBLIN, at: GOBLIN_POST, facing: 0 },
-    ...PEN_POSTS.map((p) => ({ species: ORC, at: p.at, facing: p.facing as number })),
-  ];
-  const sides = makeSides([0, ...posts.map(() => 1)]);
+  const sides = makeSides([0, ...ROSTER.map(() => 1)]);
   const you = new Combatant(phys, scene, youAt, sides[0], tuning, targets, SWORDSMAN, "you", "your");
-  const foes = posts.map((p, i) => {
-    const combatant = new Combatant(phys, scene, spawnFor(p.species, p.at.x, p.at.z), sides[i + 1],
-      tuning, targets, p.species);
-    combatant.fighter.yaw = p.facing;
-    return { combatant, ai: new Ai(p.species) };
+  const foes = ROSTER.map((o, i) => {
+    const combatant = new Combatant(phys, scene, spawnOf(o), sides[i + 1],
+      tuning, targets, o.species, o.name, `${o.name}'s`);
+    combatant.fighter.yaw = o.facing;
+    return { combatant, ai: new Ai(o.species), room: o.room };
   });
   const impacts = new Impacts(phys, scene, targets, tuning);
   let cutsOnYou = 0;
@@ -2056,11 +2095,12 @@ async function buildRoster(youAt: THREE.Vector3, hallOrcAt: THREE.Vector3 = ORC_
   }
   phys.world.updateSceneQueries();
   const still: ArmInput = { consumeMouse: () => ({ dx: 0, dy: 0, wheel: 0, rollDx: 0 }) };
+  const gateways = Object.values(arena.gateways);
   let now = 0;
   return {
     phys, arena, you, foes,
-    pen: foes.slice(2),
-    goblin: foes[1],
+    /** Everything that waits in one room. */
+    in: (room: GatedRoom) => foes.filter((f) => f.room === room),
     get cutsOnYou() { return cutsOnYou; },
     get cutsAmongThem() { return cutsAmongThem; },
     step(n = 1) {
@@ -2070,9 +2110,9 @@ async function buildRoster(youAt: THREE.Vector3, hallOrcAt: THREE.Vector3 = ORC_
           f.ai.think(f.combatant, you, tuning, STEP);
           f.combatant.act(f.ai, f.ai.keys, tuning, STEP);
         }
-        arena.gate.step(STEP);
+        for (const g of gateways) g.gate.step(STEP);
         phys.step();
-        arena.lever.update();
+        for (const g of gateways) g.lever.update();
         you.arm.updateDerived();
         for (const f of foes) f.combatant.arm.updateDerived();
         now += STEP * 1000;
@@ -2085,28 +2125,31 @@ async function buildRoster(youAt: THREE.Vector3, hallOrcAt: THREE.Vector3 = ORC_
 async function thePenOpensOnTwoOrcs(): Promise<void> {
   console.log("\nthe pen: two orcs behind the gate, until it goes up and they come to see why");
   // You by the lever, well inside the distance at which either would notice
-  // you, and the hall's orc put out of the way in the training room.
-  const at = new THREE.Vector3(LEVER.at.x + 0.8, SPAWN.y, LEVER.at.z + 0.3);
-  const world = await buildRoster(at, new THREE.Vector3(5, 0, 11.5));
-  const { arena, you, pen, goblin } = world;
+  // you, and everything else behind its own gate.
+  const lever = GATEWAYS.pen.lever;
+  const at = new THREE.Vector3(lever.at.x + 0.8, HOME.y, lever.at.z + 0.3);
+  const world = await buildRoster(at);
+  const { arena, you } = world;
+  const pen = world.in("pen");
+  const rest = world.foes.filter((f) => f.room !== "pen");
   const posts = pen.map((f) => f.combatant.position(new THREE.Vector3()));
   const where = (f: { combatant: Combatant }) => f.combatant.position(new THREE.Vector3());
   world.step(60 * 3);
 
   const near = posts.map((p) => Math.hypot(p.x - at.x, p.z - at.z));
   const stayed = pen.every((f, i) => where(f).distanceTo(posts[i]) < 0.2 && f.ai.outlook === "waiting");
-  const facing = pen.every((f, i) => Math.abs(wrap(f.combatant.fighter.yaw - PEN_POSTS[i].facing)) < 0.1);
+  const facing = pen.every((f, i) => Math.abs(wrap(f.combatant.fighter.yaw - POSTS.pen[i].facing)) < 0.1);
   check("behind the shut gate they hold their posts, facing it: they cannot see you",
     stayed && facing && pen.every((f) => !f.combatant.sees(you)) && near.every((d) => d < 9),
     `${near.map((d) => d.toFixed(1)).join(" and ")} m from you, ` +
     pen.map((f) => `"${f.ai.outlook}"`).join(" and "));
 
-  // The lever thrown, and when the gate starts up everything in earshot of it
-  // hears it -- as the game wires it.
-  const heardAt = new THREE.Vector3(GATE_AT.x, 1.6, GATE_AT.z);
+  // The lever thrown, and when the gate starts up whatever can hear it hears
+  // it -- as the game wires it.
   let heard = -1;
-  arena.gate.onStart = () => { heard = noise(heardAt, 10, world.foes); };
-  arena.lever.throwOver();
+  const pens = arena.gateways.pen;
+  pens.gate.onStart = () => { heard = gateHeard("pen", world.foes); };
+  pens.lever.throwOver();
   let listening = false;
   let through = -1;
   let found = -1;
@@ -2118,36 +2161,38 @@ async function thePenOpensOnTwoOrcs(): Promise<void> {
     if (found < 0 && pen.every((f) => f.ai.outlook === "fighting")) found = i;
     swung ||= pen.some((f) => f.ai.committed !== null);
   }
-  check("the gate going up is heard in the pen, not in the cell",
-    heard === 2 && listening && goblin.ai.outlook === "waiting",
-    `${heard} heard it; both went to look: ${listening}; the goblin "${goblin.ai.outlook}"`);
+  check("the gate going up is heard in the pen, and behind no other gate",
+    heard === 2 && listening && rest.every((f) => f.ai.outlook === "waiting"),
+    `${heard} heard it; both went to look: ${listening}; the other ${rest.length} ` +
+    `${rest.every((f) => f.ai.outlook === "waiting") ? "all still waiting" : "not all waiting"}`);
   check("they come out through the gateway, find you, and fight",
     through >= 0 && found >= 0 && swung,
     `both in the hall after ${(through / 60).toFixed(1)}s, both fighting after ` +
     `${(found / 60).toFixed(1)}s; swung: ${swung}`);
   check("two of them on one side, and not one cut between them",
     world.cutsOnYou > 0 && world.cutsAmongThem === 0,
-    `${world.cutsOnYou} cuts on you, ${world.cutsAmongThem} among the five of them`);
+    `${world.cutsOnYou} cuts on you, ${world.cutsAmongThem} among the ${world.foes.length + 1} of you`);
 
-  // Heard, and nobody there: you in the far corner of the training room. They
-  // go and look, find nothing, and go home again.
-  const away = await buildRoster(new THREE.Vector3(5.3, SPAWN.y, 11.8), new THREE.Vector3(4.5, 0, 1.5));
+  // Heard, and nobody there: you down the entrance, round the corner from
+  // the gateway. They go and look, find nothing, and go home again.
+  const away = await buildRoster(new THREE.Vector3(GAME_SPAWN.x, HOME.y, GAME_SPAWN.z + 2));
   away.step(60 * 2);
-  const homes = away.pen.map((f) => f.combatant.position(new THREE.Vector3()));
-  away.arena.gate.onStart = () => { noise(heardAt, 10, away.foes); };
-  away.arena.lever.throwOver();
+  const orcs = away.in("pen");
+  const homes = orcs.map((f) => f.combatant.position(new THREE.Vector3()));
+  away.arena.gateways.pen.gate.onStart = () => { gateHeard("pen", away.foes); };
+  away.arena.gateways.pen.lever.throwOver();
   let left = 0;
   let looked = false;
   for (let i = 0; i < 60 * 30; i++) {
     away.step(1);
-    looked ||= away.pen.every((f) => f.ai.outlook === "looking");
-    left = Math.max(left, ...away.pen.map((f, k) => where(f).distanceTo(homes[k])));
+    looked ||= orcs.every((f) => f.ai.outlook === "looking");
+    left = Math.max(left, ...orcs.map((f, k) => where(f).distanceTo(homes[k])));
   }
-  const back = away.pen.map((f, k) => where(f).distanceTo(homes[k]));
+  const back = orcs.map((f, k) => where(f).distanceTo(homes[k]));
   check("with nobody to find, they look, give it up, and go back to their posts",
-    looked && left > 2 && back.every((d) => d < 0.4) && away.pen.every((f) => f.ai.outlook === "waiting"),
+    looked && left > 2 && back.every((d) => d < 0.4) && orcs.every((f) => f.ai.outlook === "waiting"),
     `went ${left.toFixed(1)} m; back to within ${Math.max(...back).toFixed(2)} m of their posts, ` +
-    away.pen.map((f) => `"${f.ai.outlook}"`).join(" and "));
+    orcs.map((f) => `"${f.ai.outlook}"`).join(" and "));
 }
 
 async function severingBleeds(): Promise<void> {
@@ -2807,7 +2852,7 @@ async function theWeaponsWeighWhatTheyShould(): Promise<void> {
   // that no rod has. The weapon body now carries mass properties worked out
   // in weapons.ts instead; these hold it to them.
   const bodyOf = async (weapon: typeof SWORD) => {
-    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_SPAWN);
+    const rig = await buildRig({}, { ...SWORDSMAN, weapon }, FOE_HOME);
     rig.step(1);
     return rig.foe.arm.blade;
   };
@@ -2967,7 +3012,7 @@ async function noGripSpinsUnderAbuse(): Promise<void> {
   // A freshly spawned goblin spun its spear at 900 rad/s. Ten seconds of the
   // worst input there is, for each of them.
   for (const species of [SWORDSMAN, ORC, GOBLIN]) {
-    const rig = await buildRig({}, species, FOE_SPAWN);
+    const rig = await buildRig({}, species, FOE_HOME);
     let rand = 12345;
     const next = () => (rand = (rand * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
     let spin = 0;
@@ -3310,7 +3355,7 @@ async function realBlowsAreWeighed(): Promise<void> {
     // first few blows would leave too few to count.
     for (let i = 0; i < 60 * 40; i++) {
       rig.fight(1);
-      if (rig.player.dead) rig.place(SPAWN);
+      if (rig.player.dead) rig.place(HOME);
     }
     tally.set(species.key, effects);
   }
@@ -3324,9 +3369,9 @@ async function realBlowsAreWeighed(): Promise<void> {
 
   // And the other way round: real swings of your own at an orc that stands
   // there and takes them.
-  const at = spawnFor(ORC, 0, SPAWN.z - 1.1);
+  const at = spawnFor(ORC, 0, HOME.z - 1.1);
   const rig = await buildRig({}, ORC, at);
-  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const standAt = new THREE.Vector3(0, HOME.y, HOME.z);
   rig.holdFoe();
   rig.pin(standAt);
   rig.hold(90);
@@ -3607,7 +3652,7 @@ function watchBout(rig: Rig, seconds: number, drive: (rig: Rig) => Keys = () => 
   // Killed, the player gets up where the bout began -- not at the spawn, which
   // may be two rooms away, and leave the rest of the bout to an empty room.
   rig.player.position(me);
-  const home = new THREE.Vector3(me.x, SPAWN.y, me.z);
+  const home = new THREE.Vector3(me.x, HOME.y, me.z);
   // One step's worth of its walking pace, metres.
   const pace = rig.tuning.moveSpeed * rig.foe.fighter.build.scale * STEP;
   let way = 0;
@@ -3682,7 +3727,7 @@ async function footworkAsksTheStone(): Promise<void> {
   rig.step(30);
   const at = rig.fighter.position(new THREE.Vector3());
   // The south wall's inner face; walls are 0.4m thick and centred on the line.
-  const wall = ROOMS.training.maxZ - 0.2 - at.z;
+  const wall = ROOMS.hall.maxZ - 0.2 - at.z;
   const south = rig.fighter.clearAlong(0, 1, 5);
   const north = rig.fighter.clearAlong(0, -1, 5);
   check("the step probe finds the wall behind you", Math.abs(south - wall) < 0.05,
@@ -3690,11 +3735,11 @@ async function footworkAsksTheStone(): Promise<void> {
   check("and open floor where there is nothing", north === 5,
     `${north.toFixed(2)} m clear of 5 looking north`);
 
-  // Stand in a corner, a metre off two walls with a pillar two paces away, and
-  // let a swordsman go round you. Every step it takes it asks the stone first,
-  // so it turns back at a wall rather than walking into one.
-  const corner = new THREE.Vector3(5.3, SPAWN.y, 11.8);
-  const boxed = await buildRig({}, SWORDSMAN, spawnFor(SWORDSMAN, 0.5, 9.0));
+  // Stand in a corner -- the pen's, east and south, a metre off both walls --
+  // and let a swordsman go round you. Every step it takes it asks the stone
+  // first, so it turns back at a wall rather than walking into one.
+  const corner = new THREE.Vector3(ROOMS.pen.maxX - 1.2, HOME.y, ROOMS.pen.maxZ - 1.2);
+  const boxed = await buildRig({}, SWORDSMAN, spawnFor(SWORDSMAN, corner.x - 4.8, corner.z - 2.8));
   boxed.place(corner);
   const bout = watchBout(boxed, 25);
   const footwork = [...bout.time].reduce((s, [k, t]) => s + (FOOTWORK.has(k) ? t : 0), 0);
@@ -3779,8 +3824,8 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   let rockIn = 0;
   let rockOut = 0;
   for (const species of [SWORDSMAN, GOBLIN]) {
-    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
-    rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+    const rig = await buildRig({}, species, spawnFor(species, 10.0, -7.8));
+    rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
     watchBout(rig, 40);
     rockIn += rig.ai.tally.rockIn;
     rockOut += rig.ai.tally.rockOut;
@@ -3794,7 +3839,7 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   // for a reaction time after you start it is still finishing whatever step it
   // was on, which as often as not was one in.
   const given = async (species: Species) => {
-    const post = spawnFor(species, 12.2, -9.8);
+    const post = spawnFor(species, 10.0, -7.8);
     const rig = await buildRig({}, species, post);
     const keys = { ...NO_KEYS };
     const me = new THREE.Vector3();
@@ -3811,7 +3856,7 @@ async function anOpponentMovesInAndOut(): Promise<void> {
       // to the wall, where it gives no ground but swings.
       rig.foe.reset(rig.tuning, post);
       rig.ai.reset();
-      rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+      rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
       rig.fight(60 * 2);
       for (let i = 0; i < 600 && rig.ai.intent !== "circle"; i++) {
         toward();
@@ -3846,8 +3891,8 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   const paid: string[] = [];
   let punishes = 0;
   for (const species of [SWORDSMAN, GOBLIN]) {
-    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
-    rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+    const rig = await buildRig({}, species, spawnFor(species, 10.0, -7.8));
+    rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
     watchBout(rig, 60, fencer());
     punishes += rig.ai.tally.punishes;
     paid.push(`${species.name} ${rig.ai.tally.punishes}`);
@@ -3859,8 +3904,8 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   // a beat there, and a step back out. A swordsman that always does when it
   // can, and where your sword does its work, measured as in the bout above.
   const bait = await buildRig({}, { ...SWORDSMAN, footwork: { ...SWORDSMAN.footwork, bait: 1 } },
-    spawnFor(SWORDSMAN, 12.2, -9.8));
-  bait.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+    spawnFor(SWORDSMAN, 10.0, -7.8));
+  bait.place(new THREE.Vector3(10.0, HOME.y, -4.0));
   bait.fight(1);
   const at = bait.player.position(new THREE.Vector3());
   const hits = bait.arm.probeStrike(0, 0, 1, 0, bait.tuning, new THREE.Vector3());
@@ -3967,7 +4012,7 @@ async function weaponsKnockEachOther(): Promise<void> {
   let took = 0;
   let tried = 0;
   for (let k = 0; k < 6; k++) {
-    open.place(SPAWN);
+    open.place(HOME);
     for (let i = 0; i < 600 && open.ai.intent !== "circle"; i++) open.fight(1);
     // On your feet with a sword in your hand: an arm on the floor has nothing
     // to knock, and a passive player is on the floor now and then.
@@ -3985,9 +4030,9 @@ async function weaponsKnockEachOther(): Promise<void> {
   // orc bringing its axe down on it. Raised, the blade stands upright over
   // the hand now that the arm no longer turns over on the way up, which is no
   // guard against a chop: rolled across the head, as you hold it, it is.
-  const guard = await buildRig({}, ORC, spawnFor(ORC, 12.2, -9.8));
+  const guard = await buildRig({}, ORC, spawnFor(ORC, 10.0, -7.8));
   guard.ai.aimOverride = "head";
-  const home = new THREE.Vector3(12.2, SPAWN.y, -6.0);
+  const home = new THREE.Vector3(10.0, HOME.y, -4.0);
   guard.place(home);
   let yours = 0;
   guard.impacts.onClash = (c) => { if (c.knocked === guard.arm && c.share >= 0.2) yours++; };
@@ -4034,7 +4079,7 @@ async function leapTrials(trials: number, stepAside: boolean): Promise<LeapTrial
   // The orc at the south end of the cell, facing north up the length of it,
   // and put back there for every trial: a leap carries it three metres, and
   // ten of them in a row walked it into the wall.
-  const home = spawnFor(ORC, 12.2, -4.8);
+  const home = spawnFor(ORC, 10.0, -2.8);
   const rig = await buildRig({}, ORC, home);
   const at = new THREE.Vector3();
   const out: LeapTrial[] = [];
@@ -4052,7 +4097,7 @@ async function leapTrials(trials: number, stepAside: boolean): Promise<LeapTrial
     rig.foe.position(at);
     const standing = at.y;
     // In its reach, a pace in front of it...
-    rig.place(new THREE.Vector3(at.x, SPAWN.y, at.z - 1.5));
+    rig.place(new THREE.Vector3(at.x, HOME.y, at.z - 1.5));
     rig.fight(30);
     // ...until it is on its feet between swings, not in the middle of one: a
     // swing already coming is thrown at wherever you were, and it comes on
@@ -4060,7 +4105,7 @@ async function leapTrials(trials: number, stepAside: boolean): Promise<LeapTrial
     for (let i = 0; i < 120 && !FOOTWORK.has(rig.ai.intent); i++) rig.fight(1);
     // ...then a jump away, on the same line.
     rig.foe.position(at);
-    rig.place(new THREE.Vector3(at.x, SPAWN.y, at.z - 3.6));
+    rig.place(new THREE.Vector3(at.x, HOME.y, at.z - 3.6));
     hurt = 0;
     const trial: LeapTrial = { leapt: false, rose: 0, inAir: false, blood: 0 };
     // Stepping aside is a sidestep -- your left, its right -- for as long as a
@@ -4118,9 +4163,9 @@ async function theOrcComesAfterYouThroughTheAir(): Promise<void> {
 
   // And not on the way in. Something that has never had you in reach walks
   // up to you like anything else: a leap is how it closes ground you made.
-  const fresh = await buildRig({}, ORC, spawnFor(ORC, 12.2, -10.5));
+  const fresh = await buildRig({}, ORC, spawnFor(ORC, 10.0, -8.5));
   fresh.foe.position(new THREE.Vector3());
-  fresh.place(new THREE.Vector3(12.2, SPAWN.y, -6.4));
+  fresh.place(new THREE.Vector3(10.0, HOME.y, -4.4));
   let jumpedIn = false;
   let closest = 99;
   const me = new THREE.Vector3();
@@ -4148,8 +4193,8 @@ async function crowdingItDoesNotStopIt(): Promise<void> {
   // anybody.
   let shaft = 0;
   for (const species of [SWORDSMAN, ORC, GOBLIN]) {
-    const rig = await buildRig({}, species, spawnFor(species, 12.2, -9.8));
-    rig.place(new THREE.Vector3(12.2, SPAWN.y, -5.8));
+    const rig = await buildRig({}, species, spawnFor(species, 10.0, -7.8));
+    rig.place(new THREE.Vector3(10.0, HOME.y, -3.8));
     const bout = watchBout(rig, 15, crowder());
     if (species === GOBLIN) shaft = bout.swings.filter((a) => a === "shaft sweep").length;
     check(`${species.name} swings at you from inside its guard`, bout.swings.length >= 4,
@@ -4226,8 +4271,8 @@ async function aMissRunsIntoTheNextSwing(): Promise<void> {
   for (const species of [SWORDSMAN, ORC, GOBLIN]) {
     const one: number[] = [];
     const run: number[] = [];
-    const rig = await buildRig({}, species, spawnFor(species, 2.0, -10.5));
-    const home = new THREE.Vector3(2.0, SPAWN.y, -6.8);
+    const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
+    const home = new THREE.Vector3(20.8, HOME.y, 7.2);
     rig.place(home);
     const drive = stepper();
     let from = rig.foe.arm.aim;
@@ -4295,8 +4340,8 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
   const left: number[] = [];
   const right: number[] = [];
   for (const species of [SWORDSMAN, ORC]) {
-    const rig = await buildRig({}, species, spawnFor(species, 2.0, -10.5));
-    rig.place(new THREE.Vector3(2.0, SPAWN.y, -6.8));
+    const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
+    rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     let last: Swing | null = null;
     for (let i = 0; i < 60 * 30; i++) {
       const before = rig.ai.intent;
@@ -4307,7 +4352,7 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
         if (end > 0.5) left.push(rig.foe.arm.aim.yaw);
         if (end < -0.5) right.push(rig.foe.arm.aim.yaw);
       }
-      if (rig.player.dead) rig.place(new THREE.Vector3(2.0, SPAWN.y, -6.8));
+      if (rig.player.dead) rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     }
   }
   // Where it holds its guard after a swing is all but decided by where the
@@ -4323,8 +4368,8 @@ async function itsGuardIsWhereItsLastSwingLeftIt(): Promise<void> {
     ...SWORDSMAN.footwork, patience: [1000, 1000] as const, bait: 0, feint: 0, taunt: 0,
     parry: 0, wariness: 0,
   };
-  const rig = await buildRig({}, { ...SWORDSMAN, footwork: still }, spawnFor(SWORDSMAN, 2.0, -11.0));
-  rig.place(new THREE.Vector3(2.0, SPAWN.y, -7.8));
+  const rig = await buildRig({}, { ...SWORDSMAN, footwork: still }, spawnFor(SWORDSMAN, 20.8, 3.0));
+  rig.place(new THREE.Vector3(20.8, HOME.y, 6.2));
   const yaws: number[] = [];
   const pitches: number[] = [];
   let fastest = 0;
@@ -4380,8 +4425,8 @@ async function itDrawsBackOnTheMove(): Promise<void> {
     return Math.hypot(me.x - it.x, me.z - it.z);
   };
   for (const species of [SWORDSMAN, ORC]) {
-    const rig = await buildRig({}, species, spawnFor(species, 2.0, -10.5));
-    rig.place(new THREE.Vector3(2.0, SPAWN.y, -6.8));
+    const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
+    rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     let start = 0;
     for (let i = 0; i < 60 * 40; i++) {
       const before = rig.ai.intent;
@@ -4393,7 +4438,7 @@ async function itDrawsBackOnTheMove(): Promise<void> {
         coming++;
         if (start - gap(rig) > 0.15) closed++;
       }
-      if (rig.player.dead) rig.place(new THREE.Vector3(2.0, SPAWN.y, -6.8));
+      if (rig.player.dead) rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     }
   }
   check("pressing in, it draws back on its way and swings as it arrives",
@@ -4402,8 +4447,8 @@ async function itDrawsBackOnTheMove(): Promise<void> {
     `${closed} closed the gap by more than 15cm while the weapon went back`);
 
   const lunger = { ...GOBLIN, footwork: { ...GOBLIN.footwork, lunge: 1 } };
-  const rig = await buildRig({}, lunger, spawnFor(GOBLIN, 12.2, -9.8));
-  rig.place(new THREE.Vector3(12.2, SPAWN.y, -6.0));
+  const rig = await buildRig({}, lunger, spawnFor(GOBLIN, 10.0, -7.8));
+  rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
   let lunges = 0;
   let gave = 0;
   let cameBack = 0;
@@ -4459,9 +4504,9 @@ async function aMissCanCarryItRound(): Promise<void> {
       ...base,
       cuts: base.cuts.map((c) => (c.spin ? { ...c, spin: { ...c.spin, chance: 1 } } : c)),
     };
-    const fight = await buildRig({}, species, spawnFor(species, 2.0, -10.5));
+    const fight = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
     fight.ai.cutOverride = cut;
-    const home = new THREE.Vector3(2.0, SPAWN.y, -6.8);
+    const home = new THREE.Vector3(20.8, HOME.y, 7.2);
     fight.place(home);
     const drive = stepper();
     let touched = false;
@@ -4494,9 +4539,9 @@ async function aMissCanCarryItRound(): Promise<void> {
         if (touched) met++;
       }
       // Back where they began now and then: a run of misses walks the fight
-      // across the hall, and into its walls.
+      // across the den, and into its walls.
       if (fight.player.dead || (i % 360 === 0 && !now)) {
-        fight.foe.reset(fight.tuning, spawnFor(species, 2.0, -10.5));
+        fight.foe.reset(fight.tuning, spawnFor(species, 20.8, 3.5));
         fight.ai.reset();
         fight.place(home);
       }
@@ -4538,8 +4583,8 @@ async function itMeetsASwingWithItsWeapon(): Promise<void> {
       },
       temper: undefined,
     };
-    const rig = await buildRig({}, species, spawnFor(species, 2.0, -9.0));
-    rig.place(new THREE.Vector3(2.0, SPAWN.y, -6.0));
+    const rig = await buildRig({}, species, spawnFor(species, 20.8, 5.0));
+    rig.place(new THREE.Vector3(20.8, HOME.y, 8.0));
     const its = weaponHandles(rig.foe.arm);
     let parried = 0;
     let met = 0;
@@ -4553,7 +4598,7 @@ async function itMeetsASwingWithItsWeapon(): Promise<void> {
       // In front of it, facing it.
       const at = rig.foe.position(new THREE.Vector3());
       const yaw = rig.foe.fighter.yaw;
-      rig.place(new THREE.Vector3(at.x - Math.sin(yaw) * off, SPAWN.y, at.z - Math.cos(yaw) * off));
+      rig.place(new THREE.Vector3(at.x - Math.sin(yaw) * off, HOME.y, at.z - Math.cos(yaw) * off));
       rig.fighter.yaw = yaw + Math.PI;
       rig.fight(1);
       rig.foe.position(at);
@@ -4606,18 +4651,32 @@ async function itHopsClearAndFlinches(): Promise<void> {
   // away, off the floor -- the goblin more often than not, the orc never.
   // How many steps out of the way it takes in a bout is its own business
   // (see above): this one hops every one of them.
-  // In the open, and meeting nothing with its spear: in the cell there is not
-  // always floor behind it for a hop, and every swing it parries is one it
-  // does not step out of.
+  // In the den, which is longer than the cell, and meeting nothing with its
+  // spear: in the cell there is not always floor behind it for a hop, and
+  // every swing it parries is one it does not step out of.
   const hopper = { ...GOBLIN, footwork: { ...GOBLIN.footwork, hop: 1, parry: 0 } };
-  const rig = await buildRig({}, hopper, spawnFor(GOBLIN, 2.0, -10.5));
-  const home = new THREE.Vector3(2.0, SPAWN.y, -6.8);
+  const start = spawnFor(GOBLIN, 20.8, 3.5);
+  const rig = await buildRig({}, hopper, start);
+  const home = new THREE.Vector3(20.8, HOME.y, 7.2);
   rig.place(home);
   const drive = fencer();
   let rose = 0;
   let floor = rig.foe.position(new THREE.Vector3()).y;
   const it = new THREE.Vector3();
-  for (let i = 0; i < 60 * 45; i++) {
+  // A minute of it, put back where it began every seven and a half seconds.
+  // It only hops out of a swing it sees coming while it is not swinging
+  // itself -- three to ten times a bout -- and a bout that gives it no floor
+  // to give ground on gives it fewer: pressed for long enough, it is pinned
+  // against a wall. In the den that happened sooner than in the hall this
+  // used to be fought in, which was half as wide again, and in forty-five
+  // seconds of it one bout in five or so it never hopped at all. You go back
+  // first, so that it does not come back down on top of you.
+  for (let i = 0; i < 60 * 60; i++) {
+    if (i > 0 && i % 450 === 0 && rig.ai.intent !== "evade" && rig.ai.intent !== "backoff") {
+      rig.place(home);
+      rig.foe.reset(rig.tuning, start);
+      rig.ai.reset();
+    }
     rig.fight(1, drive(rig));
     rig.foe.position(it);
     if (rig.foe.fighter.grounded && rig.ai.intent !== "evade" && rig.ai.intent !== "backoff") floor = it.y;
@@ -4625,7 +4684,7 @@ async function itHopsClearAndFlinches(): Promise<void> {
     if (rig.player.dead) rig.place(home);
   }
   check("a goblin swung at hops back off the floor", rig.ai.tally.hops >= 1 && rose > 0.15,
-    `${rig.ai.tally.hops} hops in 45s of being swung at by one that always does, ` +
+    `${rig.ai.tally.hops} hops in 60s of being swung at by one that always does, ` +
     `up to ${(rose * 100).toFixed(0)}cm off the floor`);
 
   // Cut it while it draws back. A stagger takes a swing off anything light
@@ -4634,8 +4693,8 @@ async function itHopsClearAndFlinches(): Promise<void> {
   const let_go: string[] = [];
   const counts = new Map<string, [number, number]>();
   for (const species of [GOBLIN, SWORDSMAN, ORC]) {
-    const r = await buildRig({}, species, spawnFor(species, 2.0, -9.0));
-    r.place(new THREE.Vector3(2.0, SPAWN.y, -7.2));
+    const r = await buildRig({}, species, spawnFor(species, 20.8, 5.0));
+    r.place(new THREE.Vector3(20.8, HOME.y, 6.8));
     let tries = 0;
     let gone = 0;
     for (let k = 0; k < 12; k++) {
@@ -4713,8 +4772,8 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
   console.log("\nout of its reach, it shows you its weapon");
   // Never drawn back, so never a lie: the orc beats the floor with its axe.
   const species = { ...ORC, footwork: { ...ORC.footwork, taunt: 1 } };
-  const rig = await buildRig({}, species, spawnFor(species, 2.0, -11.0));
-  rig.place(new THREE.Vector3(2.0, SPAWN.y, -5.5));
+  const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.0));
+  rig.place(new THREE.Vector3(20.8, HOME.y, 8.5));
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
   let lowest = 9;
@@ -4725,8 +4784,8 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
   const works = rig.foe.arm.probeStrike(0, 0, 1, 0, rig.tuning, new THREE.Vector3());
   const reach = Math.hypot(works.x - it.x, works.z - it.z);
   for (let i = 0; i < 60 * 12; i++) {
-    // Back off to the far side of the hall now and then, and stand.
-    if (i % 240 === 0) rig.place(new THREE.Vector3(2.0, SPAWN.y, -3.5));
+    // Back off to the far side of the den now and then, and stand.
+    if (i % 240 === 0) rig.place(new THREE.Vector3(20.8, HOME.y, 10.5));
     const keys = { ...NO_KEYS };
     rig.player.position(me);
     rig.foe.position(it);
@@ -4764,7 +4823,7 @@ async function theyQuickStepToo(): Promise<void> {
     for (let bout = 0; bout < 3; bout++) {
       const rig = await buildRig({}, species, foeSpawn(species));
       rig.player.position(me);
-      const home = new THREE.Vector3(me.x, SPAWN.y, me.z);
+      const home = new THREE.Vector3(me.x, HOME.y, me.z);
       const gap = () => {
         rig.player.position(me);
         rig.foe.position(it);
@@ -4830,9 +4889,9 @@ async function theyQuickStepToo(): Promise<void> {
         wariness: 1, hop: 0, parry: 0, quick,
       },
     };
-    const start = spawnFor(GOBLIN, 2.0, -10.5);
+    const start = spawnFor(GOBLIN, 20.8, 3.5);
     const rig = await buildRig({}, goblin, start);
-    const home = new THREE.Vector3(2.0, SPAWN.y, -6.8);
+    const home = new THREE.Vector3(20.8, HOME.y, 7.2);
     const moved: number[] = [];
     for (let trial = 0; trial < 8; trial++) {
       rig.foe.reset(rig.tuning, start);
@@ -5045,10 +5104,10 @@ async function theSwordGoesOnYourBack(): Promise<void> {
     between && rig.arm.sheathed && !rig.arm.stowing && home < 0.01,
     `between ${between}; sheathed ${rig.arm.sheathed}, ${(home * 1000).toFixed(1)} mm from the scabbard`);
 
-  rig.place(SPAWN);
+  rig.place(HOME);
   rig.arm.sheathe();
   rig.step(30);
-  rig.place(SPAWN);
+  rig.place(HOME);
   check("a reset puts it back in your hand", !rig.arm.sheathed && rig.arm.wielding && !rig.arm.stowing,
     `sheathed ${rig.arm.sheathed}, wielding ${rig.arm.wielding}`);
 }
@@ -5058,7 +5117,7 @@ async function aFreeHandTakesThings(): Promise<void> {
   const rig = await buildRig();
   const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
   const potion = ITEM_LAYOUT.potions[0];
-  rig.place(new THREE.Vector3(potion.x - 0.8, SPAWN.y, potion.z));
+  rig.place(new THREE.Vector3(potion.x - 0.8, HOME.y, potion.z));
   rig.step(20);
   const drawn = interact(rig.player, items);
   check("with a sword in your hand you pick nothing up", !drawn.ok && rig.player.potions === 0,
@@ -5087,7 +5146,7 @@ async function aFreeHandTakesThings(): Promise<void> {
     `${rig.player.health.toFixed(1)} of ${rig.player.maxHealth}`);
 
   const rack = ITEM_LAYOUT.rack.at;
-  rig.place(new THREE.Vector3(rack.x - 0.9, SPAWN.y, rack.z));
+  rig.place(new THREE.Vector3(rack.x - 0.9, HOME.y, rack.z));
   rig.step(20);
   stow(rig, false);
   const take = interact(rig.player, items);
@@ -5114,7 +5173,7 @@ async function fGoesAndGetsIt(): Promise<void> {
   const pickup = new Pickup(rig.player, items);
   const f = rig.fighter;
   const potion = ITEM_LAYOUT.potions[0];
-  const from = new THREE.Vector3(potion.x - 2, SPAWN.y, potion.z + 0.3);
+  const from = new THREE.Vector3(potion.x - 2, HOME.y, potion.z + 0.3);
   rig.place(from);
   rig.step(20);
   stow(rig, false);
@@ -5156,7 +5215,7 @@ async function fGoesAndGetsIt(): Promise<void> {
 
   // Going for the rack, a step of your own takes the body back.
   const rack = ITEM_LAYOUT.rack.at;
-  rig.place(new THREE.Vector3(rack.x - 2, SPAWN.y, rack.z + 0.4));
+  rig.place(new THREE.Vector3(rack.x - 2, HOME.y, rack.z + 0.4));
   rig.step(20);
   stow(rig, false);
   outcome = null;
@@ -5186,12 +5245,12 @@ async function aLeverIsPulledByHand(): Promise<void> {
   console.log("\nthe lever: F goes to it, the hand takes hold, and pulls it down against its spring");
   const rig = await buildRig();
   const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
-  const { lever, gate } = rig.arena;
+  const { lever, gate } = rig.arena.gateways.pen;
   items.add(lever.item);
   const pickup = new Pickup(rig.player, items);
   const f = rig.fighter;
   // A couple of paces out into the hall, turned away from it.
-  rig.place(new THREE.Vector3(LEVER.at.x + 1.8, SPAWN.y, LEVER.at.z + 0.8));
+  rig.place(new THREE.Vector3(GATEWAYS.pen.lever.at.x + 1.8, HOME.y, GATEWAYS.pen.lever.at.z + 0.8));
   f.yaw = -Math.PI / 2;
   rig.step(40);
 
@@ -5320,9 +5379,9 @@ async function aLeverIsPulledByHand(): Promise<void> {
 
 async function aShieldStopsABlade(): Promise<void> {
   console.log("\na shield stops a blade, and the blow still lands its weight");
-  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const standAt = new THREE.Vector3(0, HOME.y, HOME.z);
   const run = async (shield: boolean) => {
-    const at = spawnFor(SWORDSMAN, 0, SPAWN.z - 1.1);
+    const at = spawnFor(SWORDSMAN, 0, HOME.z - 1.1);
     const rig = await buildRig({}, SWORDSMAN, at);
     rig.foe.fighter.yaw = Math.PI;             // facing you
     if (shield) rig.foe.equipShield();
@@ -5359,9 +5418,9 @@ async function aShieldStopsABlade(): Promise<void> {
 
 async function aShieldOnYourBackStopsACutFromBehind(): Promise<void> {
   console.log("\na shield on your back stops a cut from behind, and the blow still lands its weight");
-  const standAt = new THREE.Vector3(0, SPAWN.y, SPAWN.z);
+  const standAt = new THREE.Vector3(0, HOME.y, HOME.z);
   const run = async (shield: boolean, back = true, aside = 0) => {
-    const at = spawnFor(SWORDSMAN, aside, SPAWN.z - 1.1);
+    const at = spawnFor(SWORDSMAN, aside, HOME.z - 1.1);
     const rig = await buildRig({}, SWORDSMAN, at);
     rig.foe.fighter.yaw = back ? 0 : Math.PI;  // its back to you, or its front
     rig.holdFoe();
@@ -5565,9 +5624,9 @@ async function aVaultGoesOver(): Promise<void> {
     }
     return { vaulted, climbed, peak, z: f.body.translation().z };
   };
-  const nearWall = new THREE.Vector3(LOW_WALL.at.x, SPAWN.y, LOW_WALL.at.z + 1.2);
+  const nearWall = new THREE.Vector3(LOW_WALL.at.x, HOME.y, LOW_WALL.at.z + 1.2);
   const wall = vaultFrom(nearWall, { vault: true });
-  check("the training room's low wall is vaulted, without even running at it",
+  check("the hall's low wall is vaulted, without even running at it",
     wall.vaulted && wall.peak > top && wall.z < LOW_WALL.at.z - LOW_WALL.half.z - 0.3 && f.grounded,
     `soles ${wall.peak.toFixed(2)} m over a ${top.toFixed(2)} m wall, landed ${(LOW_WALL.at.z - wall.z).toFixed(2)} m past its middle`);
   // The hull clears the top by a hand's breadth, and is invisible. What you
@@ -5578,10 +5637,11 @@ async function aVaultGoesOver(): Promise<void> {
     `hips ${(lowest - top).toFixed(2)} m over the top, legs never more than ${(deepest * 100).toFixed(1)} cm into it, hips turned ${(turned * 180 / Math.PI).toFixed(0)}deg`);
   check("and the other hand goes down on the top as it goes over", plant < 0.12,
     `the hand came within ${(plant * 100).toFixed(1)} cm of the top`);
-  const block = vaultFrom(new THREE.Vector3(-5.6, SPAWN.y, -11.4 + 1.3), { vault: true });
-  check("and so is the hall's block", block.vaulted && block.z < -11.95,
-    `landed at z ${block.z.toFixed(2)}, past its far face at -11.95`);
-  const pillar = vaultFrom(new THREE.Vector3(-3.9, SPAWN.y, 3.4 + 1.1), { vault: true });
+  const block = vaultFrom(new THREE.Vector3(BLOCK.at.x, HOME.y, BLOCK.at.z + 1.3), { vault: true });
+  const blockFar = BLOCK.at.z - BLOCK.half.z;
+  check("and so is the hall's block", block.vaulted && block.z < blockFar,
+    `landed at z ${block.z.toFixed(2)}, past its far face at ${blockFar.toFixed(2)}`);
+  const pillar = vaultFrom(new THREE.Vector3(-3.9, HOME.y, 3.4 + 1.1), { vault: true });
   check("a pillar is not, and with nothing to vault the key does nothing",
     !pillar.vaulted && pillar.peak < 0.05,
     `vaulted ${pillar.vaulted}, peak ${pillar.peak.toFixed(2)} m`);
@@ -5629,7 +5689,7 @@ async function aClimbGoesUp(): Promise<void> {
     return { climbed, soles: soles(), hold, grounded: f.grounded };
   };
   const ledgeTop = LEDGE.half.y * 2;
-  const east = new THREE.Vector3(LEDGE.at.x + LEDGE.half.x + 0.7, SPAWN.y, LEDGE.at.z - 0.5);
+  const east = new THREE.Vector3(LEDGE.at.x + LEDGE.half.x + 0.7, HOME.y, LEDGE.at.z - 0.5);
   const up = climbFrom(east, Math.PI / 2, { forward: true, jump: true });
   check("W and Space at the ledge climb it: standing on top",
     up.climbed && Math.abs(up.soles - ledgeTop) < 0.05 && up.grounded,
@@ -5645,7 +5705,7 @@ async function aClimbGoesUp(): Promise<void> {
     `leant ${(leant * 180 / Math.PI).toFixed(0)}deg over, legs never more than ${(deepest * 100).toFixed(1)} cm into the stone`);
 
   const crateTop = CRATE.half.y * 2;
-  const byCrate = new THREE.Vector3(CRATE.at.x + CRATE.half.x + 0.7, SPAWN.y, CRATE.at.z);
+  const byCrate = new THREE.Vector3(CRATE.at.x + CRATE.half.x + 0.7, HOME.y, CRATE.at.z);
   const first = climbFrom(byCrate, Math.PI / 2, { forward: true, jump: true });
   const onCrate = first.soles;
   for (let i = 0; i < 120; i++) rig.step(1, { ...NO_KEYS, forward: i < 40, jump: i < 10 });
@@ -5656,11 +5716,11 @@ async function aClimbGoesUp(): Promise<void> {
   const still = climbFrom(east, Math.PI / 2, { jump: true });
   check("standing still, Space is only a jump", !still.climbed && still.soles < 0.05,
     `climbed ${still.climbed}, soles ${still.soles.toFixed(2)} m`);
-  const wall = climbFrom(new THREE.Vector3(0, SPAWN.y, 12.3), Math.PI, { forward: true, jump: true });
-  const pillar = climbFrom(new THREE.Vector3(-3.9, SPAWN.y, 3.4 + 0.9), 0, { forward: true, jump: true });
+  const wall = climbFrom(new THREE.Vector3(0, HOME.y, 12.3), Math.PI, { forward: true, jump: true });
+  const pillar = climbFrom(new THREE.Vector3(-3.9, HOME.y, 3.4 + 0.9), 0, { forward: true, jump: true });
   check("a wall is no ledge, and a pillar is no ledge", !wall.climbed && !pillar.climbed,
     `wall ${wall.climbed}, pillar ${pillar.climbed}`);
-  const low = climbFrom(new THREE.Vector3(LOW_WALL.at.x, SPAWN.y, LOW_WALL.at.z + 0.9), 0,
+  const low = climbFrom(new THREE.Vector3(LOW_WALL.at.x, HOME.y, LOW_WALL.at.z + 0.9), 0,
     { forward: true, jump: true }, 60);
   check("and at the low wall it climbs on rather than over: that is the vault key's",
     low.climbed && Math.abs(low.soles - LOW_WALL.half.y * 2) < 0.05,
@@ -5754,7 +5814,7 @@ async function theShieldGoesOnYourBackToo(): Promise<void> {
   const items = new Items(new THREE.Scene(), ITEM_LAYOUT);
   for (const item of items.items) if (item.kind === "potion") items.setTaken(item, true);
   const rack = ITEM_LAYOUT.rack.at;
-  rig.place(new THREE.Vector3(rack.x - 0.9, SPAWN.y, rack.z));
+  rig.place(new THREE.Vector3(rack.x - 0.9, HOME.y, rack.z));
   rig.step(20);
   stow(rig, false);
   const take = interact(rig.player, items);
@@ -5767,7 +5827,7 @@ async function theShieldGoesOnYourBackToo(): Promise<void> {
     `${take.text}; another ${second}; ${hang.text}`);
 
   // Anything that takes the arm away leaves it where it had got to.
-  rig.place(SPAWN);
+  rig.place(HOME);
   rig.step(20);
   rig.player.equipShield();
   rig.step(30);
@@ -5818,7 +5878,7 @@ function palmMotion(rig: Rig): { p: THREE.Vector3; v: THREE.Vector3; w: THREE.Ve
 
 async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   console.log("\nwhat you cut off someone, and their weapon: into your hand, into your bag, and let go of");
-  // Out in the open floor of the training room, where nothing else is lying.
+  // Out on the open floor of the hall's west half, where nothing else is lying.
   const at = spawnFor(SWORDSMAN, -1.2, 7.4);
   const rig = await buildRig({}, SWORDSMAN, at);
   rig.holdFoe();
@@ -5861,7 +5921,7 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
       if (away.lengthSq() < 1e-6) away.set(1, 0, 0);
       away.setLength(1.3);
     }
-    const from = new THREE.Vector3(target.at.x + away.x, SPAWN.y, target.at.z + away.z);
+    const from = new THREE.Vector3(target.at.x + away.x, HOME.y, target.at.z + away.z);
     rig.place(from);
     stepWith(rig, items, 20);
     stow(rig, false);
@@ -5950,8 +6010,8 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   // Let go of facing a wall half a metre off, it stays out of the stone --
   // where the copy in the hand has gone into it, it lies across your front
   // instead -- and settles rather than being thrown out.
-  const wall = ROOMS.training.maxZ;
-  rig.place(new THREE.Vector3(1.5, SPAWN.y, wall - 0.55));
+  const wall = ROOMS.hall.maxZ;
+  rig.place(new THREE.Vector3(1.5, HOME.y, wall - 0.55));
   rig.fighter.yaw = Math.PI;                  // facing +Z, the south wall
   stepWith(rig, items, 30);
   stow(rig, false);
@@ -5979,7 +6039,7 @@ async function whatYouCutOffYouCanCarryOff(): Promise<void> {
   items.bag(rig.player);
   items.hold(rig.player, sword!);
   items.reset();
-  rig.player.reset(rig.tuning, SPAWN);
+  rig.player.reset(rig.tuning, HOME);
   foe.reset(rig.tuning, at);
   rig.impacts.resetSweeps();
   stepWith(rig, items, 60);
@@ -6015,7 +6075,7 @@ async function whatYouHoldYouCanThrow(): Promise<void> {
   const groups = headBody.collider(0).collisionGroups();
   const leaving = () => (items as unknown as { leaving: unknown[] }).leaving.length;
   const [pitchLo, pitchHi] = Arm.LIMITS.pitch;
-  const open = new THREE.Vector3(1.0, SPAWN.y, 4.0);
+  const open = new THREE.Vector3(1.0, HOME.y, 4.0);
 
   // Out on the open floor facing north, the sword on the back, it in the hand.
   const ready = (item: Item, where = open, yaw = 0) => {
@@ -6124,8 +6184,8 @@ async function whatYouHoldYouCanThrow(): Promise<void> {
     `${c.out.text}: landed ${ahead(open, swordAt).toFixed(2)} m ahead; health ${rig.player.health.toFixed(1)}`);
 
   // At a wall a pace off, it hits the wall and falls back into the room.
-  const wall = ROOMS.training.maxZ;
-  const facing = new THREE.Vector3(1.0, SPAWN.y, wall - 1.2);
+  const wall = ROOMS.hall.maxZ;
+  const facing = new THREE.Vector3(1.0, HOME.y, wall - 1.2);
   ready(head, facing, Math.PI);
   const d = throwIt(head, pitchHi, 0);
   stepWith(rig, items, 150);
@@ -6186,7 +6246,7 @@ async function theOrcsAxeCanBeWielded(): Promise<void> {
     items.items.filter((i) => i.piece).map((i) => i.name).join(", "));
 
   // At the dummy, sword on the back, the axe in the hand, and X.
-  const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + 1.1);
+  const standAt = new THREE.Vector3(DUMMY_AT.x, HOME.y, DUMMY_AT.z + 1.1);
   rig.place(standAt);
   rig.fighter.yaw = 0;                   // facing -Z, dummy dead ahead
   rig.pin(standAt);
@@ -6342,7 +6402,7 @@ async function everyWeaponCanBeWielded(): Promise<void> {
     // dummy and never touched it.
     const reach = SWORDSMAN.build.armLength - 0.08 + weapon.grip + weapon.span;
     const standOff = weapon.bite === "point" ? reach - 0.2 : Math.min(1.1, reach - 0.35);
-    const standAt = new THREE.Vector3(DUMMY_AT.x, SPAWN.y, DUMMY_AT.z + standOff);
+    const standAt = new THREE.Vector3(DUMMY_AT.x, HOME.y, DUMMY_AT.z + standOff);
     rig.place(standAt);
     rig.fighter.yaw = 0;
     rig.pin(standAt);
@@ -6399,6 +6459,67 @@ async function everyWeaponCanBeWielded(): Promise<void> {
       `peak spin ${spin.toFixed(0)} rad/s, grip ${(turn * 180 / Math.PI).toFixed(0)}deg, `
         + `wrist ${(bend * 180 / Math.PI).toFixed(0)}deg; ${down.text}`);
   }
+}
+
+async function theStonesAndTheRailAreJumped(): Promise<void> {
+  console.log("\njumps: the stones along the hall's south wall, and the rail in front of them");
+  const rig = await buildRig();
+  const f = rig.fighter;
+  const soles = () => f.body.translation().y - SWORDSMAN.build.hullCentreY;
+  // Walk at something for `walk` steps, and jump `jumpAt` steps in.
+  const go = (at: THREE.Vector3, yaw: number, walk: number, jumpAt = -1, vault = false) => {
+    rig.place(at);
+    f.yaw = yaw;
+    rig.step(20);
+    let vaulted = false;
+    let climbed = false;
+    for (let i = 0; i < 150; i++) {
+      const now = jumpAt >= 0 && i >= jumpAt && i < jumpAt + 6;
+      rig.step(1, { ...NO_KEYS, forward: i < walk, jump: now && !vault, vault: now && vault });
+      vaulted ||= f.vaulting;
+      climbed ||= f.climbing;
+    }
+    const p = f.body.translation();
+    return { x: p.x, z: p.z, soles: soles(), grounded: f.grounded, vaulted, climbed };
+  };
+  const [first, second] = STONES;
+  const on = (s: typeof first, r: ReturnType<typeof go>) =>
+    r.grounded && Math.abs(r.soles - s.half.y * 2) < 0.03 && Math.abs(r.x - s.at.x) < s.half.x;
+  const east = -Math.PI / 2;
+
+  // A stone is under a knee: too high to step up onto, too low to climb.
+  const floor = new THREE.Vector3(first.at.x - 2.2, HOME.y, first.at.z);
+  const walked = go(floor, east, 60);
+  const jumped = go(floor, east, 40, 18);
+  check("a stone is too high to walk onto, and a running jump puts you on it",
+    walked.soles < 0.05 && walked.x < first.at.x - first.half.x && on(first, jumped)
+      && !jumped.climbed && !jumped.vaulted,
+    `walked: stopped at x ${walked.x.toFixed(2)}, its face at ${(first.at.x - first.half.x).toFixed(2)}; ` +
+    `jumped: soles ${jumped.soles.toFixed(2)} m up, at x ${jumped.x.toFixed(2)}`);
+
+  // And a stride apart: walk off one and you are on the floor between them.
+  const top = new THREE.Vector3(first.at.x, HOME.y + first.half.y * 2, first.at.z);
+  const stepped = go(top, east, 60);
+  const leapt = go(top, east, 40, 5);
+  check("and from one to the next is a jump too: walk on and you are down between them",
+    stepped.soles < 0.05 && on(second, leapt),
+    `walked off: soles ${stepped.soles.toFixed(2)} m at x ${stepped.x.toFixed(2)}; ` +
+    `jumped: soles ${leapt.soles.toFixed(2)} m at x ${leapt.x.toFixed(2)}, the next stone's middle ${second.at.x}`);
+
+  // The rail is lower still: under anything to vault, and a wall to the feet.
+  const north = new THREE.Vector3(RAIL.at.x, HOME.y, RAIL.at.z - 1.8);
+  const south = Math.PI;
+  const near = RAIL.at.z - RAIL.half.z;
+  const far = RAIL.at.z + RAIL.half.z;
+  const into = go(north, south, 120);
+  const over = go(north, south, 60, 14);
+  const vaulted = go(north.clone().setZ(near - 0.9), south, 0, 0, true);
+  check("walking at the rail stops you, and a jump takes you over it",
+    into.z < near && over.z > far + 0.3 && over.grounded,
+    `walked: stopped at z ${into.z.toFixed(2)}, its near face at ${near.toFixed(2)}; ` +
+    `jumped: landed at z ${over.z.toFixed(2)}, past its far face at ${far.toFixed(2)}`);
+  check("and it is too low to vault: the vault key does nothing at it", !vaulted.vaulted,
+    `vaulted ${vaulted.vaulted}`);
 }
 
 async function theNewcomersScaleHonestly(): Promise<void> {
@@ -6479,9 +6600,9 @@ async function aClubSendsYouFlying(): Promise<void> {
   const species: Species = {
     ...OGRE, footwork: { ...OGRE.footwork, parry: 0, taunt: 0 }, flow: { combo: 0, chain: 1 },
   };
-  const foeAt = spawnFor(species, 12.2, -9.6);
+  const foeAt = spawnFor(species, 10.0, -7.6);
   const rig = await buildRig({}, species, foeAt);
-  const home = new THREE.Vector3(12.2, SPAWN.y, -6.6);
+  const home = new THREE.Vector3(10.0, HOME.y, -4.6);
   rig.place(home);
   rig.fighter.yaw = 0;
   rig.ai.cutOverride = "upswing";
@@ -6669,7 +6790,7 @@ async function run(): Promise<void> {
   await alliesShareAnArenaWithoutCuttingEachOther();
   await resetPutsSeveredLimbsBackOn();
   await everyMovingPartIsInterpolated();
-  await theTestingAreaIsFourRooms();
+  await theTestingAreaIsAHallAndFourRooms();
   await anOpponentWaitsUntilItSeesYou();
   await anOpponentLooksWhereItLastSawYou();
   await thePenOpensOnTwoOrcs();
@@ -6738,6 +6859,7 @@ async function run(): Promise<void> {
   await aCrouchGetsLow();
   await aVaultGoesOver();
   await aClimbGoesUp();
+  await theStonesAndTheRailAreJumped();
   await theNewcomersScaleHonestly();
   await aClubSendsYouFlying();
   await theNewcomersCloseAndCut();
