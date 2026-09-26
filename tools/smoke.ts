@@ -1597,6 +1597,37 @@ async function eachSpeciesCanFight(): Promise<void> {
   }
 }
 
+/**
+ * How long a swing takes, back, through and on guard again: fed each step of a
+ * bout, it keeps the length of every swing on its own and drawn back standing.
+ * Not the last of a run, nor one carried on round, whose guard is longer
+ * coming back up on purpose, nor one drawn back walking in or giving ground,
+ * whose wind-up is as long as the walking takes (see the runs, and the swings
+ * on the move, below). What is being asked about is the weapon.
+ */
+class SwingCycles {
+  readonly lengths: number[] = [];
+  private cycle = -1;
+  private alone = true;
+
+  /** After a step: `before` and `run` as they were before it. */
+  step(rig: Rig, before: string, run: number): void {
+    const now = rig.ai.intent;
+    if (now === "windup" && before !== "windup") {
+      this.cycle = 0;
+      this.alone = rig.ai.committed!.move === "stand";
+    }
+    if (rig.ai.spinning) this.alone = false;
+    if (this.cycle < 0) return;
+    if (now === "windup" || now === "leap" || now === "strike" || now === "recover") {
+      this.cycle += STEP;
+    } else {
+      if (before === "recover" && this.alone && run <= 1) this.lengths.push(this.cycle);
+      this.cycle = -1;
+    }
+  }
+}
+
 async function swingsAreReadOffTheArm(): Promise<void> {
   console.log("\nnothing announces a swing but the arm drawing it back");
   // Every attack used to be held wound up for a declared length -- three
@@ -1616,51 +1647,32 @@ async function swingsAreReadOffTheArm(): Promise<void> {
     const rig = await buildRig({}, species, foeSpawn(species));
     const swings: Swing[] = [];
     const drawing: number[] = [];
-    const cycles: number[] = [];
+    const cycles = new SwingCycles();
     let drawn = 0;
     let t = 0;
-    let cycle = -1;
     let from = rig.foe.arm.aim;
     let told = "";
     let lied = "";
     // Three quarters of a minute: a swing's length is a median over a bout,
     // and since an opponent swings on your misses and as you walk in as well
     // as when it is ready, half a minute of them is a noisier one than it was.
-    // A swing on its own and drawn back standing: not the last of a run, nor
-    // one carried on round, whose guard is longer coming back up on purpose,
-    // nor one drawn back walking in or giving ground, whose wind-up is as long
-    // as the walking takes (see the runs, and the swings on the move, below).
-    // What is being asked about is the weapon.
-    let alone = true;
     for (let i = 0; i < 60 * 45; i++) {
       const before = rig.ai.intent;
       const run = rig.ai.run;
       rig.fight(1);
+      cycles.step(rig, before, run);
       const now = rig.ai.intent;
       if (now === "windup" && before !== "windup") {
         swings.push(rig.ai.committed!);
         from = rig.foe.arm.aim;
         t = 0;
-        cycle = 0;
-        alone = rig.ai.committed!.move === "stand";
       }
-      if (rig.ai.spinning) alone = false;
       if (now === "windup") t += STEP;
       if (before === "windup" && now === "strike") {
         drawing.push(t);
         const to = rig.foe.arm.aim;
         const moved = Math.hypot(to.yaw - from.yaw, to.pitch - from.pitch);
         if (moved > 0.25 || Math.abs(to.reach - from.reach) > 0.08) drawn++;
-      }
-      // Back, through, and on guard again.
-      if (cycle >= 0) {
-        if (now === "windup" || now === "leap" || now === "strike" || now === "recover") {
-          cycle += STEP;
-        }
-        else {
-          if (before === "recover" && alone && run <= 1) cycles.push(cycle);
-          cycle = -1;
-        }
       }
       const swinging = now === "windup" || now === "leap" || now === "strike";
       if (lied === "" && swinging !== (rig.ai.committed !== null)) {
@@ -1670,7 +1682,7 @@ async function swingsAreReadOffTheArm(): Promise<void> {
         told = `the panel said "${rig.ai.outlook}" while it was in "${now}"`;
       }
     }
-    whole.set(species.key, cycles);
+    whole.set(species.key, cycles.lengths);
 
     const fastest = Math.min(...drawing);
     const slowest = Math.max(...drawing);
@@ -1717,11 +1729,38 @@ async function swingsAreReadOffTheArm(): Promise<void> {
   // More weapon, longer. Swung by an arm scaled to the body carrying it, a
   // metre of ash with 3.65 kg on the end is still slower back, through and
   // up again than a sword: not by a number anybody wrote down, by its weight.
-  const sword = median(whole.get("swordsman")!);
-  const axe = median(whole.get("orc")!);
+  //
+  // By a quarter of a second: over twenty bouts the medians are 1.35s and
+  // 1.1s. But a bout of the swordsman gives four to eleven swings on their
+  // own, since it runs one swing into the next and lunges as often as it
+  // stands, and a median of so few came out on the wrong side of the tenth
+  // of a second asked for three bouts in ten. So both go on, in a bout of
+  // their own that runs nothing together and never lunges, until each has
+  // forty.
+  const ENOUGH = 40;
+  for (const kind of [SWORDSMAN, ORC]) {
+    const lengths = whole.get(kind.key)!;
+    const species = {
+      ...kind, footwork: { ...kind.footwork, dart: 0, lunge: 0 }, flow: { ...kind.flow, combo: 0 },
+    };
+    const rig = await buildRig({}, species, foeSpawn(species));
+    const cycles = new SwingCycles();
+    for (let i = 0; i < 60 * 240 && lengths.length + cycles.lengths.length < ENOUGH; i++) {
+      const before = rig.ai.intent;
+      const run = rig.ai.run;
+      rig.fight(1);
+      cycles.step(rig, before, run);
+      if (rig.player.dead) rig.place(HOME);
+    }
+    lengths.push(...cycles.lengths);
+  }
+  const swords = whole.get("swordsman")!;
+  const axes = whole.get("orc")!;
+  const sword = median(swords);
+  const axe = median(axes);
   check("a swing of the axe takes longer than a swing of the sword", axe > sword + 0.1,
-    `back, through and on guard again: a median ${axe.toFixed(2)}s for the orc's axe, ` +
-    `${sword.toFixed(2)}s for the sword`);
+    `back, through and on guard again: a median ${axe.toFixed(2)}s for the orc's axe ` +
+    `over ${axes.length} swings, ${sword.toFixed(2)}s for the sword over ${swords.length}`);
 }
 
 async function alliesShareAnArenaWithoutCuttingEachOther(): Promise<void> {
@@ -2046,10 +2085,20 @@ async function anOpponentLooksWhereItLastSawYou(): Promise<void> {
   const at = () => led.foe.position(new THREE.Vector3());
   led.place(new THREE.Vector3(GATEWAYS.warren.at.x, HOME.y, -3));
   led.fight(150);
+  // ...and go on your feet, once it is between swings: a swing already
+  // coming lands on someone backing away from it, and floored in the doorway
+  // -- or before you set off -- you never got into the hall, and there was
+  // nothing to follow.
+  for (let i = 0; i < 360 && (led.player.fighter.down || !FOOTWORK.has(led.ai.intent)); i++) {
+    led.fight(1);
+  }
   // How far it got, not where it happens to be at the end: one time in ten,
   // after a swing, it gives ground, and it gave it back into its room once.
+  // And for long enough after you are out for the swings it throws at where
+  // you were to go by first: watched for a second and a half, it was still
+  // in its own doorway, coming, when the time was up.
   let followed = -Infinity;
-  for (let i = 0; i < 132 + 90; i++) {
+  for (let i = 0; i < 132 + 240; i++) {
     led.fight(1, i < 132 ? { ...NO_KEYS, back: true } : NO_KEYS);
     followed = Math.max(followed, at().z);
   }
@@ -3805,10 +3854,24 @@ async function anOpponentGetsOutOfTheWay(): Promise<void> {
   // The goblin, because it is the wary one: it answers more than half the
   // swings it sees, where the orc answers one in ten. A reaction time after
   // it sees them, too, so a quick cut has often landed before it moves.
-  const goblin = watchBout(await buildRig({}, GOBLIN, foeSpawn(GOBLIN)), 45, fencer());
-  check("a goblin hops back out of your cuts", goblin.evadedFrom.length >= 1,
-    `${goblin.evadedFrom.length} steps out of the way in 45s of being swung at`);
-  const from = goblin.evadedFrom;
+  //
+  // Put back where they began every seven and a half seconds, you first. The
+  // fencer presses it, and pressed for long enough it is pinned against a
+  // wall, where it swings from where it stands and gets out of the way of
+  // nothing: one bout in twenty spent its last thirty seconds there.
+  const rig = await buildRig({}, GOBLIN, foeSpawn(GOBLIN));
+  const drive = fencer();
+  const from: string[] = [];
+  for (let bout = 0; bout < 6; bout++) {
+    if (bout > 0) {
+      rig.place(HOME);
+      rig.foe.reset(rig.tuning, foeSpawn(GOBLIN));
+      rig.ai.reset();
+    }
+    from.push(...watchBout(rig, 7.5, drive).evadedFrom);
+  }
+  check("a goblin hops back out of your cuts", from.length >= 1,
+    `${from.length} steps out of the way in 45s of being swung at`);
   check("and never in the middle of a swing of its own",
     from.every((s) => s === "close" || s === "circle" || s === "backoff" || s === "taunt"),
     `stepped out of the way from: ${[...new Set(from)].join(", ") || "nothing"}`);
@@ -3915,30 +3978,43 @@ async function anOpponentMovesInAndOut(): Promise<void> {
   const yours = Math.hypot(hits.x - at.x, hits.z - at.z);
   const me = new THREE.Vector3();
   const it = new THREE.Vector3();
+  let baits = 0;
   let inside = 0;
   let outAgain = 0;
-  for (let i = 0; i < 60 * 30; i++) {
+  // Each bait from where it began: how near it came, and how far back out it
+  // went after that -- most of the way it came in. Over when the next one
+  // begins, when it stops going round you, or a second and a half on. Read
+  // where it was at the end of a set second and a half instead, a swordsman
+  // that always baits was as often as not inside again on the next one.
+  let watching = false;
+  let start = 0;
+  let nearest = 0;
+  let back = 0;
+  let steps = 0;
+  for (let i = 0; i < 60 * 30 || watching; i++) {
     const before = bait.ai.tally.baits;
     bait.fight(1);
-    if (bait.ai.tally.baits === before) continue;
-    // A bait has begun: how near it comes, and whether it goes back out --
-    // most of the way it came in.
     bait.player.position(me);
     bait.foe.position(it);
-    const start = Math.hypot(it.x - me.x, it.z - me.z);
-    let nearest = start;
-    let last = start;
-    for (let j = 0; j < 90 && bait.ai.intent === "circle"; j++, i++) {
-      bait.fight(1);
-      bait.player.position(me);
-      bait.foe.position(it);
-      last = Math.hypot(it.x - me.x, it.z - me.z);
-      nearest = Math.min(nearest, last);
+    const gap = Math.hypot(it.x - me.x, it.z - me.z);
+    const began = bait.ai.tally.baits > before;
+    if (watching && (began || bait.ai.intent !== "circle" || ++steps > 90)) {
+      if (nearest < yours) inside++;
+      if (back > 0.5 * (start - nearest)) outAgain++;
+      watching = false;
     }
-    if (nearest < yours) inside++;
-    if (last - nearest > 0.5 * (start - nearest)) outAgain++;
+    if (began && i < 60 * 30) {
+      baits++;
+      watching = true;
+      start = nearest = gap;
+      back = steps = 0;
+    } else if (watching && gap < nearest) {
+      nearest = gap;
+      back = 0;
+    } else if (watching) {
+      back = Math.max(back, gap - nearest);
+    }
   }
-  const baits = bait.ai.tally.baits;
   check("and it steps inside your reach on purpose, and back out", baits >= 3
     && inside >= baits / 2 && outAgain >= inside / 2,
     `${baits} times in 30s: ${inside} inside the ${yours.toFixed(2)} m your sword works at, ` +
@@ -4427,11 +4503,14 @@ async function itDrawsBackOnTheMove(): Promise<void> {
     rig.foe.position(it);
     return Math.hypot(me.x - it.x, me.z - it.z);
   };
+  // A minute and a third each: whether it comes in drawing back is rolled
+  // once each time it comes, and forty seconds each came to two to eleven
+  // swings drawn back on the way in.
   for (const species of [SWORDSMAN, ORC]) {
     const rig = await buildRig({}, species, spawnFor(species, 20.8, 3.5));
     rig.place(new THREE.Vector3(20.8, HOME.y, 7.2));
     let start = 0;
-    for (let i = 0; i < 60 * 40; i++) {
+    for (let i = 0; i < 60 * 80; i++) {
       const before = rig.ai.intent;
       rig.fight(1);
       const now = rig.ai.intent;
@@ -4446,10 +4525,13 @@ async function itDrawsBackOnTheMove(): Promise<void> {
   }
   check("pressing in, it draws back on its way and swings as it arrives",
     coming >= 3 && closed >= (2 / 3) * coming,
-    `${coming} swings drawn back on the way in, the swordsman's and the orc's in 40s each; ` +
+    `${coming} swings drawn back on the way in, the swordsman's and the orc's in 80s each; ` +
     `${closed} closed the gap by more than 15cm while the weapon went back`);
 
-  const lunger = { ...GOBLIN, footwork: { ...GOBLIN.footwork, lunge: 1 } };
+  // A goblin that lunges whenever it swings from where it stands -- and never
+  // quick-steps in instead, which it otherwise does on most of its ways in,
+  // leaving a bout too few lunges to say anything about.
+  const lunger = { ...GOBLIN, footwork: { ...GOBLIN.footwork, lunge: 1, dart: 0 } };
   const rig = await buildRig({}, lunger, spawnFor(GOBLIN, 10.0, -7.8));
   rig.place(new THREE.Vector3(10.0, HOME.y, -4.0));
   let lunges = 0;
@@ -4708,8 +4790,12 @@ async function itHopsClearAndFlinches(): Promise<void> {
       r.fight(1);
       const after: string = r.ai.intent;
       if (after === "recover") gone++;
-      r.fight(60);
+      // Healed while it can still see it heal. Healed after the pause instead,
+      // a trial that began with the next wind-up already under way took off
+      // exactly what the healing had just put back, before it had looked:
+      // to it nothing had happened, and a tenth of the cuts were never felt.
       r.foe.health = r.foe.maxHealth;
+      r.fight(60);
     }
     counts.set(species.key, [gone, tries]);
     let_go.push(`${species.name} ${gone} of ${tries}`);
@@ -4781,6 +4867,7 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
   const it = new THREE.Vector3();
   let lowest = 9;
   let nearest = 99;
+  let standing = 0;
   let windups = 0;
   // Where its axe does its work, flat from its middle, measured as it measures its own.
   rig.foe.position(it);
@@ -4794,16 +4881,25 @@ async function itTauntsYouFromOutOfReach(): Promise<void> {
     rig.foe.position(it);
     faceToward(rig.fighter, it.x - me.x, it.z - me.z, keys);
     const before = rig.ai.intent;
+    const down = rig.player.fighter.down;
     rig.fight(1, keys);
     if (rig.ai.intent !== "taunt") continue;
-    if (before !== "taunt") nearest = Math.min(nearest, Math.hypot(me.x - it.x, me.z - it.z));
+    // Over you on the floor it taunts from wherever it stands, rather than come
+    // and finish you (see `Ai.taunt`), and standing there you get floored now
+    // and then. How near it comes is asked of taunts at someone on their feet,
+    // and there has to be one.
+    if (before !== "taunt" && !down) {
+      standing++;
+      nearest = Math.min(nearest, Math.hypot(me.x - it.x, me.z - it.z));
+    }
     lowest = Math.min(lowest, rig.foe.arm.tipPosition.y);
     if (rig.ai.committed !== null) windups++;
   }
   check("the orc beats the floor with its axe at you, from out of its reach",
-    rig.ai.tally.taunts >= 1 && lowest < 0.4 && nearest > 1.3 * reach && windups === 0,
-    `${rig.ai.tally.taunts} taunts, the axe down to ${(lowest * 100).toFixed(0)}cm off the floor, ` +
-    `never nearer you than ${nearest.toFixed(1)} m, where its axe works at ${reach.toFixed(2)}`);
+    standing >= 1 && lowest < 0.4 && nearest > 1.3 * reach && windups === 0,
+    `${rig.ai.tally.taunts} taunts, ${standing} at you on your feet; the axe down to ` +
+    `${(lowest * 100).toFixed(0)}cm off the floor, never nearer you on your feet than ` +
+    `${nearest.toFixed(1)} m, where its axe works at ${reach.toFixed(2)}`);
 }
 
 async function theyQuickStepToo(): Promise<void> {
